@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Intelligent VMS</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:#090d12;color:#e8eef6}
+header{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;background:#101720;border-bottom:1px solid #26313d;position:sticky;top:0;z-index:5}
+h1,h2{margin:0}h1{font-size:18px}h2{font-size:15px}.sub,.muted{color:#8fa1b3;font-size:12px}
+main{padding:18px}.toolbar,.summary{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+button{border:1px solid #344252;border-radius:7px;padding:8px 11px;background:#182331;color:#e8eef6;cursor:pointer}
+button.primary{background:#1f6feb;border-color:#1f6feb}button.danger{background:#402029;border-color:#65313f}
+.grid{display:grid;gap:12px}.grid.cols-1{grid-template-columns:1fr}.grid.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}.grid.cols-4{grid-template-columns:repeat(4,minmax(0,1fr))}.live-tile{min-width:0}.live-tile.active{outline:2px solid #1f6feb}.tile-video{width:100%;aspect-ratio:16/9;object-fit:contain;background:#000}.tile-state{padding:5px 8px}.camera-picker{max-width:260px;background:#101720;color:#e8eef6;border:1px solid #344252;border-radius:6px;padding:7px}.layout-controls{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.card,.panel{background:#101720;border:1px solid #26313d;border-radius:10px;overflow:hidden}
+iframe{width:100%;height:230px;border:0;background:#000}.meta{padding:10px 12px;display:flex;gap:10px;justify-content:space-between;align-items:center}
+.actions{padding:0 12px 12px;display:flex;gap:8px;flex-wrap:wrap}.badge{font-size:11px;padding:3px 7px;border-radius:999px;background:#1d2a37}
+.badge.online{background:#123922}.badge.degraded{background:#4b3d14}.badge.offline{background:#4a1f28}.badge.unknown{background:#303642}.recording{background:#3b1c24}
+.empty{padding:45px;text-align:center;color:#8fa1b3;border:1px dashed #344252;border-radius:10px}
+#playback{margin-top:16px;padding:14px;display:none}#playback.visible{display:block}
+.timeline{height:46px;background:#080b10;border:1px solid #26313d;border-radius:6px;position:relative;margin:12px 0;overflow:hidden}
+.span{position:absolute;top:7px;height:30px;min-width:2px;background:#3877c8;border-radius:3px;cursor:pointer}.span.selected{outline:2px solid #d6e7ff}
+.playback-controls{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin:12px 0}.playback-controls label{display:grid;gap:4px}.playback-controls input{background:#0c131c;color:#e8eef6;border:1px solid #344252;border-radius:6px;padding:7px}
+video{width:100%;max-height:55vh;background:#000;border-radius:6px}.pbhead{display:flex;justify-content:space-between;gap:12px;align-items:center}
+#events,#alarms,#diagnostics,#aiPanel{margin-top:16px}.event-list{display:grid;gap:8px;margin-top:10px}.event{display:grid;grid-template-columns:150px 120px 1fr 110px;gap:10px;padding:9px 10px;border-top:1px solid #26313d;align-items:center}.event:first-child{border-top:0}
+.event .type{font-weight:600}.sev-high,.sev-critical{color:#ff9b9b}.sev-medium{color:#ffd27d}
+input,select{background:#0c131c;color:#e8eef6;border:1px solid #344252;border-radius:6px;padding:7px}.auth-card{padding:16px;margin-bottom:14px}.auth-card form,.camera-form{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}.auth-card label,.camera-form label{display:grid;gap:4px}.auth-card input{min-width:340px}.camera-form input{min-width:160px}body.auth-required main> :not(#authPanel){opacity:.35;pointer-events:none}
+code{color:#9cdcfe}@media(max-width:720px){.event{grid-template-columns:1fr 1fr}.event .message{grid-column:1/-1}.auth-card input{min-width:220px}}
+</style>
+</head>
+<body class="auth-required">
+<header>
+ <div><h1>Intelligent VMS</h1><div class="sub">Live · Recording · Playback · Events · Alarms · Diagnostics · AI</div></div>
+ <div style="display:flex;gap:8px;align-items:center"><span id="identity" class="muted"></span><button id="signOut" onclick="signOut()" hidden>Sign out</button><div id="system" class="badge">checking…</div></div>
+</header>
+<main>
+<section id="authPanel" class="panel auth-card">
+ <form onsubmit="loginWithToken(event)">
+  <label><span>Field-test / bearer access token</span><input id="authToken" type="password" autocomplete="off" spellcheck="false" aria-label="Access token"></label>
+  <button class="primary" type="submit">Login</button>
+  <span id="authMessage" class="muted">Authenticate with an existing VMS token. Field-test tokens are exchanged for a same-origin HttpOnly session and are never persisted by browser storage or placed in a URL.</span>
+ </form>
+</section>
+<div class="toolbar">
+ <button class="primary" onclick="refreshAll()">Refresh</button>
+ <button onclick="openCameraSetup()">Add IP camera</button>
+ <div class="layout-controls" role="group" aria-label="Live view layout">
+  <span class="muted">Layout</span>
+  <button onclick="setLayout(1)">1×1</button><button onclick="setLayout(4)">2×2</button><button onclick="setLayout(9)">3×3</button><button onclick="setLayout(16)">4×4</button>
+ </div>
+ <span class="muted">Bounded live workspace · capacity remains externally qualified</span>
+ <div class="layout-controls" role="group" aria-label="Continuous recording policy">
+  <span class="muted">Recording</span>
+  <button id="recordingEnable" onclick="saveRecordingPolicy(true)" disabled>Enable continuous MAIN</button>
+  <button id="recordingDisable" onclick="saveRecordingPolicy(false)" disabled>Disable continuous</button>
+  <label class="muted">Retention <input id="recordingRetention" type="number" min="1" max="3650" step="1" value="7" style="width:76px" disabled> days</label>
+  <button id="recordingSaveRetention" onclick="saveRecordingRetention()" disabled>Save retention</button>
+  <span id="recordingStatus" class="muted">Select an active camera.</span>
+ </div>
+ <button id="manualStart" onclick="startManualRecording()">Start manual recording</button>
+ <button id="manualStop" onclick="stopManualRecording()" disabled>Stop manual recording</button>
+ <button id="manualDownload" onclick="downloadLastManual()" disabled>Download last manual clip</button>
+ <span id="manualStatus" class="muted">No active manual recording</span>
+</div>
+<section id="cameraSetup" class="panel auth-card" style="display:none">
+ <div class="pbhead"><div><strong>Add IP / RTSP camera</strong><div class="muted">Uses the existing authorized camera-create API and server-side target validation.</div></div><button onclick="closeCameraSetup()">Close</button></div>
+ <form class="camera-form" onsubmit="saveCamera(event)">
+  <label><span class="muted">Tenant</span><input id="camTenant" value="field-test" required maxlength="128"></label>
+  <label><span class="muted">Site</span><input id="camSite" value="site-01" required maxlength="128"></label>
+  <label><span class="muted">Name</span><input id="camName" required maxlength="256"></label>
+  <label><span class="muted">Camera host/IP</span><input id="camHost" required maxlength="255"></label>
+  <label><span class="muted">RTSP port</span><input id="camPort" type="number" value="554" min="1" max="65535"></label>
+  <label><span class="muted">MAIN path</span><input id="camMain" required maxlength="2048"></label>
+  <label><span class="muted">SUB path</span><input id="camSub" maxlength="2048"></label>
+  <label><span class="muted">THIRD path</span><input id="camThird" maxlength="2048"></label>
+  <label><span class="muted">Username</span><input id="camUser" autocomplete="username" maxlength="512"></label>
+  <label><span class="muted">Password</span><input id="camPassword" type="password" autocomplete="new-password" maxlength="512"></label>
+  <button class="primary" type="submit">Add camera</button>
+  <span id="cameraSetupMessage" class="muted"></span>
+ </form>
+</section>
+<div id="healthSummary" class="summary"></div>\n<div id="aiSummary" class="summary"></div>
+<div id="content"></div>
+<section id="playback" class="panel">
+ <div class="pbhead"><div><strong id="pbtitle">Playback</strong><div id="pbwindow" class="muted"></div></div><button onclick="returnToLive()">Return to live</button></div>
+ <div class="playback-controls">
+  <label><span class="muted">Date</span><input id="pbDate" type="date" onchange="loadPlaybackTimeline()"></label>
+  <label><span class="muted">Time</span><input id="pbTime" type="time" step="1" onchange="loadPlaybackTimeline()"></label>
+  <button id="pbLoad" onclick="loadPlaybackTimeline()">Load timeline</button>
+  <span id="pbSelected" class="muted">No recorded time selected.</span>
+ </div>
+ <div id="timeline" class="timeline" aria-label="Available recording timeline"></div>
+ <div id="pbmsg" class="muted">Choose a date/time or click an available recording span.</div>
+ <div class="actions">
+  <button id="pbPlay" disabled onclick="playSelectedTime()">Play selected time</button>
+  <button id="pbPause" disabled onclick="pausePlayback()">Pause</button>
+  <label><span class="muted">Clip start</span><input id="pbClipStart" type="datetime-local" step="0.001" disabled onchange="validateClipSelection()"></label>
+  <label><span class="muted">Clip end</span><input id="pbClipEnd" type="datetime-local" step="0.001" disabled onchange="validateClipSelection()"></label>
+  <button id="pbexport" disabled onclick="downloadSelectedClip()">Download selected clip</button>
+ </div>
+ <video id="player" controls playsinline ontimeupdate="updatePlaybackClock()"></video>
+</section>
+<section id="events" class="panel">
+ <div class="meta"><div><h2>Recent events</h2><div class="muted">Latest scoped events from ClickHouse</div></div><button onclick="refreshEvents()">Refresh events</button></div>
+ <div id="eventList" class="event-list"><div class="empty">Loading events…</div></div>
+</section>
+<section id="alarms" class="panel">
+ <div class="meta"><div><h2>Open alarms</h2><div class="muted">Rule-generated alarms requiring operator action</div></div><button onclick="refreshAlarms()">Refresh alarms</button></div>
+ <div id="alarmList" class="event-list"><div class="empty">Loading alarms…</div></div>
+</section>
+<section id="diagnostics" class="panel" style="display:none">
+ <div class="meta"><div><h2 id="diagTitle">Camera diagnostics</h2><div class="muted">Current MediaMTX stream-quality counters</div></div><button onclick="document.getElementById('diagnostics').style.display='none'">Close</button></div>
+ <div id="diagBody" class="meta muted"></div>
+</section>
+<section id="aiPanel" class="panel" style="display:none">
+ <div class="meta"><div><h2 id="aiTitle">Camera AI</h2><div class="muted">Policy controls orchestration only; model/provider runtime stays isolated from recording.</div></div><button onclick="closeAI()">Close</button></div>
+ <div class="meta" style="align-items:flex-end;flex-wrap:wrap;justify-content:flex-start">
+  <label><div class="muted">Enabled</div><input id="aiEnabled" type="checkbox"></label>
+  <label><div class="muted">Source</div><select id="aiSource"><option value="inference">Inference provider</option></select></label>
+  <label><div class="muted">Model</div><select id="aiModel"><option value="">None</option></select></label>
+  <label><div class="muted">Stream</div><select id="aiStream"><option value="sub">Sub</option><option value="main">Main</option></select></label>
+  <label><div class="muted">Sample FPS</div><input id="aiFps" type="number" min="0.1" max="30" step="0.1" value="1"></label>
+  <label><div class="muted">Min confidence</div><input id="aiConfidence" type="number" min="0" max="1" step="0.05" value="0.5"></label>
+  <label style="min-width:280px"><div class="muted">Analytics (comma separated)</div><input id="aiAnalytics" style="width:100%" value="human,vehicle"></label>
+  <button class="primary" onclick="saveAI()">Save AI policy</button>
+ </div>
+ <div id="aiMessage" class="meta muted"></div>
+</section>
+</main>
+<script>
+const API='/api/v1';
+let authenticated=false;
+let cameraCache=[];let healthMap={};let aiCameraId=null;let aiPolicyCache=null;let liveSessions=new Map();let snapshotBusy=new Set();
+let liveWorkspace={tileCount:4,activeTile:0,assignments:[null,null,null,null],roles:[null,null,null,null],generations:[0,0,0,0]};
+const PLAYBACK_MAX_SECONDS=14400;
+const DEFAULT_CLIP_SECONDS=60;
+let playbackSelection=null;
+let playbackState={cameraId:null,spans:[],selectedSpan:null,windowStart:null,windowEnd:null,generation:0,playGeneration:0};
+let manualSessions=[];
+let recentManualSessions=[];
+let activeRecordingPolicy=null;let activeRecordingPolicyLoaded=false;let recordingPolicyBusy=false;let recordingPolicyGeneration=0;
+
+function cookieValue(name){
+ const prefix=name+'=';
+ const row=document.cookie.split(';').map(x=>x.trim()).find(x=>x.startsWith(prefix));
+ return row?decodeURIComponent(row.slice(prefix.length)):'';
+}
+async function apiFetch(url,opts={}){
+ const headers=new Headers(opts.headers||{});
+ const method=String(opts.method||'GET').toUpperCase();
+ if(!['GET','HEAD','OPTIONS'].includes(method)){
+  const csrf=cookieValue('vms_csrf');if(csrf)headers.set('X-VMS-CSRF',csrf);
+ }
+ return fetch(url,{...opts,headers,credentials:'same-origin'});
+}
+function setAuthenticated(value,info=null){
+ authenticated=!!value;
+ document.body.classList.toggle('auth-required',!authenticated);
+ document.getElementById('authPanel').style.display=authenticated?'none':'block';
+ const signOut=document.getElementById('signOut'),identity=document.getElementById('identity');
+ signOut.hidden=!authenticated||!(info&&info.browser_session_enabled);
+ identity.textContent=authenticated&&info?String(info.tenant_id||'')+' · '+(info.roles||[]).join(', '):'';
+ if(!authenticated){cameraCache=[];closePlayback(false);stopLiveSessions();renderLiveGrid()}
+}
+async function jsonFetch(url,opts={}){
+ const r=await apiFetch(url,opts);
+ if(r.status===401){setAuthenticated(false);throw new Error('Authentication required')}
+ if(!r.ok) throw new Error(await r.text());
+ if(r.status===204)return null;
+ return r.json();
+}
+async function initializeSession(){
+ const message=document.getElementById('authMessage');
+ try{
+  const info=await jsonFetch(${API}+'/auth/session');
+  setAuthenticated(true,info);await refreshAll();
+ }catch(e){
+  setAuthenticated(false);
+  message.textContent=String(e.message||'Authentication required');
+  document.getElementById('system').textContent='login required';
+ }
+}
+async function loginWithToken(event){
+ event.preventDefault();
+ const input=document.getElementById('authToken'),message=document.getElementById('authMessage'),token=input.value.trim();
+ if(!token){message.textContent='Paste a valid VMS access token.';return}
+ message.textContent='Authenticating…';
+ try{
+  const r=await fetch(${API}+'/auth/session',{method:'POST',headers:{Authorization:'Bearer '+token},credentials:'same-origin'});
+  input.value='';
+  if(!r.ok)throw new Error(await r.text());
+  const info=await r.json();setAuthenticated(true,info);message.textContent='Authenticated.';await refreshAll();
+ }catch(e){input.value='';setAuthenticated(false);message.textContent='Login failed: '+String(e.message||'invalid token')}
+}
+async function signOut(){
+ try{await apiFetch(${API}+'/auth/session',{method:'DELETE'})}catch{}
+ await stopLiveSessions();closePlayback(false);closeCameraSetup();setAuthenticated(false);
+ document.getElementById('authMessage').textContent='Signed out. Paste a valid VMS access token to continue.';
+}
+function openCameraSetup(){document.getElementById('cameraSetup').style.display='block';document.getElementById('cameraSetupMessage').textContent=''}
+function closeCameraSetup(){document.getElementById('cameraSetup').style.display='none';document.getElementById('camPassword').value=''}
+async function saveCamera(event){
+ event.preventDefault();
+ const password=document.getElementById('camPassword'),message=document.getElementById('cameraSetupMessage');
+ const optional=id=>{const value=document.getElementById(id).value.trim();return value||null};
+ const payload={
+  tenant_id:document.getElementById('camTenant').value.trim(),
+  site_id:document.getElementById('camSite').value.trim(),
+  name:document.getElementById('camName').value.trim(),
+  host:document.getElementById('camHost').value.trim(),
+  rtsp_port:Number(document.getElementById('camPort').value),
+  main_path:document.getElementById('camMain').value.trim(),
+  sub_path:optional('camSub'),third_path:optional('camThird'),
+  username:optional('camUser'),password:password.value||null
+ };
+ message.textContent='Adding camera…';
+ try{
+  await jsonFetch(${API}+'/cameras',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  message.textContent='Camera added. Select it in an active live tile.';await refreshCameras();
+ }catch(e){message.textContent='Camera add failed: '+String(e.message||'request failed')}
+ finally{password.value=''}
+}
+async function refreshHealth(){
+ const el=document.getElementById('system');
+ try{const j=await jsonFetch(`${API}/system/health`);el.textContent=`system: ${j.status} · media: ${j.media_node}`;}
+ catch{el.textContent='system: offline';}
+ try{
+  const summary=await jsonFetch(`${API}/health/summary`);
+  document.getElementById('healthSummary').innerHTML=
+    `<span class="badge online">online ${summary.online}</span>
+     <span class="badge degraded">degraded ${summary.degraded}</span>
+     <span class="badge offline">offline ${summary.offline}</span>
+     <span class="badge unknown">unknown ${summary.unknown}</span>
+     <span class="muted">scan: ${summary.monitor_last_scanned} · changes: ${summary.monitor_last_changed} · node errors: ${summary.monitor_media_errors}</span>`;
+  const rows=await jsonFetch(`${API}/health/cameras?limit=1000`);
+  healthMap=Object.fromEntries(rows.map(x=>[x.camera_id,x]));
+ }catch{
+  document.getElementById('healthSummary').innerHTML='<span class="muted">Health service unavailable.</span>';
+ }
+}
+function activeCameraId(){return liveWorkspace.assignments[liveWorkspace.activeTile]||null}
+async function recordingPolicy(id){
+ const r=await apiFetch(`${API}/recordings/cameras/${encodeURIComponent(id)}/policy`);
+ if(r.status===404)return null;
+ if(!r.ok)throw new Error(await r.text());
+ return r.json();
+}
+function defaultRecordingPolicy(){return {enabled:false,mode:'disabled',retention_days:7,part_duration_ms:1000,segment_duration_seconds:900,max_part_size_mb:50}}
+function recordingPolicyPayload(current,enabled,retentionDays){
+ const base=current||defaultRecordingPolicy();
+ return {enabled:!!enabled,mode:enabled?'continuous':'disabled',retention_days:retentionDays,part_duration_ms:base.part_duration_ms??1000,segment_duration_seconds:base.segment_duration_seconds??900,max_part_size_mb:base.max_part_size_mb??50};
+}
+function retentionDaysInput(){
+ const value=Number(document.getElementById('recordingRetention').value);
+ return Number.isInteger(value)&&value>=1&&value<=3650?value:null;
+}
+function recordingError(error){return String(error&&error.message||'recording policy unavailable').slice(0,240)}
+function renderRecordingControls(message=''){
+ const cameraId=activeCameraId(),policy=activeRecordingPolicy;
+ const supportedMode=!policy||policy.mode==='continuous'||policy.mode==='disabled';
+ const continuous=!!(policy&&policy.enabled&&policy.mode==='continuous');
+ const ready=!!cameraId&&activeRecordingPolicyLoaded&&!recordingPolicyBusy&&supportedMode;
+ const retention=document.getElementById('recordingRetention');
+ document.getElementById('recordingEnable').disabled=!ready||continuous;
+ document.getElementById('recordingDisable').disabled=!ready||!continuous;
+ document.getElementById('recordingSaveRetention').disabled=!ready;
+ retention.disabled=!ready;
+ if(activeRecordingPolicyLoaded&&document.activeElement!==retention)retention.value=String(policy?.retention_days??7);
+ const status=document.getElementById('recordingStatus');
+ if(message){status.textContent=message;renderManualState();return}
+ if(!cameraId){status.textContent='Select an active camera.';renderManualState();return}
+ if(!activeRecordingPolicyLoaded){status.textContent='Loading recording policy…';renderManualState();return}
+ if(!supportedMode){status.textContent=`Recording mode ${policy.mode} is outside field-test controls.`;renderManualState();return}
+ status.textContent=policy?(continuous?`Continuous MAIN enabled · retention ${policy.retention_days} days`:`Continuous recording disabled · retention ${policy.retention_days} days`):'Continuous recording not configured · default retention 7 days · source MAIN';
+ renderManualState();
+}
+async function refreshRecordingControls(){
+ const cameraId=activeCameraId(),generation=++recordingPolicyGeneration;
+ activeRecordingPolicy=null;activeRecordingPolicyLoaded=false;recordingPolicyBusy=false;renderRecordingControls();
+ if(!cameraId)return;
+ try{
+  const policy=await recordingPolicy(cameraId);
+  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  activeRecordingPolicy=policy;activeRecordingPolicyLoaded=true;renderRecordingControls();
+ }catch(e){
+  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  renderRecordingControls('Recording policy unavailable: '+recordingError(e));
+ }
+}
+async function saveRecordingPolicy(enable){
+ const cameraId=activeCameraId();
+ if(!cameraId||recordingPolicyBusy||!activeRecordingPolicyLoaded)return;
+ const retentionDays=retentionDaysInput();
+ if(retentionDays===null){renderRecordingControls('Retention must be a whole number from 1 to 3650 days.');return}
+ const generation=++recordingPolicyGeneration;recordingPolicyBusy=true;renderRecordingControls('Saving recording policy…');
+ let finalMessage='';
+ try{
+  const current=await recordingPolicy(cameraId);
+  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  if(current&&current.mode!=='continuous'&&current.mode!=='disabled')throw new Error('existing recording mode is outside field-test controls');
+  activeRecordingPolicy=current;activeRecordingPolicyLoaded=true;
+  const saved=await jsonFetch(`${API}/recordings/cameras/${encodeURIComponent(cameraId)}/policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(recordingPolicyPayload(current,enable,retentionDays))});
+  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  activeRecordingPolicy=saved;activeRecordingPolicyLoaded=true;
+  finalMessage=(saved.enabled?'Continuous MAIN recording enabled':'Continuous recording disabled')+` · retention ${saved.retention_days} days`;
+ }catch(e){
+  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  finalMessage='Recording policy save failed: '+recordingError(e);
+ }finally{
+  if(generation===recordingPolicyGeneration&&activeCameraId()===cameraId){recordingPolicyBusy=false;renderRecordingControls(finalMessage)}
+ }
+}
+async function saveRecordingRetention(){
+ const policy=activeRecordingPolicy;
+ if(policy&&policy.mode!=='continuous'&&policy.mode!=='disabled'){renderRecordingControls('Existing recording mode is outside field-test controls.');return}
+ await saveRecordingPolicy(!!(policy&&policy.enabled&&policy.mode==='continuous'));
+}
+async function cleanupTile(tileIndex){
+ liveWorkspace.generations[tileIndex]=(liveWorkspace.generations[tileIndex]||0)+1;
+ const session=liveSessions.get(tileIndex);liveSessions.delete(tileIndex);
+ if(!session)return;
+ try{session.pc.ontrack=null;session.pc.onconnectionstatechange=null}catch{}
+ try{session.pc.close()}catch{}
+ const video=document.getElementById('tile-video-'+tileIndex);if(video){video.srcObject=null;video.removeAttribute('src')}
+ if(session.sessionUrl&&session.token){try{await fetch(session.sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+session.token},keepalive:true})}catch{}}
+}
+async function stopLiveSessions(){await Promise.allSettled([...liveSessions.keys()].map(cleanupTile))}
+function waitForIceGathering(pc,timeoutMs=3000){
+ if(pc.iceGatheringState==='complete')return Promise.resolve();
+ return new Promise(resolve=>{const done=()=>{pc.removeEventListener('icegatheringstatechange',check);clearTimeout(timer);resolve()};const check=()=>{if(pc.iceGatheringState==='complete')done()};const timer=setTimeout(done,timeoutMs);pc.addEventListener('icegatheringstatechange',check)});
+}
+function parseIceServers(header){
+ if(!header)return [];
+ return header.split(', ').map(item=>{const m=item.match(/^<([^>]+)>;\\s*rel="ice-server"(?:;\\s*username="([^"]*)";\\s*credential="([^"]*)";\\s*credential-type="password")?/i);if(!m)return null;const server={urls:[m[1]]};if(m[2]!==undefined){server.username=m[2];server.credential=m[3];server.credentialType='password'}return server}).filter(Boolean);
+}
+function setTileState(tileIndex,state,message=''){
+ const el=document.getElementById('tile-state-'+tileIndex);if(!el)return;el.textContent=message?state+' · '+message:state;
+ const retry=document.getElementById('tile-retry-'+tileIndex);if(retry)retry.hidden=state!=='FAILED';
+}
+async function liveAccess(id,role){return jsonFetch(`${API}/live/cameras/${encodeURIComponent(id)}/access?stream_role=${encodeURIComponent(role)}`,{method:'POST'})}
+async function startTile(tileIndex,cameraId,role=liveWorkspace.roles[tileIndex]){
+ const generation=liveWorkspace.generations[tileIndex]=(liveWorkspace.generations[tileIndex]||0)+1;
+ await cleanupTile(tileIndex);
+ if(liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role)return;
+ const current=liveWorkspace.generations[tileIndex];
+ let access,pc=null,sessionUrl=null,mediaStream=null;
+ try{
+  access=await liveAccess(cameraId,role);if(current!==liveWorkspace.generations[tileIndex]||liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role)return;
+  setTileState(tileIndex,'CONNECTING','switching to '+role.toUpperCase());
+  const whep=access.webrtc_url.replace(/\\/$/,'')+'/whep';
+  const options=await fetch(whep,{method:'OPTIONS',headers:{Authorization:'Bearer '+access.access_token}});
+  if(!options.ok)throw new Error('ICE discovery rejected ('+options.status+')');
+  if(current!==liveWorkspace.generations[tileIndex])return;
+  pc=new RTCPeerConnection({iceServers:parseIceServers(options.headers.get('Link'))});pc.addTransceiver('video',{direction:'recvonly'});pc.addTransceiver('audio',{direction:'recvonly'});
+  pc.ontrack=e=>{if(current!==liveWorkspace.generations[tileIndex])return;if(e.streams&&e.streams[0]){mediaStream=e.streams[0];const video=document.getElementById('tile-video-'+tileIndex);if(video)video.srcObject=mediaStream}};
+  pc.onconnectionstatechange=()=>{if(current!==liveWorkspace.generations[tileIndex])return;if(pc.connectionState==='connected')setTileState(tileIndex,'LIVE');if(['failed','disconnected'].includes(pc.connectionState)){setTileState(tileIndex,'FAILED','connection lost');cleanupTile(tileIndex)}};
+  const offer=await pc.createOffer();await pc.setLocalDescription(offer);await waitForIceGathering(pc);
+  if(current!==liveWorkspace.generations[tileIndex]){pc.close();return}
+  const response=await fetch(whep,{method:'POST',headers:{Authorization:'Bearer '+access.access_token,'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
+  if(response.status!==201)throw new Error(response.status===429?'reader limit reached':'session rejected ('+response.status+')');
+  const location=response.headers.get('Location');
+  if(location){const candidate=new URL(location,whep),origin=new URL(whep).origin;if(candidate.origin!==origin)throw new Error('cross-origin WHEP session rejected');sessionUrl=candidate.toString()}
+  const answer=await response.text();if(current!==liveWorkspace.generations[tileIndex]){if(sessionUrl)fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true}).catch(()=>{});pc.close();return}
+  await pc.setRemoteDescription({type:'answer',sdp:answer});
+  liveSessions.set(tileIndex,{pc,sessionUrl,token:access.access_token,cameraId,role,generation:current,stream:mediaStream,state:'LIVE'});setTileState(tileIndex,'LIVE');
+ }catch(e){if(pc)pc.close();if(sessionUrl&&access){try{await fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true})}catch{}}if(current===liveWorkspace.generations[tileIndex])setTileState(tileIndex,'FAILED',String(e.message||'live unavailable'))}
+}
+function snapshotFilename(cameraId,role,capturedAt){
+ const safeId=String(cameraId).replace(/[^A-Za-z0-9_-]/g,'_').slice(0,80)||'camera';
+ const safeRole=['main','sub','third'].includes(role)?role:'unknown';
+ const stamp=capturedAt.toISOString().replace(/[:.]/g,'-');
+ return 'snapshot-'+safeId+'-'+safeRole+'-'+stamp+'.png';
+}
+async function snapshotTile(tileIndex){
+ if(tileIndex!==liveWorkspace.activeTile||snapshotBusy.has(tileIndex))return;
+ const cameraId=liveWorkspace.assignments[tileIndex],role=liveWorkspace.roles[tileIndex],generation=liveWorkspace.generations[tileIndex],session=liveSessions.get(tileIndex),video=document.getElementById('tile-video-'+tileIndex);
+ if(!cameraId||!role||!session||session.cameraId!==cameraId||session.role!==role||session.generation!==generation||session.state!=='LIVE'||!video||video.readyState<2||video.videoWidth<1||video.videoHeight<1){setTileState(tileIndex,'FAILED','snapshot requires a current live frame');return}
+ snapshotBusy.add(tileIndex);renderLiveGrid();
+ try{
+  const canvas=document.createElement('canvas');canvas.width=video.videoWidth;canvas.height=video.videoHeight;
+  const context=canvas.getContext('2d');if(!context)throw new Error('snapshot canvas unavailable');context.drawImage(video,0,0,canvas.width,canvas.height);
+  const blob=await new Promise((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(new Error('snapshot encoding failed')),'image/png'));
+  if(liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role||liveWorkspace.generations[tileIndex]!==generation||liveSessions.get(tileIndex)!==session)throw new Error('snapshot source changed before completion');
+  const capturedAt=new Date(),url=URL.createObjectURL(blob),link=document.createElement('a');
+  try{link.href=url;link.download=snapshotFilename(cameraId,role,capturedAt);link.rel='noopener';link.click()}finally{URL.revokeObjectURL(url)}
+  setTileState(tileIndex,'LIVE','snapshot saved · '+role.toUpperCase());
+ }catch(e){if(liveWorkspace.assignments[tileIndex]===cameraId&&liveWorkspace.roles[tileIndex]===role)setTileState(tileIndex,'FAILED',String(e.message||'snapshot failed'))}
+ finally{snapshotBusy.delete(tileIndex);if(liveWorkspace.assignments[tileIndex]===cameraId&&liveWorkspace.roles[tileIndex]===role&&liveWorkspace.generations[tileIndex]===generation)renderLiveGrid()}
+}
+function defaultRole(camera){const roles=camera?.available_live_roles||['main'];return roles.includes('sub')?'sub':'main'}
+function roleOptions(camera,selected){return (camera?.available_live_roles||['main']).map(role=>`<option value="${esc(role)}" ${selected===role?'selected':''}>${esc(role.toUpperCase())}</option>`).join('')}
+function cameraOptions(tileIndex){
+ const assigned=new Set(liveWorkspace.assignments.filter((x,i)=>x&&i!==tileIndex));
+ return '<option value="">Empty</option>'+cameraCache.filter(c=>!assigned.has(c.id)).map(c=>`<option value="${esc(c.id)}" ${liveWorkspace.assignments[tileIndex]===c.id?'selected':''}>${esc(c.name)} · ${esc(c.site_id)}</option>`).join('');
+}
+function renderLiveGrid(){
+ const root=document.getElementById('content'),cols=Math.sqrt(liveWorkspace.tileCount);
+ root.innerHTML='<div class="grid cols-'+cols+'">'+Array.from({length:liveWorkspace.tileCount},(_,i)=>{
+  const id=liveWorkspace.assignments[i],c=cameraCache.find(x=>x.id===id),h=c?(healthMap[c.id]||{state:'unknown'}):{state:'unknown'};
+  return `<section class="card live-tile ${liveWorkspace.activeTile===i?'active':''}" id="tile-${i}" onclick="activateTile(${i})">
+   <video class="tile-video" id="tile-video-${i}" autoplay muted playsinline></video>
+   <div class="meta"><select class="camera-picker" aria-label="Camera for tile ${i+1}" onchange="assignCamera(${i},this.value)">${cameraOptions(i)}</select><span class="badge ${esc(h.state)}">${c?esc(h.state):'empty'}</span></div>
+   <div class="tile-state muted" id="tile-state-${i}">${c?'STOPPED':'EMPTY'}</div>
+   <div class="actions">${c&&liveWorkspace.activeTile===i?`<label>Stream <select aria-label="Stream role for active tile" onchange="event.stopPropagation();switchRole(${i},this.value)">${roleOptions(c,liveWorkspace.roles[i])}</select></label><button id="tile-snapshot-${i}" onclick="event.stopPropagation();snapshotTile(${i})" ${snapshotBusy.has(i)?'disabled':''}>Snapshot ${esc((liveWorkspace.roles[i]||'').toUpperCase())}</button><button id="tile-playback-${i}" onclick="event.stopPropagation();openPlaybackForTile(${i})">Playback</button>`:''}<button onclick="event.stopPropagation();removeCamera(${i})" ${c?'':'disabled'}>Stop / remove</button><button id="tile-retry-${i}" hidden onclick="event.stopPropagation();retryTile(${i})">Retry</button></div>
+  </section>`}).join('')+'</div>'
+ liveSessions.forEach((session,i)=>{const video=document.getElementById('tile-video-'+i);if(video&&session.stream)video.srcObject=session.stream;setTileState(i,session.state||'LIVE')});;
+}
+function activateTile(i){liveWorkspace.activeTile=i;renderLiveGrid();renderManualState();refreshRecordingControls();syncPlaybackToActiveCamera()}
+function activeManualForCamera(cameraId){return manualSessions.find(s=>s.camera_id===cameraId&&s.state==='ACTIVE')}
+function renderManualState(){
+ const cameraId=liveWorkspace.assignments[liveWorkspace.activeTile],session=cameraId?activeManualForCamera(cameraId):null;
+ document.getElementById('manualStart').disabled=!cameraId||!!session||!(activeRecordingPolicy&&activeRecordingPolicy.enabled&&activeRecordingPolicy.mode==='continuous');
+ document.getElementById('manualStop').disabled=!session;
+ const all=manualSessions.filter(s=>s.state==='ACTIVE'),last=recentManualSessions.find(s=>s.state==='STOPPED'&&s.camera_id===cameraId&&s.download_ready);
+ document.getElementById('manualDownload').disabled=!last;
+ document.getElementById('manualStatus').textContent=session?`Recording MAIN interval for ${cameraId} since ${new Date(session.started_at).toLocaleString()}`:(all.length?`${all.length} manual recording session(s) active on other camera(s)`:'No active manual recording');
+}
+async function refreshManualRecordings(){try{[manualSessions,recentManualSessions]=await Promise.all([jsonFetch(`${API}/manual-recordings/active`),jsonFetch(`${API}/manual-recordings/recent?limit=20`)])}catch{manualSessions=[];recentManualSessions=[]}renderManualState()}
+function downloadLastManual(){const cameraId=liveWorkspace.assignments[liveWorkspace.activeTile],row=recentManualSessions.find(s=>s.state==='STOPPED'&&s.camera_id===cameraId&&s.download_ready);if(!row)return;const a=document.createElement('a');a.href=`${API}/manual-recordings/${encodeURIComponent(row.id)}/export`;a.rel='noopener';a.click()}
+async function startManualRecording(){
+ const cameraId=liveWorkspace.assignments[liveWorkspace.activeTile];if(!cameraId)return;
+ try{const row=await jsonFetch(`${API}/manual-recordings/cameras/${encodeURIComponent(cameraId)}/start`,{method:'POST'});manualSessions=manualSessions.filter(x=>x.id!==row.id);manualSessions.push(row);renderManualState()}catch(e){document.getElementById('manualStatus').textContent=String(e.message||'manual recording start failed')}
+}
+async function stopManualRecording(){
+ const cameraId=liveWorkspace.assignments[liveWorkspace.activeTile],row=activeManualForCamera(cameraId);if(!row)return;const id=row.id;
+ try{const stopped=await jsonFetch(`${API}/manual-recordings/${encodeURIComponent(id)}/stop`,{method:'POST'});manualSessions=manualSessions.filter(x=>x.id!==id);recentManualSessions=[stopped,...recentManualSessions.filter(x=>x.id!==id)].slice(0,20);renderManualState();const a=document.createElement('a');a.href=`${API}/manual-recordings/${encodeURIComponent(stopped.id)}/export`;a.rel='noopener';a.click()}catch(e){document.getElementById('manualStatus').textContent=String(e.message||'manual recording stop failed')}
+}
+async function assignCamera(tileIndex,cameraId){
+ if(cameraId&&liveWorkspace.assignments.some((id,i)=>i!==tileIndex&&id===cameraId)){renderLiveGrid();return}
+ await cleanupTile(tileIndex);liveWorkspace.assignments[tileIndex]=cameraId||null;const c=cameraCache.find(x=>x.id===cameraId);liveWorkspace.roles[tileIndex]=c?defaultRole(c):null;renderLiveGrid();if(tileIndex===liveWorkspace.activeTile)refreshRecordingControls();if(cameraId)startTile(tileIndex,cameraId,liveWorkspace.roles[tileIndex]);
+}
+async function removeCamera(i){await assignCamera(i,'')}
+async function switchRole(i,role){const c=cameraCache.find(x=>x.id===liveWorkspace.assignments[i]);if(!c||!(c.available_live_roles||[]).includes(role))return;liveWorkspace.roles[i]=role;setTileState(i,'LOADING','switching to '+role.toUpperCase());await startTile(i,c.id,role);renderLiveGrid()}
+function retryTile(i){const id=liveWorkspace.assignments[i],role=liveWorkspace.roles[i];if(id&&role)startTile(i,id,role)}
+async function setLayout(count){
+ if(![1,4,9,16].includes(count))return;
+ if(count<liveWorkspace.tileCount){await Promise.allSettled(Array.from({length:liveWorkspace.tileCount-count},(_,n)=>cleanupTile(count+n)));liveWorkspace.assignments=liveWorkspace.assignments.slice(0,count);liveWorkspace.roles=liveWorkspace.roles.slice(0,count);liveWorkspace.generations=liveWorkspace.generations.slice(0,count)}
+ else{while(liveWorkspace.assignments.length<count)liveWorkspace.assignments.push(null);while(liveWorkspace.roles.length<count)liveWorkspace.roles.push(null);while(liveWorkspace.generations.length<count)liveWorkspace.generations.push(0)}
+ liveWorkspace.tileCount=count;liveWorkspace.activeTile=Math.min(liveWorkspace.activeTile,count-1);renderLiveGrid();refreshRecordingControls();
+ liveWorkspace.assignments.forEach((id,i)=>{if(id&&!liveSessions.has(i))startTile(i,id,liveWorkspace.roles[i])});
+}
+async function refreshCameras(){
+ try{
+  cameraCache=await jsonFetch(`${API}/cameras`);
+  const authorizedIds=new Set(cameraCache.map(c=>c.id));
+  for(let i=0;i<liveWorkspace.assignments.length;i++){if(liveWorkspace.assignments[i]&&!authorizedIds.has(liveWorkspace.assignments[i])){await cleanupTile(i);liveWorkspace.assignments[i]=null;liveWorkspace.roles[i]=null}}
+  renderLiveGrid();refreshRecordingControls();
+  if(playbackState.cameraId&&!authorizedIds.has(playbackState.cameraId))closePlayback(false);
+  liveWorkspace.assignments.forEach((id,i)=>{if(id&&!liveSessions.has(i))startTile(i,id,liveWorkspace.roles[i])});
+ }catch{document.getElementById('content').innerHTML='<div class="empty">Control API unavailable or authorization required.</div>'}
+}
+async function refreshEvents(cameraId=''){
+ const root=document.getElementById('eventList');
+ try{
+  const suffix=cameraId?`&camera_id=${encodeURIComponent(cameraId)}`:'';
+  const rows=await jsonFetch(`${API}/events?limit=50${suffix}`);
+  if(!rows.length){root.innerHTML='<div class="empty">No events in the selected window.</div>';return}
+  root.innerHTML=rows.map(e=>`<div class="event">
+   <div class="muted">${new Date(e.timestamp).toLocaleString()}</div>
+   <div class="type">${esc(e.event_type)}</div>
+   <div class="message">${esc(e.object_type||'')} ${e.zone_id?'· zone '+esc(e.zone_id):''}</div>
+   <div class="sev-${esc(e.severity)}">${esc(e.severity)}</div>
+  </div>`).join('');
+ }catch(e){root.innerHTML='<div class="empty">Event search unavailable: '+esc(e.message)+'</div>'}
+}
+function showCameraEvents(id){refreshEvents(id);document.getElementById('events').scrollIntoView({behavior:'smooth'})}
+async function refreshAlarms(){
+ const root=document.getElementById('alarmList');
+ try{
+  const rows=await jsonFetch(`${API}/alarms?state=open&limit=50`);
+  if(!rows.length){root.innerHTML='<div class="empty">No open alarms.</div>';return}
+  root.innerHTML=rows.map(a=>`<div class="event">
+    <div class="muted">${new Date(a.opened_at).toLocaleString()}</div>
+    <div class="type">${esc(a.event_type)}</div>
+    <div class="message">${esc(a.message)}</div>
+    <div><span class="sev-${esc(a.severity)}">${esc(a.severity)}</span> <button onclick="ackAlarm('${a.id}')">Ack</button></div>
+   </div>`).join('');
+ }catch(e){root.innerHTML='<div class="empty">Alarm service unavailable: '+esc(e.message)+'</div>'}
+}
+async function ackAlarm(id){
+ try{await jsonFetch(`${API}/alarms/${id}/acknowledge`,{method:'POST'});await refreshAlarms()}
+ catch(e){alert('Alarm acknowledgement failed: '+e.message)}
+}
+async function showDiagnostics(id){
+ const panel=document.getElementById('diagnostics'),body=document.getElementById('diagBody');
+ const c=cameraCache.find(x=>x.id===id);document.getElementById('diagTitle').textContent='Diagnostics · '+(c?c.name:id);
+ panel.style.display='block';body.textContent='Loading…';
+ try{
+  const d=await jsonFetch(`${API}/diagnostics/cameras/${id}`);
+  body.innerHTML=`<div>
+   path: <b>${esc(d.path_state||'unknown')}</b> ·
+   inbound: <b>${d.inbound_mbps==null?'sample again':d.inbound_mbps.toFixed(2)+' Mbps'}</b> ·
+   lost RTP: <b>${d.rtp_packets_lost??0}</b> ·
+   RTP errors: <b>${d.rtp_packets_in_error??0}</b> ·
+   jitter: <b>${d.rtp_jitter??'n/a'}</b>
+  </div>`;
+ }catch(e){body.textContent='Diagnostics unavailable: '+e.message}
+ panel.scrollIntoView({behavior:'smooth'});
+}
+
+async function refreshAIStatus(){
+ const root=document.getElementById('aiSummary');
+ try{
+  const s=await jsonFetch(`${API}/ai/status`);
+  root.innerHTML=`<span class="badge">AI enabled ${s.enabled_policies}</span><span class="badge">inference ${s.inference_policies}</span>`;
+ }catch{root.innerHTML='<span class="muted">AI orchestration unavailable.</span>'}
+}
+async function openAI(id){
+ aiCameraId=id;aiPolicyCache=null;
+ const panel=document.getElementById('aiPanel'),c=cameraCache.find(x=>x.id===id);
+ document.getElementById('aiTitle').textContent='Camera AI · '+(c?c.name:id);
+ panel.style.display='block';document.getElementById('aiMessage').textContent='Loading…';
+ try{
+  const models=await jsonFetch(`${API}/ai/models?enabled=true&limit=500`);
+  document.getElementById('aiModel').innerHTML='<option value="">None</option>'+models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${esc(m.version)} · ${esc(m.provider_type)}</option>`).join('');
+  try{aiPolicyCache=await jsonFetch(`${API}/ai/cameras/${id}/policy`)}catch{aiPolicyCache={enabled:false,source_mode:'inference',model_id:null,stream_role:'sub',sample_fps:1,min_confidence:.5,analytics:['human','vehicle'],zones:[],provider_config:{}}}
+  const p=aiPolicyCache;
+  document.getElementById('aiEnabled').checked=!!p.enabled;
+  document.getElementById('aiSource').value=p.source_mode||'camera_metadata';
+  document.getElementById('aiModel').value=p.model_id||'';
+  document.getElementById('aiStream').value=p.stream_role||'sub';
+  document.getElementById('aiFps').value=p.sample_fps??1;
+  document.getElementById('aiConfidence').value=p.min_confidence??.5;
+  document.getElementById('aiAnalytics').value=(p.analytics||[]).join(',');
+  document.getElementById('aiMessage').textContent='Zones/lines remain preserved when saving from this compact panel; use the API for geometry editing.';
+ }catch(e){document.getElementById('aiMessage').textContent='AI policy unavailable: '+e.message}
+ panel.scrollIntoView({behavior:'smooth'});
+}
+function closeAI(){document.getElementById('aiPanel').style.display='none';aiCameraId=null}
+async function saveAI(){
+ if(!aiCameraId)return;
+ const analytics=document.getElementById('aiAnalytics').value.split(',').map(x=>x.trim()).filter(Boolean);
+ const payload={
+  enabled:document.getElementById('aiEnabled').checked,
+  source_mode:document.getElementById('aiSource').value,
+  model_id:document.getElementById('aiModel').value||null,
+  stream_role:document.getElementById('aiStream').value,
+  sample_fps:Number(document.getElementById('aiFps').value),
+  min_confidence:Number(document.getElementById('aiConfidence').value),
+  analytics,
+  zones:(aiPolicyCache&&aiPolicyCache.zones)||[],
+  provider_config:(aiPolicyCache&&aiPolicyCache.provider_config)||{}
+ };
+ try{
+  aiPolicyCache=await jsonFetch(`${API}/ai/cameras/${aiCameraId}/policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  document.getElementById('aiMessage').textContent='AI policy saved.';
+  await refreshAIStatus();
+ }catch(e){document.getElementById('aiMessage').textContent='AI policy save failed: '+e.message}
+}
+function localDateValue(date){
+ const y=date.getFullYear(),m=String(date.getMonth()+1).padStart(2,'0'),d=String(date.getDate()).padStart(2,'0');
+ return `${y}-${m}-${d}`;
+}
+function localTimeValue(date){
+ return [date.getHours(),date.getMinutes(),date.getSeconds()].map(x=>String(x).padStart(2,'0')).join(':');
+}
+function localDateTimeInputValue(date){
+ return localDateValue(date)+'T'+localTimeValue(date)+'.'+String(date.getMilliseconds()).padStart(3,'0');
+}
+function localDateTime(dateValue,timeValue){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(dateValue||'')||!/^\d{2}:\d{2}(?::\d{2})?$/.test(timeValue||''))return null;
+ const value=new Date(dateValue+'T'+timeValue);
+ return Number.isNaN(value.getTime())?null:value;
+}
+function localDayWindow(dateValue){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(dateValue||''))return null;
+ const [year,month,day]=dateValue.split('-').map(Number),start=new Date(year,month-1,day,0,0,0,0),end=new Date(year,month-1,day+1,0,0,0,0);
+ return Number.isNaN(start.getTime())||Number.isNaN(end.getTime())?null:{start,end};
+}
+function playbackError(error){return String(error&&error.message||'playback unavailable').slice(0,240)}
+function resetPlaybackPlayer(){
+ const player=document.getElementById('player');player.pause();player.removeAttribute('src');player.load();
+ document.getElementById('pbPause').disabled=true;
+}
+function syncPlaybackToActiveCamera(){
+ if(playbackState.cameraId&&activeCameraId()!==playbackState.cameraId)closePlayback(false);
+}
+function openPlaybackForTile(tileIndex){
+ if(tileIndex!==liveWorkspace.activeTile)return;
+ const cameraId=liveWorkspace.assignments[tileIndex];if(cameraId)openPlayback(cameraId);
+}
+async function openPlayback(id){
+ if(id!==activeCameraId())return;
+ const camera=cameraCache.find(x=>x.id===id);if(!camera)return;
+ closePlayback(false);
+ playbackState.cameraId=id;
+ const now=new Date();
+ document.getElementById('pbDate').value=localDateValue(now);
+ document.getElementById('pbTime').value=localTimeValue(now);
+ document.getElementById('pbtitle').textContent='Playback · '+camera.name;
+ document.getElementById('playback').classList.add('visible');
+ await loadPlaybackTimeline();
+ if(playbackState.cameraId===id)document.getElementById('playback').scrollIntoView({behavior:'smooth'});
+}
+async function loadPlaybackTimeline(){
+ const cameraId=playbackState.cameraId;
+ if(!cameraId||cameraId!==activeCameraId())return;
+ const dateValue=document.getElementById('pbDate').value,timeValue=document.getElementById('pbTime').value;
+ const window=localDayWindow(dateValue),requested=localDateTime(dateValue,timeValue);
+ if(!window||!requested){document.getElementById('pbmsg').textContent='Choose a valid local date and time.';return}
+ const generation=++playbackState.generation;
+ playbackState.spans=[];playbackState.selectedSpan=null;playbackSelection=null;resetPlaybackPlayer();
+ document.getElementById('pbPlay').disabled=true;document.getElementById('pbexport').disabled=true;
+ document.getElementById('pbClipStart').disabled=true;document.getElementById('pbClipEnd').disabled=true;
+ document.getElementById('timeline').innerHTML='';
+ document.getElementById('pbmsg').textContent='Loading authorized recording timeline…';
+ document.getElementById('pbwindow').textContent=window.start.toLocaleString()+' → '+window.end.toLocaleString();
+ try{
+  const spans=await jsonFetch(`${API}/recordings/cameras/${encodeURIComponent(cameraId)}/timeline?start=${encodeURIComponent(window.start.toISOString())}&end=${encodeURIComponent(window.end.toISOString())}`);
+  if(generation!==playbackState.generation||cameraId!==playbackState.cameraId||cameraId!==activeCameraId())return;
+  playbackState.windowStart=window.start;playbackState.windowEnd=window.end;
+  playbackState.spans=(Array.isArray(spans)?spans:[]).filter(s=>{
+   const a=new Date(s.start),b=new Date(s.end);
+   return !Number.isNaN(a.getTime())&&!Number.isNaN(b.getTime())&&b>a;
+  }).sort((a,b)=>new Date(a.start)-new Date(b.start));
+  renderTimeline(cameraId,window.start,window.end,playbackState.spans);
+  const containing=playbackState.spans.find(s=>new Date(s.start)<=requested&&requested<new Date(s.end));
+  if(containing)selectPlaybackSpan(cameraId,containing,requested);
+  else if(playbackState.spans.length)document.getElementById('pbmsg').textContent='No recording at the selected time. Choose one of the available spans.';
+ }catch(error){
+  if(generation!==playbackState.generation||cameraId!==playbackState.cameraId)return;
+  document.getElementById('timeline').innerHTML='';
+  document.getElementById('pbmsg').textContent='Playback timeline unavailable: '+playbackError(error);
+ }
+}
+function renderTimeline(id,start,end,spans){
+ const root=document.getElementById('timeline');root.innerHTML='';const windowMs=end-start;
+ root.onclick=event=>{
+  if(event.target!==root)return;
+  const rect=root.getBoundingClientRect(),ratio=Math.min(1,Math.max(0,(event.clientX-rect.left)/Math.max(1,rect.width))),requested=new Date(start.getTime()+ratio*windowMs);
+  document.getElementById('pbSelected').textContent='Selected '+requested.toLocaleString()+' · no recording in this gap.';
+  document.getElementById('pbmsg').textContent='No recording at this timeline position.';
+ };
+ spans.forEach(s=>{
+  const a=new Date(s.start),b=new Date(s.end),left=Math.max(0,(a-start)/windowMs*100),right=Math.min(100,(b-start)/windowMs*100),el=document.createElement('div');
+  el.className='span';el.dataset.start=s.start;el.style.left=left+'%';el.style.width=Math.max(.2,right-left)+'%';el.title=a.toLocaleString()+' → '+b.toLocaleString();
+  el.onclick=event=>{
+   event.stopPropagation();
+   const rect=el.getBoundingClientRect(),ratio=Math.min(1,Math.max(0,(event.clientX-rect.left)/Math.max(1,rect.width))),requestedMs=Math.min(b.getTime()-1,a.getTime()+ratio*(b-a));
+   selectPlaybackSpan(id,s,new Date(requestedMs));
+  };
+  root.appendChild(el);
+ });
+ document.getElementById('pbmsg').textContent=spans.length?spans.length+' recorded span(s) available on this date.':'No recording available on this date.';
+}
+function selectPlaybackSpan(id,s,requestedTime){
+ if(id!==playbackState.cameraId||id!==activeCameraId())return;
+ const start=new Date(s.start),end=new Date(s.end),requested=requestedTime instanceof Date?requestedTime:start;
+ if(Number.isNaN(start.getTime())||Number.isNaN(end.getTime())||end<=start)return;
+ const selectedMs=Math.min(end.getTime()-1,Math.max(start.getTime(),requested.getTime())),selected=new Date(selectedMs);
+ const duration=Math.min(PLAYBACK_MAX_SECONDS,Math.max(.001,(end-selected)/1000));
+ playbackState.selectedSpan=s;
+ playbackSelection={cameraId:id,start:s.start,duration:s.duration};
+ playbackSelection.spanStart=start.toISOString();playbackSelection.spanEnd=end.toISOString();
+ playbackSelection.start=selected.toISOString();playbackSelection.duration=duration;
+ document.querySelectorAll('#timeline .span').forEach(el=>el.classList.toggle('selected',el.dataset.start===s.start));
+ document.getElementById('pbSelected').textContent='Selected '+selected.toLocaleString();
+ document.getElementById('pbPlay').disabled=false;
+ const clipEnd=new Date(Math.min(end.getTime(),selected.getTime()+DEFAULT_CLIP_SECONDS*1000));
+ document.getElementById('pbClipStart').value=localDateTimeInputValue(selected);
+ document.getElementById('pbClipEnd').value=localDateTimeInputValue(clipEnd);
+ document.getElementById('pbClipStart').disabled=false;document.getElementById('pbClipEnd').disabled=false;
+ validateClipSelection();
+ document.getElementById('pbmsg').textContent='Recorded span selected. Play, seek with the player controls, or choose a clip interval inside this span.';
+}
+function playSelectedTime(){
+ const selection=playbackSelection;
+ if(!selection||selection.cameraId!==playbackState.cameraId||selection.cameraId!==activeCameraId())return;
+ const generation=++playbackState.playGeneration,player=document.getElementById('player');
+ resetPlaybackPlayer();
+ player.src=`${API}/recordings/cameras/${encodeURIComponent(selection.cameraId)}/play?start=${encodeURIComponent(selection.start)}&duration=${encodeURIComponent(selection.duration)}&format=mp4`;
+ player.load();document.getElementById('pbPause').disabled=false;
+ player.play().catch(error=>{if(generation===playbackState.playGeneration)document.getElementById('pbmsg').textContent='Playback could not start: '+playbackError(error)});
+}
+function pausePlayback(){
+ const player=document.getElementById('player');player.pause();updatePlaybackClock();
+}
+function updatePlaybackClock(){
+ if(!playbackSelection)return;
+ const player=document.getElementById('player'),base=new Date(playbackSelection.start);
+ if(Number.isNaN(base.getTime()))return;
+ document.getElementById('pbSelected').textContent='Playback '+new Date(base.getTime()+player.currentTime*1000).toLocaleString();
+}
+function validateClipSelection(){
+ const selection=playbackSelection,startValue=document.getElementById('pbClipStart').value,endValue=document.getElementById('pbClipEnd').value;
+ const button=document.getElementById('pbexport');
+ if(!selection||!startValue||!endValue){button.disabled=true;return false}
+ const start=new Date(startValue),end=new Date(endValue),spanStart=new Date(selection.spanStart),spanEnd=new Date(selection.spanEnd);
+ const valid=!Number.isNaN(start.getTime())&&!Number.isNaN(end.getTime())&&start>=spanStart&&end<=spanEnd&&end>start&&(end-start)/1000<=PLAYBACK_MAX_SECONDS;
+ button.disabled=!valid;
+ if(!valid)document.getElementById('pbmsg').textContent='Clip start/end must stay inside one available recording span and within the bounded playback window.';
+ return valid;
+}
+function downloadSelectedClip(){
+ if(!validateClipSelection()||!playbackSelection)return;
+ const p=playbackSelection,start=new Date(document.getElementById('pbClipStart').value),end=new Date(document.getElementById('pbClipEnd').value),duration=(end-start)/1000;
+ const link=document.createElement('a');
+ link.href=`${API}/recordings/cameras/${encodeURIComponent(p.cameraId)}/export?start=${encodeURIComponent(start.toISOString())}&duration=${encodeURIComponent(duration)}`;
+ link.rel='noopener';link.click();
+}
+function closePlayback(scrollToLive=false){
+ playbackState.generation++;playbackState.playGeneration++;playbackState.cameraId=null;playbackState.spans=[];playbackState.selectedSpan=null;playbackState.windowStart=null;playbackState.windowEnd=null;playbackSelection=null;
+ resetPlaybackPlayer();
+ document.getElementById('pbPlay').disabled=true;document.getElementById('pbexport').disabled=true;
+ document.getElementById('pbClipStart').disabled=true;document.getElementById('pbClipEnd').disabled=true;
+ document.getElementById('timeline').innerHTML='';document.getElementById('playback').classList.remove('visible');
+ if(scrollToLive){const tile=document.getElementById('tile-'+liveWorkspace.activeTile);if(tile)tile.scrollIntoView({behavior:'smooth'})}
+}
+function returnToLive(){closePlayback(true)}
+function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':'&quot;'}[c]))}
+async function refreshAll(){await refreshManualRecordings();await refreshHealth();await Promise.all([refreshCameras(),refreshEvents(),refreshAlarms(),refreshAIStatus()])}
+window.addEventListener('pagehide',()=>{closePlayback(false)});
+window.addEventListener('pagehide',()=>{stopLiveSessions()});
+initializeSession();setInterval(()=>{if(authenticated)refreshHealth()},10000);
+</script>
+</body>
+</html>

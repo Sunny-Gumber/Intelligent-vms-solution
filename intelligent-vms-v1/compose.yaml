@@ -1,0 +1,255 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: "${VMS_RESTART_POLICY:-no}"
+    environment:
+      POSTGRES_USER: vms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vms}
+      POSTGRES_DB: vms
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vms -d vms"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.3
+    restart: "${VMS_RESTART_POLICY:-no}"
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8-alpine
+    restart: "${VMS_RESTART_POLICY:-no}"
+    environment:
+      CLICKHOUSE_DB: vms
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ports:
+      - "${VMS_ADMIN_BIND_ADDRESS:-127.0.0.1}:8123:8123"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  mediamtx:
+    build: ./infra/mediamtx
+    restart: "${VMS_RESTART_POLICY:-no}"
+    environment:
+      RECORDING_HOOK_TOKEN: ${RECORDING_HOOK_TOKEN}
+      TZ: UTC
+    volumes:
+      - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+      - ${VMS_RECORDING_VOLUME:-recordings}:/recordings
+    ports:
+      - "${VMS_BIND_ADDRESS:-0.0.0.0}:8554:8554"
+      - "${VMS_BIND_ADDRESS:-0.0.0.0}:8888:8888"
+      - "${VMS_BIND_ADDRESS:-0.0.0.0}:8889:8889"
+      - "${VMS_WEBRTC_UDP_BIND_ADDRESS:-0.0.0.0}:8189:8189/udp"
+      - "${VMS_ADMIN_BIND_ADDRESS:-127.0.0.1}:9998:9998"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9998/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  control-api:
+    build:
+      context: .
+      dockerfile: services/control-api/Dockerfile
+    restart: "${VMS_RESTART_POLICY:-no}"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    ports:
+      - "${VMS_ADMIN_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/system/healthz/ready', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  onvif-event-worker:
+    build:
+      context: .
+      dockerfile: services/onvif-event-worker/Dockerfile
+    restart: "${VMS_RESTART_POLICY:-no}"
+    env_file:
+      - .env
+    environment:
+      ONVIF_EVENT_MAX_CAMERAS: 200
+      ONVIF_EVENT_REFRESH_SECONDS: 30
+      ONVIF_EVENT_MESSAGE_LIMIT: 32
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      control-api:
+        condition: service_healthy
+
+  alarm-worker:
+    build:
+      context: .
+      dockerfile: services/alarm-worker/Dockerfile
+    restart: "${VMS_RESTART_POLICY:-no}"
+    env_file:
+      - .env
+    environment:
+      ALARM_RULE_CACHE_SECONDS: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      control-api:
+        condition: service_healthy
+
+  placement-controller:
+    build:
+      context: .
+      dockerfile: services/placement-controller/Dockerfile
+    restart: "${VMS_RESTART_POLICY:-no}"
+    env_file:
+      - .env
+    environment:
+      PLACEMENT_INTERVAL_SECONDS: ${PLACEMENT_INTERVAL_SECONDS:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      control-api:
+        condition: service_healthy
+
+  regional-spool:
+    profiles: ["regional-node-agent"]
+    build:
+      context: .
+      dockerfile: services/regional-spool/Dockerfile
+    restart: "${VMS_RESTART_POLICY:-no}"
+    env_file:
+      - .env
+    environment:
+      CONTROL_API_URL: ${CONTROL_API_URL:-http://control-api:8000}
+      NODE_ID: ${NODE_ID:-media-local-01}
+      NODE_AGENT_TOKEN: ${NODE_AGENT_TOKEN:-}
+      RECORDING_HOOK_TOKEN: ${RECORDING_HOOK_TOKEN:-}
+      REGIONAL_SPOOL_TOKEN: ${REGIONAL_SPOOL_TOKEN:-}
+      SPOOL_DB_PATH: ${SPOOL_DB_PATH:-/var/lib/vms-spool/spool.db}
+      SPOOL_MAX_ITEMS: ${SPOOL_MAX_ITEMS:-100000}
+      SPOOL_MAX_DEAD_LETTERS: ${SPOOL_MAX_DEAD_LETTERS:-10000}
+      SPOOL_MAX_BODY_BYTES: ${SPOOL_MAX_BODY_BYTES:-262144}
+      SPOOL_BATCH_SIZE: ${SPOOL_BATCH_SIZE:-100}
+      SPOOL_FLUSH_INTERVAL_SECONDS: ${SPOOL_FLUSH_INTERVAL_SECONDS:-1}
+      SPOOL_BACKOFF_MAX_SECONDS: ${SPOOL_BACKOFF_MAX_SECONDS:-60}
+      SPOOL_REQUEST_TIMEOUT_SECONDS: ${SPOOL_REQUEST_TIMEOUT_SECONDS:-5}
+    volumes:
+      - regional_spool_data:/var/lib/vms-spool
+    depends_on:
+      control-api:
+        condition: service_healthy
+
+  node-agent:
+    profiles: ["regional-node-agent"]
+    build:
+      context: .
+      dockerfile: services/node-agent/Dockerfile
+    restart: "${VMS_RESTART_POLICY:-no}"
+    env_file:
+      - .env
+    environment:
+      NODE_ID: ${NODE_ID:-media-local-01}
+      REGION_ID: ${REGION_ID:-default-region}
+      NODE_ROLES: ${NODE_ROLES:-media}
+      NODE_NAME: ${NODE_NAME:-media-local-01}
+      CONTROL_API_URL: ${CONTROL_API_URL:-http://control-api:8000}
+      NODE_AGENT_TOKEN: ${NODE_AGENT_TOKEN:-}
+      HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS:-10}
+      HEARTBEAT_TIMEOUT_SECONDS: ${HEARTBEAT_TIMEOUT_SECONDS:-3}
+      HEARTBEAT_BACKOFF_INITIAL_SECONDS: ${HEARTBEAT_BACKOFF_INITIAL_SECONDS:-1}
+      HEARTBEAT_BACKOFF_MAX_SECONDS: ${HEARTBEAT_BACKOFF_MAX_SECONDS:-60}
+      HEARTBEAT_BACKOFF_JITTER_RATIO: ${HEARTBEAT_BACKOFF_JITTER_RATIO:-0.2}
+      RECORDING_MOUNT_PATH: ${RECORDING_MOUNT_PATH:-/recordings}
+      NETWORK_INTERFACE: ${NETWORK_INTERFACE:-}
+      MEDIAMTX_API_URL: ${MEDIAMTX_API_URL:-http://mediamtx:9997}
+      HEARTBEAT_SPOOL_URL: ${HEARTBEAT_SPOOL_URL:-}
+      NODE_FENCING_ENABLED: ${NODE_FENCING_ENABLED:-false}
+      FENCE_POLL_INTERVAL_SECONDS: ${FENCE_POLL_INTERVAL_SECONDS:-5}
+      FENCE_EXPIRY_GRACE_SECONDS: ${FENCE_EXPIRY_GRACE_SECONDS:-2}
+      FENCE_CLOCK_SKEW_WARN_SECONDS: ${FENCE_CLOCK_SKEW_WARN_SECONDS:-5}
+      FENCE_STATE_PATH: ${FENCE_STATE_PATH:-/var/lib/vms-node/fence-state.json}
+    volumes:
+      - node_fence_state:/var/lib/vms-node
+    depends_on:
+      control-api:
+        condition: service_healthy
+      mediamtx:
+        condition: service_healthy
+
+  event-writer:
+    build: ./services/event-writer
+    restart: "${VMS_RESTART_POLICY:-no}"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      KAFKA_TOPIC_EVENTS: vms.events.v1
+      KAFKA_TOPIC_RECORDINGS: vms.recordings.v1
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: vms
+      RECORDING_METADATA_TTL_DAYS: 400
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    restart: "${VMS_RESTART_POLICY:-no}"
+    environment:
+      CONTROL_API_UPSTREAM: http://control-api:8000
+    ports:
+      - "${VMS_BIND_ADDRESS:-0.0.0.0}:8080:8080"
+    depends_on:
+      control-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  recordings:
+  node_fence_state:
+  regional_spool_data:

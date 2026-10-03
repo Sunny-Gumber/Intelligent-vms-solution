@@ -1,0 +1,37 @@
+logLevel: info
+authMethod: jwt
+authJWTJWKS: http://control-api:8000/internal/v1/media/jwks
+authJWTIssuer: intelligent-vms-control
+authJWTAudience: intelligent-vms-live
+authJWTExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+  # Playback is consumed only through the tenant-authorized control API and is
+  # not browser-published by the production topology.
+  - action: playback
+api: yes
+apiAddress: :9997
+metrics: yes
+metricsAddress: :9998
+playback: yes
+playbackAddress: :9996
+hls: yes
+hlsAddress: :8888
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+rtsp: yes
+rtspAddress: :8554
+
+# The control API is NOT published by docker-compose to the host.
+# It is reachable only on the internal compose network in this dev topology.
+
+pathDefaults:
+  # Keep static defaults valid for MediaMTX v1.21.1. Camera/live and
+  # recording paths set source/sourceOnDemand explicitly through the API.
+  rtspTransport: tcp
+  record: false
+
+paths:
+  all_others:

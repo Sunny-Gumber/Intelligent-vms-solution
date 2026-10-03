@@ -1,0 +1,257 @@
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+existingSecret: intelligent-vms-secrets
+
+commonConfig:
+  AUTO_CREATE_SCHEMA: "false"
+  AUTH_DISABLED: "false"
+  AUTH_REQUIRE_OIDC: "true"
+  AUTH_JWKS_URL: ""
+  AUTH_ISSUER: ""
+  AUTH_AUDIENCE: intelligent-vms
+  CORS_ALLOWED_ORIGINS: ""
+  CORS_ALLOWED_METHODS: GET,POST,PUT,PATCH,DELETE,OPTIONS
+  CORS_ALLOWED_HEADERS: Authorization,Content-Type,Range
+  KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+  KAFKA_TOPIC_EVENTS: vms.events.v1
+  KAFKA_TOPIC_RECORDINGS: vms.recordings.v1
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_DATABASE: vms
+  MEDIAMTX_API_URL: http://mediamtx:9997
+  MEDIAMTX_PLAYBACK_INTERNAL_URL: http://mediamtx:9996
+  MEDIAMTX_METRICS_URL: http://mediamtx:9998/metrics
+  PLACEMENT_EXECUTION_ENABLED: "false"
+  PLACEMENT_OFFLINE_AUTONOMY_SECONDS: "0"
+  NODE_FENCING_ENABLED: "false"
+  OBSERVABILITY_RECORDING_GAP_MIN_SECONDS: "120"
+  OBSERVABILITY_RECORDING_GAP_SEGMENT_MULTIPLIER: "2.0"
+
+serviceAccount:
+  create: true
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: false
+
+security:
+  requireIngressTls: true
+
+networkPolicy:
+  enabled: true
+  dns:
+    namespace: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  extraIngress: []
+  extraEgress: []
+
+externalSecrets:
+  central:
+    enabled: false
+    apiVersion: external-secrets.io/v1
+    refreshInterval: 1h
+    secretStoreRef:
+      name: ""
+      kind: ClusterSecretStore
+    data: []
+    dataFrom: []
+  regional:
+    enabled: false
+    apiVersion: external-secrets.io/v1
+    refreshInterval: 1h
+    secretStoreRef:
+      name: ""
+      kind: ClusterSecretStore
+    data: []
+    dataFrom: []
+
+controlApi:
+  replicas: 1
+  image:
+    repository: intelligent-vms-control-api
+    tag: REPLACE_WITH_IMMUTABLE_TAG
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  pdb:
+    enabled: false
+    minAvailable: 1
+
+workers:
+  placement-controller:
+    enabled: true
+    replicas: 1
+    strategy: RollingUpdate
+    image:
+      repository: intelligent-vms-placement-controller
+      tag: REPLACE_WITH_IMMUTABLE_TAG
+      pullPolicy: IfNotPresent
+    resources: {}
+    env: {}
+  event-writer:
+    enabled: true
+    replicas: 1
+    strategy: RollingUpdate
+    image:
+      repository: intelligent-vms-event-writer
+      tag: REPLACE_WITH_IMMUTABLE_TAG
+      pullPolicy: IfNotPresent
+    resources: {}
+    env: {}
+  alarm-worker:
+    enabled: true
+    replicas: 1
+    strategy: RollingUpdate
+    image:
+      repository: intelligent-vms-alarm-worker
+      tag: REPLACE_WITH_IMMUTABLE_TAG
+      pullPolicy: IfNotPresent
+    resources: {}
+    env: {}
+  onvif-event-worker:
+    enabled: true
+    replicas: 1
+    strategy: Recreate
+    image:
+      repository: intelligent-vms-onvif-event-worker
+      tag: REPLACE_WITH_IMMUTABLE_TAG
+      pullPolicy: IfNotPresent
+    resources: {}
+    env: {}
+
+web:
+  enabled: true
+  replicas: 1
+  image:
+    repository: intelligent-vms-web
+    tag: REPLACE_WITH_IMMUTABLE_TAG
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+prometheus:
+  scrape: true
+  path: /metrics
+  interval: 15s
+
+observability:
+  grafana:
+    enabled: true
+    datasourceUid: prometheus
+    labels:
+      grafana_dashboard: "1"
+  prometheusRule:
+    enabled: false
+    namespace: ""
+    labels: {}
+    defaultFor: 5m
+    recordingHealthUntrackedFor: 30m
+    thresholds:
+      cameraOfflineCount: 0
+      cameraHealthStaleCount: 0
+      recordingGapCandidates: 0
+      recordingHealthUntrackedCount: 0
+      outboxRetryCount: 100
+      outboxDeadCount: 0
+      outboxOldestPendingSeconds: 60
+      nodeStaleCount: 0
+      nodeSaturatedCount: 0
+      nodeCapacityUnmeasuredCount: 0
+      placementUnappliedCount: 0
+      http5xxRatio: 0.01
+      httpP95Seconds: 1.0
+    externalSignals:
+      kafka:
+        expr: ""
+        for: 5m
+        severity: warning
+        summary: Kafka delivery signal breached
+      postgres:
+        expr: ""
+        for: 5m
+        severity: critical
+        summary: PostgreSQL signal breached
+      clickhouse:
+        expr: ""
+        for: 5m
+        severity: warning
+        summary: ClickHouse signal breached
+      mediamtx:
+        expr: ""
+        for: 5m
+        severity: warning
+        summary: MediaMTX quality signal breached
+      ai:
+        expr: ""
+        for: 5m
+        severity: warning
+        summary: AI runtime signal breached
+      disk:
+        expr: ""
+        for: 10m
+        severity: critical
+        summary: Recording/storage disk signal breached
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+regional:
+  enabled: false
+  existingSecret: intelligent-vms-regional-secrets
+  nodeId: media-region-01
+  regionId: region-01
+  nodeRoles: media,recording
+  controlApiUrl: http://intelligent-vms-control-api:8000
+  mediaMTXApiUrl: http://mediamtx:9997
+  heartbeatSpoolUrl: http://127.0.0.1:8090/v1/heartbeat
+  nodeFencingEnabled: "true"
+  nodeAgent:
+    image:
+      repository: intelligent-vms-node-agent
+      tag: REPLACE_WITH_IMMUTABLE_TAG
+      pullPolicy: IfNotPresent
+    resources: {}
+  spool:
+    image:
+      repository: intelligent-vms-regional-spool
+      tag: REPLACE_WITH_IMMUTABLE_TAG
+      pullPolicy: IfNotPresent
+    resources: {}
+    service:
+      type: ClusterIP
+      port: 8090
+  persistence:
+    enabled: true
+    storageClass: ""
+    nodeStateSize: 1Gi
+    spoolSize: 10Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

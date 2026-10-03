@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://camvault.local/schemas/phase8-benchmark-v1.json",
+  "title": "Intelligent VMS Phase 8 Benchmark Result",
+  "type": "object",
+  "required": ["schema_version", "benchmark_id", "environment", "workload", "result", "resources"],
+  "properties": {
+    "schema_version": {"const": "phase8-benchmark-v1"},
+    "benchmark_id": {"type": "string", "minLength": 1},
+    "environment": {
+      "type": "object",
+      "required": ["commit_sha", "captured_at", "os", "os_release", "kernel", "architecture", "python", "container_runtime", "hardware"],
+      "properties": {
+        "commit_sha": {"type": "string", "minLength": 1},
+        "captured_at": {"type": "string"},
+        "os": {"type": "string"},
+        "os_release": {"type": "string"},
+        "kernel": {"type": "string"},
+        "architecture": {"type": "string"},
+        "python": {"type": "string"},
+        "container_runtime": {"type": "string"},
+        "hardware": {
+          "type": "object",
+          "required": ["cpu_model", "cpu_logical_cores", "ram_total_bytes", "network_interfaces", "storage_path", "storage_total_bytes", "storage_free_bytes", "gpus"]
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "required": ["type", "config", "started_at", "warmup_seconds", "duration_seconds"],
+      "properties": {
+        "type": {"type": "string", "minLength": 1},
+        "config": {"type": "object"},
+        "started_at": {"type": "string"},
+        "warmup_seconds": {"type": "number", "minimum": 0},
+        "duration_seconds": {"type": "number", "minimum": 0}
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": ["operations_ok", "operations_failed", "failure_rate", "throughput_ops_s", "latency"],
+      "properties": {
+        "operations_ok": {"type": "integer", "minimum": 0},
+        "operations_failed": {"type": "integer", "minimum": 0},
+        "failure_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "throughput_ops_s": {"type": ["number", "null"], "minimum": 0},
+        "latency": {
+          "type": "object",
+          "required": ["count", "p50_ms", "p95_ms", "p99_ms", "max_ms", "mean_ms"]
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": ["samples", "cpu_pct", "ram_used_bytes", "ram_pct", "net_rx_mbps", "net_tx_mbps", "disk_read_mbps", "disk_write_mbps", "gpu", "gpu_measured"]
+    }
+  }
+}

@@ -1,0 +1,175 @@
+{{- if .Values.regional.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "intelligent-vms.fullname" . }}-regional
+  labels:
+    {{- include "intelligent-vms.labels" . | nindent 4 }}
+    app.kubernetes.io/component: regional-node
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "intelligent-vms.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: regional-node
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "intelligent-vms.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: regional-node
+    spec:
+      serviceAccountName: {{ include "intelligent-vms.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: node-agent
+          image: "{{ .Values.regional.nodeAgent.image.repository }}:{{ .Values.regional.nodeAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.regional.nodeAgent.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            {{- if .Values.regional.existingSecret }}
+            - secretRef:
+                name: {{ .Values.regional.existingSecret }}
+            {{- end }}
+          env:
+            - name: NODE_ID
+              value: {{ .Values.regional.nodeId | quote }}
+            - name: REGION_ID
+              value: {{ .Values.regional.regionId | quote }}
+            - name: NODE_ROLES
+              value: {{ .Values.regional.nodeRoles | quote }}
+            - name: CONTROL_API_URL
+              value: {{ .Values.regional.controlApiUrl | quote }}
+            - name: MEDIAMTX_API_URL
+              value: {{ .Values.regional.mediaMTXApiUrl | quote }}
+            - name: HEARTBEAT_SPOOL_URL
+              value: {{ .Values.regional.heartbeatSpoolUrl | quote }}
+            - name: NODE_FENCING_ENABLED
+              value: {{ .Values.regional.nodeFencingEnabled | quote }}
+            - name: FENCE_STATE_PATH
+              value: /var/lib/vms-node/fence-state.json
+          volumeMounts:
+            - name: node-state
+              mountPath: /var/lib/vms-node
+          resources:
+            {{- toYaml .Values.regional.nodeAgent.resources | nindent 12 }}
+        - name: regional-spool
+          image: "{{ .Values.regional.spool.image.repository }}:{{ .Values.regional.spool.image.tag }}"
+          imagePullPolicy: {{ .Values.regional.spool.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            {{- if .Values.regional.existingSecret }}
+            - secretRef:
+                name: {{ .Values.regional.existingSecret }}
+            {{- end }}
+          env:
+            - name: NODE_ID
+              value: {{ .Values.regional.nodeId | quote }}
+            - name: CONTROL_API_URL
+              value: {{ .Values.regional.controlApiUrl | quote }}
+            - name: SPOOL_DB_PATH
+              value: /var/lib/vms-spool/spool.db
+          ports:
+            - name: spool-http
+              containerPort: 8090
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: spool-http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: spool-http
+          volumeMounts:
+            - name: spool-state
+              mountPath: /var/lib/vms-spool
+          resources:
+            {{- toYaml .Values.regional.spool.resources | nindent 12 }}
+      volumes:
+        {{- if .Values.regional.persistence.enabled }}
+        - name: node-state
+          persistentVolumeClaim:
+            claimName: {{ include "intelligent-vms.fullname" . }}-node-state
+        - name: spool-state
+          persistentVolumeClaim:
+            claimName: {{ include "intelligent-vms.fullname" . }}-spool-state
+        {{- else }}
+        - name: node-state
+          emptyDir: {}
+        - name: spool-state
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.regional.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.regional.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.regional.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "intelligent-vms.fullname" . }}-regional-spool
+  labels:
+    {{- include "intelligent-vms.labels" . | nindent 4 }}
+    app.kubernetes.io/component: regional-node
+spec:
+  type: {{ .Values.regional.spool.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "intelligent-vms.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: regional-node
+  ports:
+    - name: http
+      port: {{ .Values.regional.spool.service.port }}
+      targetPort: spool-http
+{{- if .Values.regional.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "intelligent-vms.fullname" . }}-node-state
+  labels:
+    {{- include "intelligent-vms.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.regional.persistence.storageClass }}
+  storageClassName: {{ .Values.regional.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.regional.persistence.nodeStateSize }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "intelligent-vms.fullname" . }}-spool-state
+  labels:
+    {{- include "intelligent-vms.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.regional.persistence.storageClass }}
+  storageClassName: {{ .Values.regional.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.regional.persistence.spoolSize }}
+{{- end }}
+{{- end }}
