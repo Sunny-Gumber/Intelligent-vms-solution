@@ -188,15 +188,20 @@ if (-not (Test-Path $EnvFile)) {
     $previousPgPassword = $env:PGPASSWORD
     try {
         $env:PGPASSWORD = $adminPassword
+        Write-Host "windows_field_test_stage=postgres_role_lookup"
         $roleExists = & (Join-Path $pgBin "psql.exe") -h 127.0.0.1 -U postgres -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='vms'"
         if ($LASTEXITCODE -ne 0) { throw "Could not authenticate to PostgreSQL as postgres." }
         if (([string]$roleExists).Trim() -ne "1") {
+            Write-Host "windows_field_test_stage=postgres_role_create"
             Invoke-Checked (Join-Path $pgBin "psql.exe") @("-h","127.0.0.1","-U","postgres","-d","postgres","-v","ON_ERROR_STOP=1","-c","CREATE ROLE vms LOGIN PASSWORD '$dbPassword'")
         } else {
+            Write-Host "windows_field_test_stage=postgres_role_update"
             Invoke-Checked (Join-Path $pgBin "psql.exe") @("-h","127.0.0.1","-U","postgres","-d","postgres","-v","ON_ERROR_STOP=1","-c","ALTER ROLE vms PASSWORD '$dbPassword'")
         }
+        Write-Host "windows_field_test_stage=postgres_database_lookup"
         $dbExists = & (Join-Path $pgBin "psql.exe") -h 127.0.0.1 -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='vms'"
         if (([string]$dbExists).Trim() -ne "1") {
+            Write-Host "windows_field_test_stage=postgres_database_create"
             Invoke-Checked (Join-Path $pgBin "createdb.exe") @("-h","127.0.0.1","-U","postgres","-O","vms","vms")
         }
     } finally {
