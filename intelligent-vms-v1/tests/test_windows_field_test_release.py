@@ -122,7 +122,10 @@ def test_windows_service_model_is_native_and_dependency_ordered():
     assert "IntelligentVMSMedia" in SERVICE_HOST
     assert "win32serviceutil.InstallService" in SERVICE_MANAGER
     assert "win32serviceutil.LocatePythonServiceExe()" in SERVICE_MANAGER
-    assert SERVICE_MANAGER.count('exeArgs="-service"') == 2
+    assert 'exeArgs="-service"' not in SERVICE_MANAGER
+    assert "intelligent_vms_app.pth" in INSTALL
+    assert "import deploy.windows.service_host" in INSTALL
+    assert "windows_service_host_import_ok" in INSTALL
     assert "sitePackages \"win32\\pythonservice.exe\"" not in INSTALL
     assert 'serviceDeps=[postgres_service]' in SERVICE_MANAGER
     assert 'serviceDeps=["IntelligentVMSControl"]' in SERVICE_MANAGER
