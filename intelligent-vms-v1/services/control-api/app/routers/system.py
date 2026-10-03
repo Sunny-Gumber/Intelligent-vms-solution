@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 
 from app.core.auth import Principal, require_roles
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.observability import READY
 from app.services.mediamtx import mediamtx
@@ -55,6 +56,21 @@ async def health():
     except Exception:
         media = "degraded"
     return {"status": "ok" if media == "ok" else "degraded", "media_node": media}
+
+
+@router.get("/capabilities")
+async def capabilities(
+    principal: Principal = Depends(require_roles("admin", "operator", "viewer")),
+):
+    """Return deployment-profile capability flags for the authenticated UI."""
+    return {
+        "deployment_profile": settings.deployment_profile,
+        "event_pipeline": settings.event_pipeline_enabled,
+        "event_history": settings.event_history_enabled,
+        "alarm_processing": settings.alarm_processing_enabled,
+        "ai_ui": settings.ai_ui_enabled,
+        "distributed_placement": settings.placement_execution_enabled,
+    }
 
 
 @router.get("/reconciliation")
