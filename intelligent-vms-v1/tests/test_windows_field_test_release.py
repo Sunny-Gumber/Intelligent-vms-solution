@@ -318,3 +318,9 @@ def test_windows_service_runtime_uses_sysconfig_purelib_not_site_prefix_order():
     assert 'sysconfig.get_paths()[\'purelib\']' in INSTALL
     assert "site.getsitepackages()[0]" not in INSTALL
     assert '$win32Root = Join-Path $sitePackages "win32"' in INSTALL
+
+
+def test_windows_control_service_uses_thread_safe_selector_event_loop():
+    assert "loop_factory=asyncio.SelectorEventLoop" in SERVICE_HOST
+    assert "WindowsSelectorEventLoopPolicy" not in SERVICE_HOST
+    assert "ProactorEventLoop" in SERVICE_HOST

@@ -102,7 +102,11 @@ class ControlService(win32serviceutil.ServiceFramework):
             )
         )
         servicemanager.LogInfoMsg("Intelligent VMS control API starting")
-        asyncio.run(self.server.serve())
+        # pywin32 invokes SvcDoRun on a service worker thread. On Windows,
+        # ProactorEventLoop construction calls signal.set_wakeup_fd(), which is
+        # restricted to the main interpreter thread. The control plane is
+        # socket-based, so use the selector loop explicitly for SCM hosting.
+        asyncio.run(self.server.serve(), loop_factory=asyncio.SelectorEventLoop)
         servicemanager.LogInfoMsg("Intelligent VMS control API stopped")
 
 
