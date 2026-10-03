@@ -32,6 +32,7 @@ def install(postgres_service: str) -> None:
         startType=win32service.SERVICE_AUTO_START,
         serviceDeps=[postgres_service],
         exeName=executable,
+        exeArgs="-service",
         description="Intelligent VMS small-site control API and browser UI.",
         delayedstart=True,
     )
@@ -42,6 +43,7 @@ def install(postgres_service: str) -> None:
         startType=win32service.SERVICE_AUTO_START,
         serviceDeps=["IntelligentVMSControl"],
         exeName=executable,
+        exeArgs="-service",
         description="Intelligent VMS native MediaMTX live, recording and playback service.",
         delayedstart=True,
     )
