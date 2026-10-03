@@ -108,8 +108,11 @@ $MediaRoot = Join-Path $RuntimeRoot "mediamtx"
 foreach ($path in @($Root,$ConfigRoot,$RuntimeRoot,$LogsRoot,$BackupRoot,$RecordingRoot)) {
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
+Protect-Directory $Root
 Protect-Directory $ConfigRoot
 Protect-Directory $RuntimeRoot
+Protect-Directory $LogsRoot
+Protect-Directory $BackupRoot
 Protect-Directory $RecordingRoot
 
 $postgresService = Find-PostgresService $PostgresServiceName
@@ -129,6 +132,7 @@ if (Test-Path $AppRoot) {
     Remove-Item -LiteralPath $AppRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Path $AppRoot | Out-Null
+Protect-Directory $AppRoot
 $copyArgs = @(
     $SourceRoot, $AppRoot, "/E", "/R:2", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
     "/XD", ".venv", "venv", "__pycache__", "field-test-backups",

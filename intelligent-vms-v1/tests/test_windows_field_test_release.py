@@ -270,12 +270,14 @@ def test_windows_failure_evidence_runs_before_cleanup_and_avoids_secrets():
     for runtime_file in ("pythonservice.exe", "python312.dll", "python.exe", "pythonw.exe", "pyvenv.cfg"):
         assert runtime_file in block
     assert "pywintypes*.dll" in block and "pythoncom*.dll" in block
+    assert "=== redacted product log tails ===" in block
+    assert "Collect-WindowsDiagnostics.ps1" in block
     assert "-Tail 100" in block
     assert "vms.env" not in block
     assert "VMS_SECRET_KEY" not in block
 
 
-def test_windows_pywin32_registration_and_raw_event_diagnostics_contract():
+def test_windows_pywin32_registration_and_event_metadata_diagnostics_contract():
     assert "deploy.windows.service_host.ControlService" in SERVICE_MANAGER
     assert "deploy.windows.service_host.MediaService" in SERVICE_MANAGER
     failure = WORKFLOW.index("Capture Windows service failure evidence")
@@ -285,9 +287,9 @@ def test_windows_pywin32_registration_and_raw_event_diagnostics_contract():
     assert '.GetValue("")' in block
     assert "PythonClass(default)=" in block
     assert '$_.ProviderName -eq "Python Service" -and $_.Id -eq 14' in block
-    assert "RecordId=$event.RecordId" in block
-    assert "Properties=(@($event.Properties)" in block
-    assert "$event.ToXml()" in block
+    assert "TimeCreated,RecordId,ProviderName,Id,LevelDisplayName" in block
+    assert "$event.ToXml()" not in block
+    assert "Properties=(@($event.Properties)" not in block
 
 
 def test_windows_service_runtime_is_vms_owned_complete_and_profile_independent():
@@ -335,15 +337,17 @@ def test_windows_control_service_delegates_shutdown_to_scm_not_process_signals()
     assert "self.server._serve(" not in SERVICE_HOST
 
 
-def test_windows_failure_diagnostics_emit_product_logs_before_nonfatal_event14_query():
+def test_windows_failure_diagnostics_reuse_redacted_collector_before_event_metadata():
     failure = WORKFLOW.index("Capture Windows service failure evidence")
     cleanup = WORKFLOW.index("Cleanup ephemeral hosted-runner state")
     block = WORKFLOW[failure:cleanup]
-    assert block.index("=== bounded product log tails ===") < block.index("=== raw recent Python Service Event 14 ===")
+    assert block.index("=== redacted product log tails ===") < block.index("=== recent Python Service Event 14 metadata ===")
+    assert "Collect-WindowsDiagnostics.ps1" in block
+    assert "failure-diag-redacted" in block
     assert "Get-Content -LiteralPath $path -Tail 100" in block
-    assert 'ProviderName="Python Service";Id=14' not in block
     assert '$_.ProviderName -eq "Python Service" -and $_.Id -eq 14' in block
-    assert "Python Service Event 14 query unavailable" in block
+    assert "Event14 XML" not in block
+    assert "$event.ToXml()" not in block
 
 
 def test_windows_recording_path_satisfies_mediamtx_filename_contract(tmp_path):
@@ -361,3 +365,16 @@ def test_windows_recording_path_satisfies_mediamtx_filename_contract(tmp_path):
     record_path = next(line for line in body.splitlines() if line.startswith("RECORDING_PATH_TEMPLATE="))
     assert "%path" in record_path
     assert "%s-%f" in record_path
+
+
+def test_windows_programdata_execution_and_persistent_paths_are_explicitly_protected():
+    for marker in (
+        "Protect-Directory $Root",
+        "Protect-Directory $AppRoot",
+        "Protect-Directory $ConfigRoot",
+        "Protect-Directory $RuntimeRoot",
+        "Protect-Directory $LogsRoot",
+        "Protect-Directory $BackupRoot",
+        "Protect-Directory $RecordingRoot",
+    ):
+        assert marker in INSTALL

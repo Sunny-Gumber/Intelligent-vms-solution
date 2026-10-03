@@ -167,30 +167,32 @@ jobs:
               Select-Object TimeCreated,ProviderName,Id,LevelDisplayName,Message |
               Format-List
           }
-          Write-Host "=== bounded product log tails ==="
-          foreach($name in @("control-api.log","mediamtx.log")){
-            $path = Join-Path $root "logs\\$name"
-            if(Test-Path $path){Get-Content -LiteralPath $path -Tail 100}
-          }
-          Write-Host "=== raw recent Python Service Event 14 ==="
+          Write-Host "=== redacted product log tails ==="
           try {
-            $pythonEvents = @(Get-WinEvent -FilterHashtable @{LogName="Application";StartTime=$since} -ErrorAction Stop |
-              Where-Object {$_.ProviderName -eq "Python Service" -and $_.Id -eq 14})
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\\deploy\\windows\\Collect-WindowsDiagnostics.ps1"
+            if($LASTEXITCODE -eq 0){
+              $diag = Get-ChildItem "$root\\diagnostics-*.zip" -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if($diag){
+                $diagDest = Join-Path $env:RUNNER_TEMP "failure-diag-redacted"
+                Expand-Archive -LiteralPath $diag.FullName -DestinationPath $diagDest -Force
+                foreach($name in @("control-api.log","mediamtx.log")){
+                  $path = Join-Path $diagDest $name
+                  if(Test-Path $path){Get-Content -LiteralPath $path -Tail 100}
+                }
+              }
+            }
           } catch {
-            $pythonEvents = @()
-            Write-Host "Python Service Event 14 query unavailable: $($_.Exception.Message)"
+            Write-Host "Redacted product diagnostics unavailable: $($_.Exception.GetType().Name)"
           }
-          foreach($event in $pythonEvents){
-            [pscustomobject]@{
-              TimeCreated=$event.TimeCreated
-              RecordId=$event.RecordId
-              ProviderName=$event.ProviderName
-              Id=$event.Id
-              LevelDisplayName=$event.LevelDisplayName
-              Properties=(@($event.Properties) | ForEach-Object {$_.Value}) -join " | "
-            } | Format-List
-            Write-Host "--- Event14 XML ---"
-            $event.ToXml()
+          Write-Host "=== recent Python Service Event 14 metadata ==="
+          try {
+            Get-WinEvent -FilterHashtable @{LogName="Application";StartTime=$since} -ErrorAction Stop |
+              Where-Object {$_.ProviderName -eq "Python Service" -and $_.Id -eq 14} |
+              Select-Object TimeCreated,RecordId,ProviderName,Id,LevelDisplayName |
+              Format-List
+          } catch {
+            Write-Host "Python Service Event 14 metadata unavailable: $($_.Exception.GetType().Name)"
           }
           Write-Host "=== runtime layout ==="
           $runtime = Join-Path $root "runtime\\venv"
