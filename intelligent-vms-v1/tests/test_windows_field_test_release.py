@@ -312,3 +312,9 @@ def test_windows_service_runtime_is_vms_owned_complete_and_profile_independent()
     assert 'Path(sys.prefix) / "pythonservice.exe"' in SERVICE_MANAGER
     assert "deploy.windows.service_host.ControlService" in SERVICE_MANAGER
     assert "deploy.windows.service_host.MediaService" in SERVICE_MANAGER
+
+
+def test_windows_service_runtime_uses_sysconfig_purelib_not_site_prefix_order():
+    assert 'sysconfig.get_paths()[\'purelib\']' in INSTALL
+    assert "site.getsitepackages()[0]" not in INSTALL
+    assert '$win32Root = Join-Path $sitePackages "win32"' in INSTALL

@@ -146,7 +146,7 @@ $venvPython = Join-Path $VenvRoot "Scripts\python.exe"
 Invoke-Checked $venvPython @("-m","pip","install","--upgrade","pip")
 Invoke-Checked $venvPython @("-m","pip","install","-r",(Join-Path $AppRoot "services\control-api\requirements.txt"))
 Invoke-Checked $venvPython @("-m","pip","install","-r",(Join-Path $AppRoot "deploy\windows\requirements-windows.txt"))
-$sitePackages = (& $venvPython -c "import site; print(site.getsitepackages()[0])").Trim()
+$sitePackages = (& $venvPython -c "import sysconfig; print(sysconfig.get_paths()['purelib'])").Trim()
 if (-not $sitePackages) { throw "Could not resolve Windows VMS virtualenv site-packages." }
 $appPathFile = Join-Path $sitePackages "intelligent_vms_app.pth"
 Set-Content -LiteralPath $appPathFile -Value $AppRoot -Encoding ascii
@@ -183,13 +183,13 @@ foreach($artifact in @($serviceManagerPyd,$win32ServicePyd,$win32EventPyd,$pywin
 Invoke-Checked $venvPython @("-c",@'
 import importlib.util
 from pathlib import Path
-import site
+import sysconfig
 for name in ("servicemanager","win32service","win32event","win32serviceutil","pywintypes","pythoncom"):
     spec = importlib.util.find_spec(name)
     if spec is None or spec.origin is None:
         raise SystemExit(f"missing pywin32 module: {name}")
     print(f"pywin32_layout {name}={Path(spec.origin)}")
-sp = Path(site.getsitepackages()[0])
+sp = Path(sysconfig.get_paths()["purelib"])
 print(f"pywin32_layout pywin32.pth={sp / 'pywin32.pth'}")
 print(f"pywin32_layout win32={sp / 'win32'}")
 print(f"pywin32_layout win32_lib={sp / 'win32' / 'lib'}")
