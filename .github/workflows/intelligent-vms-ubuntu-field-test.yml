@@ -1,0 +1,103 @@
+name: Intelligent VMS Ubuntu Field Test
+on:
+  pull_request:
+    paths: ['intelligent-vms-v1/**', '.github/workflows/intelligent-vms-ubuntu-field-test.yml']
+  push:
+    branches: [main]
+    paths: ['intelligent-vms-v1/**', '.github/workflows/intelligent-vms-ubuntu-field-test.yml']
+permissions:
+  contents: read
+jobs:
+  ubuntu-field-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate private field-test configuration
+        run: |
+          rm -f .env
+          python3 deploy/field-test/generate_env.py --recordings-dir "$RUNNER_TEMP/vms-recordings" --camera-cidr 127.0.0.1/32
+          test "$(stat -c '%a' .env)" = "600"
+      - name: Syntax and preflight validation
+        run: |
+          bash -n deploy/field-test/*.sh
+          bash deploy/field-test/vmsctl.sh preflight
+          docker compose --env-file .env config -q
+      - name: Build core field-test images
+        run: docker compose --env-file .env build control-api mediamtx web
+      - name: Start dependencies and migrate
+        run: |
+          docker compose --env-file .env up -d --wait postgres redpanda clickhouse
+          docker compose --env-file .env run --rm --no-deps control-api alembic upgrade head
+      - name: Start API before JWT-protected media, then web
+        run: |
+          docker compose --env-file .env up -d --wait control-api
+          docker compose --env-file .env up -d --wait mediamtx web
+          bash deploy/field-test/vmsctl.sh health
+      - name: Authenticate and persist state across restart
+        run: |
+          TOKEN="$(python3 deploy/field-test/mint_access_token.py 2>/dev/null)"
+          curl -fsS -c /tmp/vms-cookies -H "Authorization: Bearer $TOKEN" -X POST http://127.0.0.1:8080/api/v1/auth/session >/tmp/session.json
+          curl -fsS -b /tmp/vms-cookies http://127.0.0.1:8080/api/v1/cameras >/tmp/cameras-before.json
+          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"tenant_id":"field-test","site_id":"site-01","name":"CI Loopback Camera","host":"127.0.0.1","rtsp_port":8554,"main_path":"/ci-main"}' http://127.0.0.1:8080/api/v1/cameras >/tmp/camera.json
+          touch "$RUNNER_TEMP/vms-recordings/persistence-sentinel"
+          docker compose --env-file .env restart postgres mediamtx control-api web
+          docker compose --env-file .env up -d --wait postgres mediamtx control-api web
+          bash deploy/field-test/vmsctl.sh health
+          TOKEN2="$(python3 deploy/field-test/mint_access_token.py 2>/dev/null)"
+          curl -fsS -H "Authorization: Bearer $TOKEN2" http://127.0.0.1:8080/api/v1/cameras >/tmp/cameras-after.json
+          python3 - <<'PY'
+          import json
+          rows=json.load(open('/tmp/cameras-after.json'))
+          assert any(row['name']=='CI Loopback Camera' for row in rows)
+          PY
+          test -f "$RUNNER_TEMP/vms-recordings/persistence-sentinel"
+      - name: Diagnostics redaction
+        run: |
+          python3 tools/field_test_diagnostics.py --env-file .env --output /tmp/diagnostics.tar.gz
+          mkdir -p /tmp/diagnostics && tar -xzf /tmp/diagnostics.tar.gz -C /tmp/diagnostics
+          python3 - <<'PY'
+          from pathlib import Path
+          values={}
+          for raw in Path('.env').read_text().splitlines():
+              if '=' in raw and not raw.startswith('#'):
+                  k,v=raw.split('=',1); values[k]=v
+          payload='\n'.join(p.read_text(errors='ignore') for p in Path('/tmp/diagnostics').glob('*') if p.is_file())
+          for key in ('POSTGRES_PASSWORD','VMS_SECRET_KEY','AUTH_HS256_SECRET','RECORDING_HOOK_TOKEN','LIVE_VIEW_TOKEN_PRIVATE_KEY_B64'):
+              value=values.get(key,''); assert not value or value not in payload, key
+          PY
+      - name: Non-destructive uninstall contract
+        run: |
+          PROJECT="$(python3 - <<'PY'
+          from pathlib import Path
+          for line in Path('.env').read_text().splitlines():
+              if line.startswith('COMPOSE_PROJECT_NAME='):
+                  print(line.split('=',1)[1]); break
+          PY
+          )"
+          bash deploy/field-test/vmsctl.sh uninstall
+          test -f "$RUNNER_TEMP/vms-recordings/persistence-sentinel"
+          docker volume inspect "${PROJECT}_postgres_data" >/dev/null
+      - name: Safe failure-state evidence
+        if: failure()
+        run: |
+          docker compose --env-file .env ps || true
+          docker compose --env-file .env logs --no-color --tail 200 control-api mediamtx web || true
+          for service in control-api mediamtx web; do
+            id="$(docker compose --env-file .env ps -q "$service" 2>/dev/null || true)"
+            if [ -n "$id" ]; then
+              docker inspect --format '{{json .State}}' "$id" || true
+            fi
+          done
+      - name: Ephemeral CI cleanup
+        if: always()
+        run: |
+          docker compose --env-file .env down -v --remove-orphans || true
+          rm -f .env
