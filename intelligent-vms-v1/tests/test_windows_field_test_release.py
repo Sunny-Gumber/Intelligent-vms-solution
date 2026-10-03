@@ -324,3 +324,12 @@ def test_windows_control_service_uses_thread_safe_selector_event_loop():
     assert "loop_factory=asyncio.SelectorEventLoop" in SERVICE_HOST
     assert "WindowsSelectorEventLoopPolicy" not in SERVICE_HOST
     assert "ProactorEventLoop" in SERVICE_HOST
+
+
+def test_windows_control_service_delegates_shutdown_to_scm_not_process_signals():
+    assert "class ScmUvicornServer(uvicorn.Server)" in SERVICE_HOST
+    assert "def capture_signals(self)" in SERVICE_HOST
+    assert "@contextlib.contextmanager" in SERVICE_HOST
+    assert "yield" in SERVICE_HOST
+    assert "self.server.should_exit = True" in SERVICE_HOST
+    assert "self.server._serve(" not in SERVICE_HOST

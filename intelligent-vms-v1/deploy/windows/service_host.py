@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import subprocess
@@ -49,6 +50,20 @@ def _configure_file_logging(name: str) -> None:
     )
 
 
+def _new_scm_uvicorn_server(config):
+    """Create a Uvicorn server without process-signal ownership under SCM."""
+    import uvicorn
+
+    class ScmUvicornServer(uvicorn.Server):
+        @contextlib.contextmanager
+        def capture_signals(self):
+            # SCM owns service control delivery. pywin32 invokes SvcDoRun on a
+            # worker thread where Python signal handlers are not permitted.
+            yield
+
+    return ScmUvicornServer(config)
+
+
 def _wait_control_jwks(timeout_seconds: float = 60.0) -> None:
     """Wait until the control API can serve MediaMTX signing trust."""
     deadline = time.monotonic() + timeout_seconds
@@ -92,7 +107,7 @@ class ControlService(win32serviceutil.ServiceFramework):
         os.chdir(control_root)
         import uvicorn
 
-        self.server = uvicorn.Server(
+        self.server = _new_scm_uvicorn_server(
             uvicorn.Config(
                 "app.main:app",
                 host="127.0.0.1",
