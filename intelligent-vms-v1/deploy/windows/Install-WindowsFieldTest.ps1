@@ -69,9 +69,15 @@ function Protect-Directory([string]$Path) {
 function Import-VmsEnv([string]$Path) {
     foreach ($raw in Get-Content -LiteralPath $Path) {
         $line = $raw.Trim()
-        if (-not $line -or $line.StartsWith("#") -or -not $line.Contains("=")) { continue }
-        $parts = $line.Split("=", 2)
-        [Environment]::SetEnvironmentVariable($parts[0].Trim(), $parts[1].Trim().Trim('"'), "Process")
+        if (-not $line -or $line.StartsWith("#")) { continue }
+        $separator = $line.IndexOf("=")
+        if ($separator -lt 1) { continue }
+        $name = $line.Substring(0, $separator).Trim()
+        $value = $line.Substring($separator + 1).Trim()
+        if ($value.Length -ge 2 -and $value.StartsWith('"') -and $value.EndsWith('"')) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        [Environment]::SetEnvironmentVariable($name, $value, "Process")
     }
 }
 function Invoke-Checked([string]$Exe, [string[]]$Arguments) {
