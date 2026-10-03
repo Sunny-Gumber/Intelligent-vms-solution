@@ -145,6 +145,11 @@ $venvPython = Join-Path $VenvRoot "Scripts\python.exe"
 Invoke-Checked $venvPython @("-m","pip","install","--upgrade","pip")
 Invoke-Checked $venvPython @("-m","pip","install","-r",(Join-Path $AppRoot "services\control-api\requirements.txt"))
 Invoke-Checked $venvPython @("-m","pip","install","-r",(Join-Path $AppRoot "deploy\windows\requirements-windows.txt"))
+$sitePackages = (& $venvPython -c "import site; print(site.getsitepackages()[0])").Trim()
+if (-not $sitePackages) { throw "Could not resolve Windows VMS virtualenv site-packages." }
+$appPathFile = Join-Path $sitePackages "intelligent_vms_app.pth"
+Set-Content -LiteralPath $appPathFile -Value $AppRoot -Encoding ascii
+Invoke-Checked $venvPython @("-c","import deploy.windows.service_host; print('windows_service_host_import_ok')")
 
 $sitePackages = & $venvPython -c "import site; print(site.getsitepackages()[0])"
 Set-Content -LiteralPath (Join-Path $sitePackages "intelligent_vms_app.pth") -Value $AppRoot -Encoding ASCII
