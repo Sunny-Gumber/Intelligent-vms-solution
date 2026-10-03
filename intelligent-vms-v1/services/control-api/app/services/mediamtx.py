@@ -92,32 +92,37 @@ class MediaMTXClient:
             MediaMTXError: If the callback URL is unsafe or the node rejects the config.
             httpx.HTTPError: If the MediaMTX HTTP request fails at transport level.
         """
-        node_arg = (
-            f' --data-urlencode "recording_node_id={recording_node_id}"'
-            if recording_node_id
-            else ""
-        )
-        generation_arg = (
-            f' --data-urlencode "assignment_generation={assignment_generation}"'
-            if assignment_generation is not None
-            else ""
-        )
-        callback = urlsplit(settings.recording_hook_callback_url)
-        if callback.scheme not in {"http", "https"} or not callback.hostname:
-            raise MediaMTXError("Recording hook callback must be an HTTP/HTTPS URL")
-        if callback.username or callback.password or callback.fragment:
-            raise MediaMTXError("Recording hook callback must not contain credentials or fragment")
-        callback_arg = shlex.quote(settings.recording_hook_callback_url)
-        hook = (
-            'curl -fsS --retry 2 --connect-timeout 2 -X POST '
-            '-H "X-Recording-Hook-Token: $RECORDING_HOOK_TOKEN" '
-            '--data-urlencode "path=$MTX_PATH" '
-            '--data-urlencode "segment_path=$MTX_SEGMENT_PATH" '
-            '--data-urlencode "duration=$MTX_SEGMENT_DURATION"'
-            + node_arg
-            + generation_arg
-            + f' {callback_arg} >/dev/null'
-        )
+        if settings.recording_hook_command:
+            hook = settings.recording_hook_command
+        else:
+            node_arg = (
+                f' --data-urlencode "recording_node_id={recording_node_id}"'
+                if recording_node_id
+                else ""
+            )
+            generation_arg = (
+                f' --data-urlencode "assignment_generation={assignment_generation}"'
+                if assignment_generation is not None
+                else ""
+            )
+            callback = urlsplit(settings.recording_hook_callback_url)
+            if callback.scheme not in {"http", "https"} or not callback.hostname:
+                raise MediaMTXError("Recording hook callback must be an HTTP/HTTPS URL")
+            if callback.username or callback.password or callback.fragment:
+                raise MediaMTXError(
+                    "Recording hook callback must not contain credentials or fragment"
+                )
+            callback_arg = shlex.quote(settings.recording_hook_callback_url)
+            hook = (
+                'curl -fsS --retry 2 --connect-timeout 2 -X POST '
+                '-H "X-Recording-Hook-Token: $RECORDING_HOOK_TOKEN" '
+                '--data-urlencode "path=$MTX_PATH" '
+                '--data-urlencode "segment_path=$MTX_SEGMENT_PATH" '
+                '--data-urlencode "duration=$MTX_SEGMENT_DURATION"'
+                + node_arg
+                + generation_arg
+                + f' {callback_arg} >/dev/null'
+            )
         await self._upsert(
             stream_key,
             {

@@ -97,3 +97,14 @@ failover continuity or production readiness. Product status remains
 - This transition does not change final verification: physical camera/browser/codec/storage/reboot/capacity evidence remains NV / External Qualification Pending.
 
 - Ubuntu runtime validation also exposed an inherited static MediaMTX v1.21.1 configuration blocker: global path defaults combined the default publisher source with sourceOnDemand=true, which MediaMTX rejects as invalid. #301 removes only that invalid global default; dynamic live camera paths still set sourceOnDemand=true with an RTSP source and recording paths explicitly set sourceOnDemand=false.
+
+## Windows release-track dependency decision — 2026-10-03
+
+- Ubuntu baseline #301/#302 is complete at automated deployment level.
+- #303 selects a native Windows small-site profile instead of porting Compose/Bash or requiring Docker Desktop/WSL2.
+- Core loop dependency analysis confirms that local live/recording/playback with `PLACEMENT_EXECUTION_ENABLED=false` uses PostgreSQL + MediaMTX and does not require ClickHouse recording-index lookup.
+- Kafka/Redpanda is optional to control-api startup today; the Windows profile disables the outbox/event pipeline. Recording completion continues PostgreSQL health evidence while skipping Kafka metadata fan-out.
+- ClickHouse event history, event-writer/alarm processing and regional/distributed placement remain explicit enterprise-distributed capabilities and are not claimed by the Windows small-site profile.
+- Required portability fixes selected: native service lifecycle, Windows recording-path generation/validation, cross-platform MediaMTX recording hook, protected ProgramData configuration, PostgreSQL lifecycle/migrations/backup, diagnostics, non-destructive uninstall, and hosted Server 2022/2025 validation.
+- Windows 11 x64 remains the primary product target, but hosted GitHub Actions currently offers Windows Server 2022/2025 x64 and Windows 11 only as Arm64. Therefore x64 Windows 11 and Windows 10 evidence remains external/manual.
+- Native Windows desktop client remains the next milestone only after #303 acceptance.

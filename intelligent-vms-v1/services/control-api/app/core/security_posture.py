@@ -14,6 +14,39 @@ def _require_https_url(value: str, setting_name: str) -> None:
         raise RuntimeError(f"{setting_name} must not contain a fragment")
 
 
+def _validate_deployment_profile() -> None:
+    """Fail closed when a named reduced deployment profile enables unsupported services."""
+    if settings.deployment_profile == "enterprise-distributed":
+        return
+    if settings.deployment_profile != "windows-small-site":
+        raise RuntimeError("Unknown DEPLOYMENT_PROFILE")
+
+    invalid = []
+    if settings.kafka_bootstrap_servers:
+        invalid.append("KAFKA_BOOTSTRAP_SERVERS")
+    if settings.outbox_enabled:
+        invalid.append("OUTBOX_ENABLED")
+    if settings.event_pipeline_enabled:
+        invalid.append("EVENT_PIPELINE_ENABLED")
+    if settings.event_history_enabled:
+        invalid.append("EVENT_HISTORY_ENABLED")
+    if settings.alarm_processing_enabled:
+        invalid.append("ALARM_PROCESSING_ENABLED")
+    if settings.ai_ui_enabled:
+        invalid.append("AI_UI_ENABLED")
+    if settings.recording_metadata_events_enabled:
+        invalid.append("RECORDING_METADATA_EVENTS_ENABLED")
+    if settings.placement_execution_enabled:
+        invalid.append("PLACEMENT_EXECUTION_ENABLED")
+    if settings.clickhouse_url:
+        invalid.append("CLICKHOUSE_URL")
+    if invalid:
+        raise RuntimeError(
+            "windows-small-site profile requires disabled enterprise services: "
+            + ", ".join(invalid)
+        )
+
+
 def validate_security_posture() -> None:
     """Fail startup when production OIDC requirements are not securely configured.
 
@@ -25,6 +58,8 @@ def validate_security_posture() -> None:
         RuntimeError: If AUTH_REQUIRE_OIDC is enabled with auth bypass, local
             HS256 trust, missing issuer/audience/JWKS settings, or unsafe URLs.
     """
+    _validate_deployment_profile()
+
     if not settings.auth_require_oidc:
         return
 

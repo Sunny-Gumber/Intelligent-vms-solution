@@ -1,0 +1,218 @@
+name: Intelligent VMS Windows Field Test
+
+on:
+  pull_request:
+    paths:
+      - 'intelligent-vms-v1/**'
+      - '.github/workflows/intelligent-vms-windows-field-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'intelligent-vms-v1/**'
+      - '.github/workflows/intelligent-vms-windows-field-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-native-field-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Windows portability unit contract
+        shell: pwsh
+        env:
+          VMS_SECRET_KEY: windows-ci-test-key-not-for-production
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/control-api/requirements.txt -r tests/requirements.txt pyyaml
+          python -m pytest -q tests/test_windows_field_test_release.py tests/test_recording_phase3.py tests/test_field_test_browser_session.py
+
+      - name: Preflight native Windows runner
+        shell: pwsh
+        run: |
+          if (-not [Environment]::Is64BitOperatingSystem) { throw "x64 Windows required" }
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture | Format-List
+          $pg = Get-Service -Name "postgresql-x64-*" | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $pg) { throw "Hosted runner PostgreSQL service not found" }
+          Write-Host "PostgreSQL service: $($pg.Name)"
+
+      - name: Install native VMS field-test profile
+        shell: pwsh
+        env:
+          VMS_POSTGRES_ADMIN_PASSWORD: root
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          $recording = Join-Path $env:RUNNER_TEMP "IntelligentVMS-Recordings"
+          .\deploy\windows\Install-WindowsFieldTest.ps1 -RecordingRoot $recording -CameraCidr "127.0.0.1/32"
+
+      - name: Validate services, auth, camera and recording policy
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:ProgramData "IntelligentVMS"
+          .\deploy\windows\Vms-Windows.ps1 -Action Status
+          .\deploy\windows\Vms-Windows.ps1 -Action Health
+          $services = Get-Service "IntelligentVMSControl","IntelligentVMSMedia"
+          foreach($service in $services) {
+            if($service.Status -ne "Running"){ throw "$($service.Name) not running" }
+            if($service.StartType -ne "Automatic"){ throw "$($service.Name) not automatic" }
+          }
+          $token = & "$root\runtime\venv\Scripts\python.exe" "$root\app\deploy\field-test\mint_access_token.py" --env-file "$root\config\vms.env" 2>$null
+          $headers = @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" }
+          $caps = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/system/capabilities" -Headers @{Authorization="Bearer $token"}
+          if($caps.deployment_profile -ne "windows-small-site" -or $caps.event_history -ne $false -or $caps.distributed_placement -ne $false){ throw "Wrong capability profile" }
+          $cameraBody = @{tenant_id="field-test";site_id="site-01";name="Windows CI Loopback";host="127.0.0.1";rtsp_port=8554;main_path="/ci-main"} | ConvertTo-Json
+          $camera = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/cameras" -Method Post -Headers $headers -Body $cameraBody
+          $policyBody = @{mode="continuous";enabled=$true;retention_days=3;part_duration_ms=1000;segment_duration_seconds=900;max_part_size_mb=50} | ConvertTo-Json
+          $policy = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/recordings/cameras/$($camera.id)/policy" -Method Put -Headers $headers -Body $policyBody
+          if(-not $policy.enabled -or $policy.retention_days -ne 3){ throw "Recording policy did not persist" }
+          Invoke-RestMethod "http://127.0.0.1:8000/" | Out-Null
+          $camera.id | Set-Content "$env:RUNNER_TEMP\camera-id.txt"
+          "persistence" | Set-Content "$env:RUNNER_TEMP\IntelligentVMS-Recordings\persistence-sentinel"
+
+      - name: Restart and verify persistent state
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:ProgramData "IntelligentVMS"
+          .\deploy\windows\Vms-Windows.ps1 -Action Restart
+          $token = & "$root\runtime\venv\Scripts\python.exe" "$root\app\deploy\field-test\mint_access_token.py" --env-file "$root\config\vms.env" 2>$null
+          $rows = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/cameras" -Headers @{Authorization="Bearer $token"}
+          if(-not ($rows | Where-Object {$_.name -eq "Windows CI Loopback"})){ throw "Camera state did not persist" }
+          if(-not (Test-Path "$env:RUNNER_TEMP\IntelligentVMS-Recordings\persistence-sentinel")){ throw "Recording storage did not persist" }
+
+      - name: Backup and diagnostics
+        shell: pwsh
+        run: |
+          .\deploy\windows\Vms-Windows.ps1 -Action Backup
+          .\deploy\windows\Vms-Windows.ps1 -Action Diagnostics
+          $root = Join-Path $env:ProgramData "IntelligentVMS"
+          $backup = Get-ChildItem "$root\backups" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if(-not (Test-Path (Join-Path $backup.FullName "database.dump"))){ throw "Database backup missing" }
+          if(-not (Test-Path (Join-Path $backup.FullName "RECORDING_MEDIA_NOT_BACKED_UP.txt"))){ throw "Media backup boundary missing" }
+          $diag = Get-ChildItem "$root\diagnostics-*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $dest = Join-Path $env:RUNNER_TEMP "diag"
+          Expand-Archive $diag.FullName $dest -Force
+          $payload = (Get-ChildItem $dest -File | Get-Content -Raw) -join [Environment]::NewLine
+          $envFile = Get-Content "$root\config\vms.env"
+          foreach($key in @("VMS_SECRET_KEY","AUTH_HS256_SECRET","RECORDING_HOOK_TOKEN","WINDOWS_POSTGRES_PASSWORD","LIVE_VIEW_TOKEN_PRIVATE_KEY_B64")){
+            $line = $envFile | Where-Object {$_.StartsWith("$key=")} | Select-Object -First 1
+            if($line){$value=$line.Split("=",2)[1];if($value -and $payload.Contains($value)){throw "Diagnostic leak: $key"}}
+          }
+
+      - name: Non-destructive uninstall
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:ProgramData "IntelligentVMS"
+          .\deploy\windows\Vms-Windows.ps1 -Action Uninstall
+          if(Get-Service "IntelligentVMSControl" -ErrorAction SilentlyContinue){ throw "Control service still registered" }
+          if(Get-Service "IntelligentVMSMedia" -ErrorAction SilentlyContinue){ throw "Media service still registered" }
+          if(-not (Test-Path "$root\config\vms.env")){ throw "Configuration was deleted" }
+          if(-not (Test-Path "$env:RUNNER_TEMP\IntelligentVMS-Recordings\persistence-sentinel")){ throw "Recording data was deleted" }
+          $pg = Get-Service -Name "postgresql-x64-*" | Sort-Object Name -Descending | Select-Object -First 1
+          if($pg.Status -ne "Running"){ throw "PostgreSQL service was incorrectly removed/stopped" }
+
+      - name: Capture Windows service failure evidence
+        if: failure()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:ProgramData "IntelligentVMS"
+          $since = (Get-Date).AddMinutes(-20)
+          foreach($name in @("IntelligentVMSControl","IntelligentVMSMedia")){
+            Write-Host "=== service $name ==="
+            & sc.exe qc $name
+            & sc.exe queryex $name
+            $key = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\$name"
+            if(Test-Path $key){
+              $item = Get-ItemProperty $key
+              $safe = [ordered]@{}
+              foreach($property in @("ImagePath","ObjectName","Start","DependOnService","PythonClass","PythonPath","AppDirectory")){
+                if($null -ne $item.$property){$safe[$property]=$item.$property}
+              }
+              [pscustomobject]$safe | Format-List
+            }
+            $pythonClassKey = "$key\\PythonClass"
+            if(Test-Path $pythonClassKey){
+              Write-Host "=== $name PythonClass registry ==="
+              Get-Item $pythonClassKey | Format-List Name,Property
+              $pythonClass = (Get-Item $pythonClassKey).GetValue("")
+              Write-Host "PythonClass(default)=$pythonClass"
+              foreach($property in @("PythonPath","AppDirectory")){
+                $value = (Get-Item $pythonClassKey).GetValue($property, $null)
+                if($null -ne $value){Write-Host "$property=$value"}
+              }
+            } else {
+              Write-Host "PythonClass subkey missing for $name"
+            }
+          }
+          Write-Host "=== recent service/application events ==="
+          $providers = @("Service Control Manager","Python Service","PythonService","Application Error","Windows Error Reporting")
+          foreach($logName in @("System","Application")){
+            Get-WinEvent -FilterHashtable @{LogName=$logName;StartTime=$since} -ErrorAction SilentlyContinue |
+              Where-Object {$providers -contains $_.ProviderName -or $_.Message -match "IntelligentVMS|pythonservice"} |
+              Sort-Object TimeCreated |
+              Select-Object TimeCreated,ProviderName,Id,LevelDisplayName,Message |
+              Format-List
+          }
+          Write-Host "=== redacted product log tails ==="
+          try {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\\deploy\\windows\\Collect-WindowsDiagnostics.ps1"
+            if($LASTEXITCODE -eq 0){
+              $diag = Get-ChildItem "$root\\diagnostics-*.zip" -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if($diag){
+                $diagDest = Join-Path $env:RUNNER_TEMP "failure-diag-redacted"
+                Expand-Archive -LiteralPath $diag.FullName -DestinationPath $diagDest -Force
+                foreach($name in @("control-api.log","mediamtx.log")){
+                  $path = Join-Path $diagDest $name
+                  if(Test-Path $path){Get-Content -LiteralPath $path -Tail 100}
+                }
+              }
+            }
+          } catch {
+            Write-Host "Redacted product diagnostics unavailable: $($_.Exception.GetType().Name)"
+          }
+          Write-Host "=== recent Python Service Event 14 metadata ==="
+          try {
+            Get-WinEvent -FilterHashtable @{LogName="Application";StartTime=$since} -ErrorAction Stop |
+              Where-Object {$_.ProviderName -eq "Python Service" -and $_.Id -eq 14} |
+              Select-Object TimeCreated,RecordId,ProviderName,Id,LevelDisplayName |
+              Format-List
+          } catch {
+            Write-Host "Python Service Event 14 metadata unavailable: $($_.Exception.GetType().Name)"
+          }
+          Write-Host "=== runtime layout ==="
+          $runtime = Join-Path $root "runtime\\venv"
+          foreach($path in @(
+            (Join-Path $runtime "pythonservice.exe"),
+            (Join-Path $runtime "python312.dll"),
+            (Join-Path $runtime "Scripts\\python.exe"),
+            (Join-Path $runtime "Scripts\\pythonw.exe"),
+            (Join-Path $runtime "pyvenv.cfg")
+          )){[pscustomobject]@{Path=$path;Exists=Test-Path -LiteralPath $path} | Format-List}
+          foreach($pattern in @("pywintypes*.dll","pythoncom*.dll")){
+            Get-ChildItem $runtime -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName
+          }
+      - name: Cleanup ephemeral hosted-runner state
+        if: always()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:ProgramData "IntelligentVMS"
+          if(Test-Path "$root\runtime\venv\Scripts\python.exe"){
+            try { & "$root\runtime\venv\Scripts\python.exe" "$root\app\deploy\windows\service_manager.py" stop } catch {}
+            try { & "$root\runtime\venv\Scripts\python.exe" "$root\app\deploy\windows\service_manager.py" remove } catch {}
+          }

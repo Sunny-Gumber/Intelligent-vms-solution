@@ -339,6 +339,11 @@ async def put_policy(
     row.max_part_size_mb = payload.max_part_size_mb
 
     await session.flush()
+    # Preserve rollback-cleanup identifiers while the ORM row is still loaded.
+    # AsyncSession.rollback() expires ORM state; reading row attributes after
+    # rollback can trigger implicit async I/O and raise MissingGreenlet.
+    cleanup_camera_id = camera.id
+    cleanup_record_stream_key = row.record_stream_key
     try:
         if not settings.placement_execution_enabled:
             await provision_recording(camera, row)
@@ -381,7 +386,7 @@ async def put_policy(
     except Exception as exc:
         await session.rollback()
         if created and not settings.placement_execution_enabled:
-            await _cleanup_created_recording_path(camera.id, row.record_stream_key)
+            await _cleanup_created_recording_path(cleanup_camera_id, cleanup_record_stream_key)
         raise HTTPException(502, f"Recording node could not apply policy: {exc}") from exc
 
     await session.refresh(row)
@@ -770,8 +775,12 @@ def _parse_duration(value: str) -> float:
 
 def _segment_start(path: str, duration: float) -> datetime:
     stem = Path(path).stem
+    # MediaMTX v1.21 requires %f in recordPath. Windows field-test segments use
+    # %s-%f so the stable Unix-seconds prefix remains authoritative while
+    # microseconds provide the required filename uniqueness.
+    epoch_text = stem.split("-", 1)[0]
     try:
-        return datetime.fromtimestamp(int(stem), tz=timezone.utc)
+        return datetime.fromtimestamp(int(epoch_text), tz=timezone.utc)
     except ValueError:
         return datetime.now(timezone.utc) - timedelta(seconds=duration)
 
@@ -864,13 +873,15 @@ async def segment_complete(
         "storage_tier": "hot",
         "object_uri": None,
     }
-    inserted = await enqueue_message_once(
-        session,
-        message_id=f"recording:{segment_id}",
-        topic=settings.kafka_topic_recordings,
-        key_text=f"{camera.tenant_id}:{camera.id}",
-        payload=payload,
-    )
+    inserted = False
+    if settings.recording_metadata_events_enabled:
+        inserted = await enqueue_message_once(
+            session,
+            message_id=f"recording:{segment_id}",
+            topic=settings.kafka_topic_recordings,
+            key_text=f"{camera.tenant_id}:{camera.id}",
+            payload=payload,
+        )
     await record_segment_completion(
         session,
         policy,
@@ -880,4 +891,9 @@ async def segment_complete(
         assignment_generation=assignment_generation,
     )
     await session.commit()
-    return {"accepted": True, "segment_id": segment_id, "new": inserted}
+    return {
+        "accepted": True,
+        "segment_id": segment_id,
+        "new": inserted,
+        "metadata_event_enqueued": bool(settings.recording_metadata_events_enabled and inserted),
+    }
