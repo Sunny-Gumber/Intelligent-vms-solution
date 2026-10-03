@@ -1,0 +1,106 @@
+name: Intelligent VMS Security
+
+on:
+  pull_request:
+    paths:
+      - 'intelligent-vms-v1/**'
+      - '.github/workflows/intelligent-vms-security.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'intelligent-vms-v1/**'
+      - '.github/workflows/intelligent-vms-security.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned Python dependency scanner
+        run: python -m pip install --upgrade pip pip-audit==2.10.1
+      - name: Audit production Python requirements
+        run: |
+          set -euo pipefail
+          for requirements in \
+            services/control-api/requirements.txt \
+            services/event-writer/requirements.txt \
+            services/node-agent/requirements.txt \
+            services/regional-spool/requirements.txt
+          do
+            echo "Auditing $requirements"
+            pip-audit --strict --progress-spinner off -r "$requirements"
+          done
+
+  container-audit:
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: intelligent-vms-security
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build VMS images
+        run: |
+          cp .env.example .env
+          docker compose build \
+            control-api \
+            event-writer \
+            mediamtx \
+            onvif-event-worker \
+            alarm-worker \
+            placement-controller \
+            node-agent \
+            regional-spool \
+            web
+      - name: Pull pinned Trivy scanner
+        run: docker pull aquasec/trivy:0.74.0
+      - name: Scan VMS images for HIGH/CRITICAL vulnerabilities
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/trivy"
+          for service in \
+            control-api \
+            event-writer \
+            mediamtx \
+            onvif-event-worker \
+            alarm-worker \
+            placement-controller \
+            node-agent \
+            regional-spool \
+            web
+          do
+            image_ref="${COMPOSE_PROJECT_NAME}-${service}:latest"
+            if ! docker image inspect "$image_ref" >/dev/null 2>&1; then
+              echo "No built image found for $service at $image_ref" >&2
+              exit 2
+            fi
+
+            echo "Reporting all HIGH/CRITICAL findings for $service ($image_ref)"
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$HOME/.cache/trivy:/root/.cache/" \
+              aquasec/trivy:0.74.0 image \
+              --exit-code 0 \
+              --severity HIGH,CRITICAL \
+              "$image_ref"
+
+            echo "Enforcing fixable HIGH/CRITICAL gate for $service ($image_ref)"
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$HOME/.cache/trivy:/root/.cache/" \
+              aquasec/trivy:0.74.0 image \
+              --exit-code 1 \
+              --ignore-unfixed \
+              --severity HIGH,CRITICAL \
+              "$image_ref"
+          done
