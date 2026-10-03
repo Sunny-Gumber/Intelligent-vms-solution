@@ -333,3 +333,14 @@ def test_windows_control_service_delegates_shutdown_to_scm_not_process_signals()
     assert "yield" in SERVICE_HOST
     assert "self.server.should_exit = True" in SERVICE_HOST
     assert "self.server._serve(" not in SERVICE_HOST
+
+
+def test_windows_failure_diagnostics_emit_product_logs_before_nonfatal_event14_query():
+    failure = WORKFLOW.index("Capture Windows service failure evidence")
+    cleanup = WORKFLOW.index("Cleanup ephemeral hosted-runner state")
+    block = WORKFLOW[failure:cleanup]
+    assert block.index("=== bounded product log tails ===") < block.index("=== raw recent Python Service Event 14 ===")
+    assert "Get-Content -LiteralPath $path -Tail 100" in block
+    assert 'ProviderName="Python Service";Id=14' not in block
+    assert '$_.ProviderName -eq "Python Service" -and $_.Id -eq 14' in block
+    assert "Python Service Event 14 query unavailable" in block

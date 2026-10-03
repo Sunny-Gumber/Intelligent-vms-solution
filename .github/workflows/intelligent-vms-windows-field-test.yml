@@ -167,9 +167,20 @@ jobs:
               Select-Object TimeCreated,ProviderName,Id,LevelDisplayName,Message |
               Format-List
           }
+          Write-Host "=== bounded product log tails ==="
+          foreach($name in @("control-api.log","mediamtx.log")){
+            $path = Join-Path $root "logs\\$name"
+            if(Test-Path $path){Get-Content -LiteralPath $path -Tail 100}
+          }
           Write-Host "=== raw recent Python Service Event 14 ==="
-          $pythonEvents = Get-WinEvent -FilterHashtable @{LogName="Application";ProviderName="Python Service";Id=14;StartTime=$since} -ErrorAction SilentlyContinue
-          foreach($event in @($pythonEvents)){
+          try {
+            $pythonEvents = @(Get-WinEvent -FilterHashtable @{LogName="Application";StartTime=$since} -ErrorAction Stop |
+              Where-Object {$_.ProviderName -eq "Python Service" -and $_.Id -eq 14})
+          } catch {
+            $pythonEvents = @()
+            Write-Host "Python Service Event 14 query unavailable: $($_.Exception.Message)"
+          }
+          foreach($event in $pythonEvents){
             [pscustomobject]@{
               TimeCreated=$event.TimeCreated
               RecordId=$event.RecordId
@@ -194,12 +205,6 @@ jobs:
             Get-ChildItem $runtime -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
               Select-Object -ExpandProperty FullName
           }
-          Write-Host "=== bounded product log tails ==="
-          foreach($name in @("control-api.log","mediamtx.log")){
-            $path = Join-Path $root "logs\\$name"
-            if(Test-Path $path){Get-Content -LiteralPath $path -Tail 100}
-          }
-
       - name: Cleanup ephemeral hosted-runner state
         if: always()
         shell: pwsh
