@@ -36,6 +36,8 @@ async def ingest_event(
     Raises:
         HTTPException: If scope authorization or payload-size bounds fail.
     """
+    if not settings.event_pipeline_enabled:
+        raise HTTPException(503, "Event pipeline unavailable in deployment profile")
     require_scope(principal, event.tenant_id, event.site_id)
     payload = event.model_dump(mode="json")
     try:
@@ -78,6 +80,8 @@ async def search_events(
     Raises:
         HTTPException: If time/scope validation fails or event search is unavailable.
     """
+    if not settings.event_history_enabled:
+        raise HTTPException(503, "Event history unavailable in deployment profile")
     now = datetime.now(timezone.utc)
     end = end or now
     start = start or (end - timedelta(hours=24))
@@ -141,6 +145,8 @@ async def ingest_spooled_event(
         settings.regional_spool_token,
     ):
         raise HTTPException(401, "Invalid regional spool token")
+    if not settings.event_pipeline_enabled:
+        raise HTTPException(503, "Event pipeline unavailable in deployment profile")
     payload = event.model_dump(mode="json")
     try:
         inserted = await enqueue_event_once(session, payload)
