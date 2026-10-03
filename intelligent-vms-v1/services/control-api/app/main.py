@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core.errors import install_error_handlers
@@ -88,3 +90,9 @@ app.include_router(diagnostics.router)
 
 app.include_router(ai.router)
 app.include_router(placement.router)
+
+if settings.web_static_dir:
+    static_root = Path(settings.web_static_dir).expanduser()
+    if not static_root.is_dir():
+        raise RuntimeError("WEB_STATIC_DIR must identify an existing directory")
+    app.mount("/", StaticFiles(directory=static_root, html=True), name="web")
