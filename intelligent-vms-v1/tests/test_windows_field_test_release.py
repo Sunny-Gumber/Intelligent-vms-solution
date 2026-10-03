@@ -126,6 +126,9 @@ def test_windows_service_model_is_native_and_dependency_ordered():
     assert "intelligent_vms_app.pth" in INSTALL
     assert "import deploy.windows.service_host" in INSTALL
     assert "windows_service_host_import_ok" in INSTALL
+    assert "sys.base_prefix" in INSTALL
+    assert "Python service runtime DLL missing" in INSTALL
+    assert "Copy-Item -LiteralPath $pythonDll -Destination $serviceRuntimeDll -Force" in INSTALL
     assert "sitePackages \"win32\\pythonservice.exe\"" not in INSTALL
     assert 'serviceDeps=[postgres_service]' in SERVICE_MANAGER
     assert 'serviceDeps=["IntelligentVMSControl"]' in SERVICE_MANAGER
