@@ -1,0 +1,134 @@
+{{- if .Values.observability.grafana.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "intelligent-vms.fullname" . }}-grafana-dashboard
+  labels:
+    {{- include "intelligent-vms.labels" . | nindent 4 }}
+    app.kubernetes.io/component: observability
+    {{- with .Values.observability.grafana.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  intelligent-vms-overview.json: |-
+    {
+      "annotations": {"list": []},
+      "editable": true,
+      "graphTooltip": 1,
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Camera health by state",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [{"expr": "max(intelligent_vms_camera_health) by (state)"}],
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+        },
+        {
+          "type": "timeseries",
+          "title": "Recording continuity",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [
+            {"expr": "max(intelligent_vms_recording_active)", "legendFormat": "active policies"},
+            {"expr": "max(intelligent_vms_recording_gap_candidates)", "legendFormat": "expired gap candidates"},
+            {"expr": "max(intelligent_vms_recording_health_untracked)", "legendFormat": "health untracked"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+        },
+        {
+          "type": "timeseries",
+          "title": "Transactional outbox",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [
+            {"expr": "max(intelligent_vms_outbox_items) by (status)"},
+            {"expr": "max(intelligent_vms_outbox_oldest_pending_age_seconds)", "legendFormat": "oldest age seconds"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+        },
+        {
+          "type": "timeseries",
+          "title": "Infrastructure nodes",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [
+            {"expr": "max(intelligent_vms_nodes) by (state)"},
+            {"expr": "max(intelligent_vms_node_stale)", "legendFormat": "stale"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+        },
+        {
+          "type": "timeseries",
+          "title": "Node saturation and qualification",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [
+            {"expr": "max(intelligent_vms_node_saturated) by (role)"},
+            {"expr": "max(intelligent_vms_node_capacity_unmeasured) by (role)"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+        },
+        {
+          "type": "timeseries",
+          "title": "Placement application state",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [
+            {"expr": "max(intelligent_vms_placement_assignments) by (role, status)"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+        },
+        {
+          "type": "timeseries",
+          "title": "Control API request rate / 5xx",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [
+            {"expr": "sum(rate(intelligent_vms_http_requests_total[5m]))", "legendFormat": "requests/s"},
+            {"expr": "sum(rate(intelligent_vms_http_requests_total{status=~\\\"5..\\\"}[5m]))", "legendFormat": "5xx/s"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24}
+        },
+        {
+          "type": "timeseries",
+          "title": "Control API p95 latency",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [
+            {"expr": "histogram_quantile(0.95, sum by (le) (rate(intelligent_vms_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95 seconds"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}
+        },
+        {
+          "type": "stat",
+          "title": "AI policies enabled",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [{"expr": "max(intelligent_vms_ai_policies_enabled)"}],
+          "gridPos": {"h": 6, "w": 6, "x": 0, "y": 32}
+        },
+        {
+          "type": "stat",
+          "title": "Operational refresh OK",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [{"expr": "min(intelligent_vms_operational_refresh_ok)"}],
+          "gridPos": {"h": 6, "w": 6, "x": 6, "y": 32}
+        },
+        {
+          "type": "stat",
+          "title": "Camera transport ready",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [{"expr": "max(intelligent_vms_camera_transport_ready)"}],
+          "gridPos": {"h": 6, "w": 6, "x": 12, "y": 32}
+        },
+        {
+          "type": "stat",
+          "title": "Media paths present",
+          "datasource": {"type": "prometheus", "uid": {{ .Values.observability.grafana.datasourceUid | quote }}},
+          "targets": [{"expr": "max(intelligent_vms_media_paths_present)"}],
+          "gridPos": {"h": 6, "w": 6, "x": 18, "y": 32}
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "tags": ["intelligent-vms", "phase9", "sre"],
+      "templating": {"list": []},
+      "time": {"from": "now-6h", "to": "now"},
+      "timezone": "browser",
+      "title": "Intelligent VMS - SRE Overview",
+      "uid": "intelligent-vms-sre",
+      "version": 1
+    }
+{{- end }}
