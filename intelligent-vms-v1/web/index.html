@@ -131,6 +131,7 @@ code{color:#9cdcfe}@media(max-width:720px){.event{grid-template-columns:1fr 1fr}
 <script>
 const API='/api/v1';
 let authenticated=false;
+let deploymentCapabilities={deployment_profile:'enterprise-distributed',event_history:true,alarm_processing:true,ai_ui:true,distributed_placement:false};
 let cameraCache=[];let healthMap={};let aiCameraId=null;let aiPolicyCache=null;let liveSessions=new Map();let snapshotBusy=new Set();
 let liveWorkspace={tileCount:4,activeTile:0,assignments:[null,null,null,null],roles:[null,null,null,null],generations:[0,0,0,0]};
 const PLAYBACK_MAX_SECONDS=14400;
@@ -220,6 +221,17 @@ async function saveCamera(event){
   message.textContent='Camera added. Select it in an active live tile.';await refreshCameras();
  }catch(e){message.textContent='Camera add failed: '+String(e.message||'request failed')}
  finally{password.value=''}
+}
+async function refreshCapabilities(){
+ try{
+  deploymentCapabilities=await jsonFetch(`${API}/system/capabilities`);
+ }catch{
+  deploymentCapabilities={deployment_profile:'enterprise-distributed',event_history:true,alarm_processing:true,ai_ui:true,distributed_placement:false};
+ }
+ document.getElementById('events').style.display=deploymentCapabilities.event_history?'block':'none';
+ document.getElementById('alarms').style.display=deploymentCapabilities.alarm_processing?'block':'none';
+ document.getElementById('aiSummary').style.display=deploymentCapabilities.ai_ui?'flex':'none';
+ if(!deploymentCapabilities.ai_ui)closeAI();
 }
 async function refreshHealth(){
  const el=document.getElementById('system');
@@ -452,6 +464,7 @@ async function refreshCameras(){
 }
 async function refreshEvents(cameraId=''){
  const root=document.getElementById('eventList');
+ if(!deploymentCapabilities.event_history){root.innerHTML='<div class="empty">Event history is not part of this deployment profile.</div>';return}
  try{
   const suffix=cameraId?`&camera_id=${encodeURIComponent(cameraId)}`:'';
   const rows=await jsonFetch(`${API}/events?limit=50${suffix}`);
@@ -464,9 +477,10 @@ async function refreshEvents(cameraId=''){
   </div>`).join('');
  }catch(e){root.innerHTML='<div class="empty">Event search unavailable: '+esc(e.message)+'</div>'}
 }
-function showCameraEvents(id){refreshEvents(id);document.getElementById('events').scrollIntoView({behavior:'smooth'})}
+function showCameraEvents(id){if(!deploymentCapabilities.event_history)return;refreshEvents(id);document.getElementById('events').scrollIntoView({behavior:'smooth'})}
 async function refreshAlarms(){
  const root=document.getElementById('alarmList');
+ if(!deploymentCapabilities.alarm_processing){root.innerHTML='<div class="empty">Alarm processing is not part of this deployment profile.</div>';return}
  try{
   const rows=await jsonFetch(`${API}/alarms?state=open&limit=50`);
   if(!rows.length){root.innerHTML='<div class="empty">No open alarms.</div>';return}
@@ -501,12 +515,14 @@ async function showDiagnostics(id){
 
 async function refreshAIStatus(){
  const root=document.getElementById('aiSummary');
+ if(!deploymentCapabilities.ai_ui){root.innerHTML='';return}
  try{
   const s=await jsonFetch(`${API}/ai/status`);
   root.innerHTML=`<span class="badge">AI enabled ${s.enabled_policies}</span><span class="badge">inference ${s.inference_policies}</span>`;
  }catch{root.innerHTML='<span class="muted">AI orchestration unavailable.</span>'}
 }
 async function openAI(id){
+ if(!deploymentCapabilities.ai_ui)return;
  aiCameraId=id;aiPolicyCache=null;
  const panel=document.getElementById('aiPanel'),c=cameraCache.find(x=>x.id===id);
  document.getElementById('aiTitle').textContent='Camera AI · '+(c?c.name:id);
@@ -709,7 +725,16 @@ function closePlayback(scrollToLive=false){
 }
 function returnToLive(){closePlayback(true)}
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':'&quot;'}[c]))}
-async function refreshAll(){await refreshManualRecordings();await refreshHealth();await Promise.all([refreshCameras(),refreshEvents(),refreshAlarms(),refreshAIStatus()])}
+async function refreshAll(){
+ await refreshCapabilities();
+ await refreshManualRecordings();
+ await refreshHealth();
+ const tasks=[refreshCameras()];
+ if(deploymentCapabilities.event_history)tasks.push(refreshEvents());
+ if(deploymentCapabilities.alarm_processing)tasks.push(refreshAlarms());
+ if(deploymentCapabilities.ai_ui)tasks.push(refreshAIStatus());
+ await Promise.all(tasks);
+}
 window.addEventListener('pagehide',()=>{closePlayback(false)});
 window.addEventListener('pagehide',()=>{stopLiveSessions()});
 initializeSession();setInterval(()=>{if(authenticated)refreshHealth()},10000);
