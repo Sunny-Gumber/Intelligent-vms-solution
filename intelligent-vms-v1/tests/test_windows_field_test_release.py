@@ -152,8 +152,10 @@ def test_windows_installer_is_non_docker_pins_media_and_protects_paths():
     assert "UNC/network recording storage is not supported" in INSTALL
     assert "icacls.exe" in INSTALL
     assert '"-m","alembic"' in INSTALL
-    assert '([string]$roleExists).Trim()' in INSTALL
-    assert '([string]$dbExists).Trim()' in INSTALL
+    assert '$roleFound = @($roleExists) -contains "1"' in INSTALL
+    assert '$databaseFound = @($dbExists) -contains "1"' in INSTALL
+    assert '([string]$roleExists).Trim()' not in INSTALL
+    assert '([string]$dbExists).Trim()' not in INSTALL
 
 
 def test_uninstall_and_purge_are_non_destructive_by_default():
