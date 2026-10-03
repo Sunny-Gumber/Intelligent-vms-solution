@@ -8,7 +8,7 @@ var tests=new List<(string,Func<Task>)>{
 ("capability/camera parsing",TestApiParsing),("camera tree",TestCameraTree),("live grant/session cleanup",TestLive),
 ("TLS/media policy",TestTls),("diagnostics",TestDiagnostics),("package isolation",TestPackaging)};
 var failures=0;
-foreach(var (name,test) in tests){try{await test();Console.WriteLine($"PASS \${name}");}catch(Exception ex){failures++;Console.Error.WriteLine($"FAIL \${name}: \${ex.GetType().Name}: \${ex.Message}");}}
+foreach(var (name,test) in tests){try{await test();Console.WriteLine($"PASS ${name}");}catch(Exception ex){failures++;Console.Error.WriteLine($"FAIL ${name}: ${ex.GetType().Name}: ${ex.Message}");}}
 return failures==0?0:1;
 
 static Task TestServerProfiles(){
@@ -80,10 +80,10 @@ static HttpResponseMessage Json(HttpStatusCode code,string json)=>new(code){Cont
 static string TempDir(){var p=Path.Combine(Path.GetTempPath(),"ivms-client-tests",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(p);return p;}
 static string FindRepoRoot(){var d=new DirectoryInfo(Directory.GetCurrentDirectory());while(d is not null){if(Directory.Exists(Path.Combine(d.FullName,"clients","windows")))return d.FullName;d=d.Parent;}throw new InvalidOperationException("Repository root not found.");}
 static void Assert(bool value){if(!value)throw new InvalidOperationException("Assertion failed.");}
-static async Task Throws<T>(Func<Task> action) where T:Exception{try{await action();}catch(T){return;}throw new InvalidOperationException($"Expected \${typeof(T).Name}.");}
-static void ThrowsSync<T>(Action action) where T:Exception{try{action();}catch(T){return;}throw new InvalidOperationException($"Expected \${typeof(T).Name}.");}
+static async Task Throws<T>(Func<Task> action) where T:Exception{try{await action();}catch(T){return;}throw new InvalidOperationException($"Expected ${typeof(T).Name}.");}
+static void ThrowsSync<T>(Action action) where T:Exception{try{action();}catch(T){return;}throw new InvalidOperationException($"Expected ${typeof(T).Name}.");}
 sealed class StubHandler(Func<HttpRequestMessage,HttpResponseMessage> response):HttpMessageHandler{protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken cancellationToken)=>Task.FromResult(response(request));}
 sealed class MemoryCredentials:ICredentialStore{public string? Value;public Task SaveAsync(Guid p,string t,CancellationToken c=default){Value=t;return Task.CompletedTask;}public Task<string?> LoadAsync(Guid p,CancellationToken c=default)=>Task.FromResult(Value);public Task DeleteAsync(Guid p,CancellationToken c=default){Value=null;return Task.CompletedTask;}}
 sealed class MemoryLogger:IClientLogger{public void Info(string s,string m){}public void Warning(string s,string m){}public void Error(string s,string m,Exception? e=null){}}
-sealed class FakeLiveProvider:ILiveAccessProvider{public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken c=default)=>Task.FromResult(new LiveAccessGrant{CameraId=cameraId,StreamRole=role,Path="path",WebRtcUrl=$"https://media.example/\${cameraId}",AccessToken="short-lived",ExpiresAt=DateTimeOffset.UtcNow.AddMinutes(1)});}
+sealed class FakeLiveProvider:ILiveAccessProvider{public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken c=default)=>Task.FromResult(new LiveAccessGrant{CameraId=cameraId,StreamRole=role,Path="path",WebRtcUrl=$"https://media.example/${cameraId}",AccessToken="short-lived",ExpiresAt=DateTimeOffset.UtcNow.AddMinutes(1)});}
 sealed class FakeRenderer:ILiveMediaRenderer{public int Starts,Stops;public string State{get;private set;}="IDLE";public Task StartAsync(LiveAccessGrant g,CancellationToken c=default){Starts++;State="LIVE";return Task.CompletedTask;}public Task StopAsync(CancellationToken c=default){Stops++;State="IDLE";return Task.CompletedTask;}}

@@ -28,7 +28,7 @@ public static class ClientPaths
 public sealed record ServerProfile(Guid Id, string DisplayName, string Scheme, string Host, int Port)
 {
     public Uri ApiBaseAddress => new UriBuilder(Scheme, Host, Port).Uri;
-    public string SafeAddress => $"\${Scheme}://\${Host}:\${Port}";
+    public string SafeAddress => $"${Scheme}://${Host}:${Port}";
 }
 public sealed record ValidationResult(bool IsValid, string Message)
 {
@@ -172,9 +172,9 @@ public sealed class BoundedFileLogger : IClientLogger
         {
             RotateIfNeeded();
             var safe = SecretRedactor.Redact(message);
-            var detail = exception is null ? "" : $" error_type=\${exception.GetType().Name}";
+            var detail = exception is null ? "" : $" error_type=${exception.GetType().Name}";
             File.AppendAllText(Path.Combine(_directory, "desktop.log"),
-                $"\${DateTimeOffset.UtcNow:O} level=\${level} subsystem=\${SafeToken(subsystem)} message=\${safe}\${detail}\${Environment.NewLine}");
+                $"${DateTimeOffset.UtcNow:O} level=${level} subsystem=${SafeToken(subsystem)} message=${safe}${detail}${Environment.NewLine}");
         }
     }
     private void RotateIfNeeded()
@@ -184,8 +184,8 @@ public sealed class BoundedFileLogger : IClientLogger
         if (!file.Exists || file.Length < MaxBytes) return;
         for (var i = MaxFiles - 1; i >= 1; i--)
         {
-            var source = Path.Combine(_directory, i == 1 ? "desktop.log" : $"desktop.\${i - 1}.log");
-            var destination = Path.Combine(_directory, $"desktop.\${i}.log");
+            var source = Path.Combine(_directory, i == 1 ? "desktop.log" : $"desktop.${i - 1}.log");
+            var destination = Path.Combine(_directory, $"desktop.${i}.log");
             if (File.Exists(destination)) File.Delete(destination);
             if (File.Exists(source)) File.Move(source, destination);
         }
@@ -202,7 +202,7 @@ public interface ICredentialStore
 public sealed class WindowsCredentialStore : ICredentialStore
 {
     private const int CredTypeGeneric = 1, CredPersistLocalMachine = 2;
-    private static string Target(Guid id) => $"IntelligentVMS.Desktop/\${id:D}";
+    private static string Target(Guid id) => $"IntelligentVMS.Desktop/${id:D}";
     public Task SaveAsync(Guid profileId, string token, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -215,7 +215,7 @@ public sealed class WindowsCredentialStore : ICredentialStore
             Marshal.Copy(bytes, 0, blob, bytes.Length);
             var credential = new NativeCredential { Type = CredTypeGeneric, TargetName = Target(profileId), CredentialBlobSize = bytes.Length,
                 CredentialBlob = blob, Persist = CredPersistLocalMachine, UserName = "vms-session" };
-            if (!CredWrite(ref credential, 0)) throw new InvalidOperationException($"Credential Manager write failed (\${Marshal.GetLastWin32Error()}).");
+            if (!CredWrite(ref credential, 0)) throw new InvalidOperationException($"Credential Manager write failed (${Marshal.GetLastWin32Error()}).");
         }
         finally { Array.Clear(bytes); Marshal.ZeroFreeCoTaskMemUnicode(blob); }
         return Task.CompletedTask;
@@ -238,7 +238,7 @@ public sealed class WindowsCredentialStore : ICredentialStore
         cancellationToken.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         if (!CredDelete(Target(profileId), CredTypeGeneric, 0) && Marshal.GetLastWin32Error() != 1168)
-            throw new InvalidOperationException($"Credential Manager delete failed (\${Marshal.GetLastWin32Error()}).");
+            throw new InvalidOperationException($"Credential Manager delete failed (${Marshal.GetLastWin32Error()}).");
         return Task.CompletedTask;
     }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -338,7 +338,7 @@ public sealed class VmsApiClient : ILiveAccessProvider, IDisposable
     }
     public Task<List<CameraInfo>> GetCamerasAsync(CancellationToken ct=default)=>SendJsonAsync<List<CameraInfo>>(HttpMethod.Get,"/api/v1/cameras",ct);
     public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken ct=default)=>SendJsonAsync<LiveAccessGrant>(
-        HttpMethod.Post,$"/api/v1/live/cameras/\${Uri.EscapeDataString(cameraId)}/access?stream_role=\${Uri.EscapeDataString(role)}",ct);
+        HttpMethod.Post,$"/api/v1/live/cameras/${Uri.EscapeDataString(cameraId)}/access?stream_role=${Uri.EscapeDataString(role)}",ct);
     private async Task<T> SendJsonAsync<T>(HttpMethod method,string relative,CancellationToken ct)
     {
         using var request=new HttpRequestMessage(method,UriFor(relative));
@@ -384,9 +384,9 @@ public sealed class LiveSessionController : IAsyncDisposable
         {
             var grant=await _provider.GetLiveAccessAsync(cameraId,role,ct); if(generation!=_generation)return;
             LiveGrantValidator.Validate(_profile,cameraId,role,grant); await _renderer.StartAsync(grant,ct);
-            if(generation!=_generation){await _renderer.StopAsync(ct);return;} CameraId=cameraId;Role=role;_logger.Info("live",$"live session started camera_id=\${cameraId} role=\${role}");
+            if(generation!=_generation){await _renderer.StopAsync(ct);return;} CameraId=cameraId;Role=role;_logger.Info("live",$"live session started camera_id=${cameraId} role=${role}");
         }
-        catch{await _renderer.StopAsync(CancellationToken.None);_logger.Warning("live",$"live session failed camera_id=\${cameraId} role=\${role}");throw;}
+        catch{await _renderer.StopAsync(CancellationToken.None);_logger.Warning("live",$"live session failed camera_id=${cameraId} role=${role}");throw;}
     }
     public async Task StopAsync(CancellationToken ct=default){Interlocked.Increment(ref _generation);await _renderer.StopAsync(ct);CameraId=null;Role=null;}
     public ValueTask DisposeAsync()=>new(StopAsync());
@@ -399,7 +399,7 @@ public sealed class DiagnosticsService
         profile?.SafeAddress??"not configured",state.ToString(),caps?.DeploymentProfile??"unknown",ClientPaths.LogDirectory,mediaState);
     public async Task<string> ExportAsync(ClientDiagnostics diagnostics,string directory,CancellationToken ct=default)
     {
-        Directory.CreateDirectory(directory); var path=Path.Combine(directory,$"intelligent-vms-client-diagnostics-\${DateTime.UtcNow:yyyyMMddTHHmmssZ}.json");
+        Directory.CreateDirectory(directory); var path=Path.Combine(directory,$"intelligent-vms-client-diagnostics-${DateTime.UtcNow:yyyyMMddTHHmmssZ}.json");
         var json=JsonSerializer.Serialize(diagnostics,new JsonSerializerOptions{WriteIndented=true}); await File.WriteAllTextAsync(path,SecretRedactor.Redact(json),ct); return path;
     }
 }

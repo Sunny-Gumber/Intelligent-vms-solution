@@ -51,7 +51,7 @@ jobs:
           if($source -match '(?i)ProgramData.*IntelligentVMS'){throw "Desktop client must not own server ProgramData state"}
       - name: Publish deterministic win-x64 package
         shell: pwsh
-        run: .\clients\windows\packaging\Publish-Client.ps1 -Version "0.1.\${{ github.run_number }}" -OutputRoot "$env:RUNNER_TEMP\client-artifacts"
+        run: .\clients\windows\packaging\Publish-Client.ps1 -Version "0.1.${{ github.run_number }}" -OutputRoot "$env:RUNNER_TEMP\client-artifacts"
       - name: Launch smoke
         shell: pwsh
         run: |
@@ -72,7 +72,7 @@ jobs:
         with:
           name: IntelligentVMS-DesktopClient-win-x64
           path: |
-            \${{ runner.temp }}/client-artifacts/*.zip
-            \${{ runner.temp }}/client-artifacts/*.sha256
+            ${{ runner.temp }}/client-artifacts/*.zip
+            ${{ runner.temp }}/client-artifacts/*.sha256
           if-no-files-found: error
           retention-days: 14
