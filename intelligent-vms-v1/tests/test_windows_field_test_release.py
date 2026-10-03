@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from app.core.config import settings
+from app.core.security import encrypt_secret
 from app.core.security_posture import validate_security_posture
 from app.services.mediamtx import MediaMTXClient
 from deploy.windows.generate_windows_env import generate
@@ -203,3 +204,13 @@ def test_windows_small_site_profile_fails_closed_if_enterprise_services_are_enab
     monkeypatch.setattr(settings, "event_history_enabled", True)
     with pytest.raises(RuntimeError, match="EVENT_HISTORY_ENABLED"):
         validate_security_posture()
+
+
+def test_windows_ci_uses_test_only_secret_and_production_default_fails_closed(monkeypatch):
+    """Keep the Windows CI key explicit while production remains fail-closed."""
+    assert "VMS_SECRET_KEY: windows-ci-test-key-not-for-production" in WORKFLOW
+    config_source = (ROOT / "services/control-api/app/core/config.py").read_text(encoding="utf-8")
+    assert 'vms_secret_key: str = ""' in config_source
+    monkeypatch.setattr(settings, "vms_secret_key", "")
+    with pytest.raises(RuntimeError, match="VMS_SECRET_KEY must be configured"):
+        encrypt_secret("synthetic-camera-password")
