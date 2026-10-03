@@ -129,6 +129,23 @@ def test_windows_service_model_is_native_and_dependency_ordered():
     assert "Docker" not in SERVICE_MANAGER and "WSL" not in SERVICE_MANAGER
 
 
+def test_windows_env_importer_preserves_empty_and_embedded_equals_values():
+    """Parse env assignments at the first separator without dropping empty values."""
+    importer = INSTALL.split("function Import-VmsEnv", 1)[1].split("function Invoke-Checked", 1)[0]
+    assert '.Split("=", 2)' not in importer
+    assert '$separator = $line.IndexOf("=")' in importer
+    assert '$name = $line.Substring(0, $separator).Trim()' in importer
+    assert '$value = $line.Substring($separator + 1).Trim()' in importer
+    assert '$value.Length -ge 2' in importer
+    assert "SetEnvironmentVariable($name, $value" in importer
+    # The reduced profile intentionally emits an empty assignment that the importer must preserve.
+    assert "KAFKA_BOOTSTRAP_SERVERS=\\n" in (
+        ROOT / "deploy/windows/generate_windows_env.py"
+    ).read_text(encoding="utf-8") or "KAFKA_BOOTSTRAP_SERVERS=" in (
+        ROOT / "deploy/windows/generate_windows_env.py"
+    ).read_text(encoding="utf-8")
+
+
 def test_windows_installer_is_non_docker_pins_media_and_protects_paths():
     lower = INSTALL.lower()
     assert "docker.exe" not in lower and "docker compose" not in lower
