@@ -1,0 +1,60 @@
+{
+  "required_roles": {
+    "control_api": "control_ops_per_second",
+    "event_ingest": "events_per_second",
+    "media": "media_mbps",
+    "recording": "recording_mbps",
+    "storage": "storage_write_mbps",
+    "ai": "ai_mpix_s"
+  },
+  "profiles": [
+    {
+      "name": "site-500",
+      "cameras": 500,
+      "demands": {
+        "control_ops_per_second": null,
+        "events_per_second": null,
+        "media_mbps": null,
+        "recording_mbps": null,
+        "storage_write_mbps": null,
+        "ai_mpix_s": null
+      }
+    },
+    {
+      "name": "site-2000",
+      "cameras": 2000,
+      "demands": {
+        "control_ops_per_second": null,
+        "events_per_second": null,
+        "media_mbps": null,
+        "recording_mbps": null,
+        "storage_write_mbps": null,
+        "ai_mpix_s": null
+      }
+    },
+    {
+      "name": "region-10000",
+      "cameras": 10000,
+      "demands": {
+        "control_ops_per_second": null,
+        "events_per_second": null,
+        "media_mbps": null,
+        "recording_mbps": null,
+        "storage_write_mbps": null,
+        "ai_mpix_s": null
+      }
+    },
+    {
+      "name": "global-100000-logical",
+      "cameras": 100000,
+      "demands": {
+        "control_ops_per_second": null,
+        "events_per_second": null,
+        "media_mbps": null,
+        "recording_mbps": null,
+        "storage_write_mbps": null,
+        "ai_mpix_s": null
+      }
+    }
+  ]
+}

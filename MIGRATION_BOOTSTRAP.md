@@ -1,3 +1,5 @@
 # Intelligent VMS migration bootstrap
 
-This repository is being populated from the accepted Intelligent VMS field-test baseline after a public-release security review. Until migration validation completes, `Sunny-Gumber/camvault` remains the authoritative recovery source.
+Private-stage migration is tracked by destination issue #1 and `intelligent-vms-v1/docs/program/MIGRATION_PROVENANCE.md`.
+
+Until the public destination baseline passes required validation and is merged, `Sunny-Gumber/camvault` remains the frozen authoritative recovery source.

@@ -1,0 +1,169 @@
+{
+  "schema_version": "phase9-release-policy-v1",
+  "release_name": "Intelligent VMS Phase 9",
+  "software_artifacts": [
+    {
+      "id": "production_program_rc_contract",
+      "path": "intelligent-vms-v1/docs/program/PRODUCTION_EXECUTION_PLAN.md",
+      "required_text": [
+        "## 9.7 — Release Candidate Gate",
+        "Release Candidate / External Qualification Pending"
+      ]
+    },
+    {
+      "id": "agent_status_contract",
+      "path": "intelligent-vms-v1/docs/program/AGENT_EXECUTION_PROTOCOL.md",
+      "required_text": [
+        "Release Candidate",
+        "Production Qualified"
+      ]
+    },
+    {
+      "id": "phase7_chaos_qualification",
+      "path": "intelligent-vms-v1/docs/testing/PHASE7_CHAOS_QUALIFICATION.md",
+      "required_text": [
+        "deterministic software exit gate"
+      ]
+    },
+    {
+      "id": "phase8_hardware_matrix_contract",
+      "path": "intelligent-vms-v1/benchmarks/HARDWARE_QUALIFICATION.md",
+      "required_text": [
+        "QUALIFIED_FROM_MEASURED_EVIDENCE",
+        "UNQUALIFIED"
+      ]
+    },
+    {
+      "id": "phase8_reproducibility_contract",
+      "path": "intelligent-vms-v1/benchmarks/BENCHMARK_REPRODUCIBILITY.md",
+      "required_text": [
+        "reproducible under the configured QA policy",
+        "does not by itself prove a deployment scale"
+      ]
+    },
+    {
+      "id": "phase9_deployment_runbook",
+      "path": "intelligent-vms-v1/docs/operations/KUBERNETES_HELM.md",
+      "required_text": [
+        "Phase 9.3 backup, DR and rollback",
+        "upgrade-preflight.sh"
+      ]
+    },
+    {
+      "id": "phase9_observability_slo",
+      "path": "intelligent-vms-v1/docs/operations/PHASE9_OBSERVABILITY_SLO.md",
+      "required_text": [
+        "## 7. Release gate",
+        "recording_gap_candidates"
+      ]
+    },
+    {
+      "id": "phase9_backup_restore_dr",
+      "path": "intelligent-vms-v1/docs/operations/PHASE9_BACKUP_RESTORE_DR.md",
+      "required_text": [
+        "Phase 9.3 software exit gate",
+        "External RPO/RTO"
+      ]
+    },
+    {
+      "id": "phase9_security_review",
+      "path": "intelligent-vms-v1/docs/security/PHASE9_PRODUCTION_SECURITY.md",
+      "required_text": [
+        "## Release security evidence",
+        "Trivy fails on fixable HIGH/CRITICAL image findings"
+      ]
+    },
+    {
+      "id": "upgrade_preflight",
+      "path": "intelligent-vms-v1/deploy/operations/upgrade-preflight.sh",
+      "required_text": []
+    },
+    {
+      "id": "software_ci_workflow",
+      "path": ".github/workflows/intelligent-vms-ci.yml",
+      "required_text": [
+        "Phase 9.3 recovery harness smoke"
+      ]
+    },
+    {
+      "id": "security_ci_workflow",
+      "path": ".github/workflows/intelligent-vms-security.yml",
+      "required_text": [
+        "Scan VMS images for HIGH/CRITICAL vulnerabilities",
+        "Enforcing fixable HIGH/CRITICAL gate"
+      ]
+    },
+    {
+      "id": "phase9_release_readiness_report",
+      "path": "intelligent-vms-v1/docs/release/PHASE9_RELEASE_CANDIDATE.md",
+      "required_text": [
+        "RELEASE_CANDIDATE_EXTERNAL_QUALIFICATION_PENDING",
+        "Release Candidate != Production Qualified"
+      ]
+    }
+  ],
+  "feature_catalog": {
+    "path": "intelligent-vms-v1/docs/product/FEATURE_CATALOG.csv",
+    "id_column": "feature_id",
+    "expected_rows": 623
+  },
+  "tracked_release_exceptions": [
+    {
+      "id": "python_base_unfixed_high_cves",
+      "status": "TRACKED",
+      "blocking": false,
+      "reference": "#261",
+      "description": "Inherited Python base-image HIGH CVEs with no fixed version; blocking fixable HIGH/CRITICAL gate remains enabled and the exception is limited to Release Candidate evaluation."
+    }
+  ],
+  "external_qualification": [
+    {
+      "id": "real_camera_interoperability_matrix",
+      "status": "PENDING",
+      "evidence_path": "",
+      "description": "Target vendor/model/firmware discovery, streaming, event, PTZ, recording, reconnect and metadata evidence."
+    },
+    {
+      "id": "target_hardware_benchmark",
+      "status": "PENDING",
+      "evidence_path": "",
+      "description": "Measured control/media/recording/event/AI node capacity on target production hardware with safe headroom."
+    },
+    {
+      "id": "storage_network_qualification",
+      "status": "PENDING",
+      "evidence_path": "",
+      "description": "Target storage, NIC/switching, packet-loss/jitter, WAN outage/backfill and sustained recording evidence."
+    },
+    {
+      "id": "real_environment_ha_failure_drills",
+      "status": "PENDING",
+      "evidence_path": "",
+      "description": "Media/recording/controller/region failure and recovery drills on the intended deployment topology."
+    },
+    {
+      "id": "target_backup_restore_rpo_rto",
+      "status": "PENDING",
+      "evidence_path": "",
+      "description": "Backup/restore exercise and measured RPO/RTO on the target database, storage and regional infrastructure."
+    },
+    {
+      "id": "target_upgrade_rollback_continuity",
+      "status": "PENDING",
+      "evidence_path": "",
+      "description": "N-1 to N upgrade, failed rollout recovery and rollback with recording continuity on production-like infrastructure."
+    },
+    {
+      "id": "provider_security_controls",
+      "status": "PENDING",
+      "evidence_path": "",
+      "description": "Actual OIDC/PKI/mTLS/KMS, gateway rate limiting, immutable SIEM retention, firewall policy and penetration/abuse evidence."
+    },
+    {
+      "id": "pilot_soak_operator_validation",
+      "status": "PENDING",
+      "evidence_path": "",
+      "description": "Real-camera pilot soak, operator workflow validation and known-limitations sign-off."
+    }
+  ]
+}

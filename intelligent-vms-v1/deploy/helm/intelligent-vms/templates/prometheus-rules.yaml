@@ -1,0 +1,160 @@
+{{- if .Values.observability.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "intelligent-vms.fullname" . }}-sre-alerts
+  {{- with .Values.observability.prometheusRule.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "intelligent-vms.labels" . | nindent 4 }}
+    app.kubernetes.io/component: observability
+    {{- with .Values.observability.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: intelligent-vms.sre
+      rules:
+        - alert: IntelligentVMSControlApiNotReady
+          expr: min(intelligent_vms_ready) < 1
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: critical
+          annotations:
+            summary: Intelligent VMS control API dependency readiness is degraded
+            description: At least one scraped control API replica cannot refresh required durable state.
+        - alert: IntelligentVMSOperationalRefreshFailed
+          expr: min(intelligent_vms_operational_refresh_ok) < 1
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Intelligent VMS operational metric refresh is failing
+            description: Durable camera/recording/node/placement state could not be refreshed.
+        - alert: IntelligentVMSCameraOffline
+          expr: max(intelligent_vms_camera_health{state="offline"}) > {{ .Values.observability.prometheusRule.thresholds.cameraOfflineCount }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Camera offline count exceeded configured threshold
+            description: The aggregate durable camera health state exceeded the operator threshold.
+        - alert: IntelligentVMSCameraHealthStale
+          expr: max(intelligent_vms_camera_health_stale) > {{ .Values.observability.prometheusRule.thresholds.cameraHealthStaleCount }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Camera health observations are stale
+            description: One or more camera health rows are older than twice the configured heartbeat interval.
+        - alert: IntelligentVMSRecordingGapCandidates
+          expr: max(intelligent_vms_recording_gap_candidates) > {{ .Values.observability.prometheusRule.thresholds.recordingGapCandidates }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: critical
+          annotations:
+            summary: Continuous recording gap candidates detected
+            description: Durable segment completion deadlines expired for continuous recording policies.
+        - alert: IntelligentVMSRecordingHealthUntracked
+          expr: max(intelligent_vms_recording_health_untracked) > {{ .Values.observability.prometheusRule.thresholds.recordingHealthUntrackedCount }}
+          for: {{ .Values.observability.prometheusRule.recordingHealthUntrackedFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Continuous recording health state is not initialized
+            description: Active continuous recording policies lack an initialized durable health deadline; investigate prolonged startup, migration, or missing segment-complete hooks.
+        - alert: IntelligentVMSOutboxRetryBacklog
+          expr: max(intelligent_vms_outbox_items{status="retry"}) > {{ .Values.observability.prometheusRule.thresholds.outboxRetryCount }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Event delivery retry backlog exceeded threshold
+            description: Transactional outbox retries indicate broker or downstream delivery pressure.
+        - alert: IntelligentVMSOutboxDeadLetters
+          expr: max(intelligent_vms_outbox_items{status="dead"}) > {{ .Values.observability.prometheusRule.thresholds.outboxDeadCount }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: critical
+          annotations:
+            summary: Transactional outbox contains dead-lettered messages
+            description: Poison or repeatedly failing messages require operator review.
+        - alert: IntelligentVMSOutboxDeliveryLag
+          expr: max(intelligent_vms_outbox_oldest_pending_age_seconds) > {{ .Values.observability.prometheusRule.thresholds.outboxOldestPendingSeconds }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Transactional outbox delivery freshness breached
+            description: The oldest pending or retry message exceeded the configured age threshold.
+        - alert: IntelligentVMSNodeHeartbeatStale
+          expr: max(intelligent_vms_node_stale) > {{ .Values.observability.prometheusRule.thresholds.nodeStaleCount }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: critical
+          annotations:
+            summary: Infrastructure node heartbeat is stale
+            description: One or more enabled nodes exceeded the configured placement heartbeat freshness window.
+        - alert: IntelligentVMSNodeSaturated
+          expr: max by (role) (intelligent_vms_node_saturated) > {{ .Values.observability.prometheusRule.thresholds.nodeSaturatedCount }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Infrastructure node saturation threshold reached
+            description: Measured node load is at or above configured placement headroom for the reported role.
+        - alert: IntelligentVMSNodeCapacityUnmeasured
+          expr: max by (role) (intelligent_vms_node_capacity_unmeasured) > {{ .Values.observability.prometheusRule.thresholds.nodeCapacityUnmeasuredCount }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Node capacity or load is not qualified
+            description: At least one role lacks trustworthy capacity/load data; do not infer available headroom.
+        - alert: IntelligentVMSPlacementUnapplied
+          expr: max by (role) (intelligent_vms_placement_assignments{status="unapplied"}) > {{ .Values.observability.prometheusRule.thresholds.placementUnappliedCount }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Placement generations are not fully applied
+            description: Active placement ownership exists whose current generation has not been applied by execution.
+        - alert: IntelligentVMSHttp5xxRatioHigh
+          expr: |
+            (
+              sum(rate(intelligent_vms_http_requests_total{status=~"5.."}[5m]))
+              /
+              clamp_min(sum(rate(intelligent_vms_http_requests_total[5m])), 0.001)
+            ) > {{ .Values.observability.prometheusRule.thresholds.http5xxRatio }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Control API 5xx ratio exceeded configured SLO threshold
+            description: Server-side HTTP error ratio is above the configured threshold over the last five minutes.
+        - alert: IntelligentVMSHttpP95LatencyHigh
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum by (le) (rate(intelligent_vms_http_request_duration_seconds_bucket[5m]))
+            ) > {{ .Values.observability.prometheusRule.thresholds.httpP95Seconds }}
+          for: {{ .Values.observability.prometheusRule.defaultFor | quote }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Control API p95 latency exceeded configured SLO threshold
+            description: Request latency is above the configured objective over the last five minutes.
+        {{- range $name, $signal := .Values.observability.prometheusRule.externalSignals }}
+        {{- if $signal.expr }}
+        - alert: {{ printf "IntelligentVMSExternal_%s" $name }}
+          expr: {{ $signal.expr | quote }}
+          for: {{ default $.Values.observability.prometheusRule.defaultFor $signal.for | quote }}
+          labels:
+            severity: {{ default "warning" $signal.severity | quote }}
+          annotations:
+            summary: {{ default (printf "External %s signal breached" $name) $signal.summary | quote }}
+            description: Operator-supplied PromQL for the {{ $name }} exporter contract evaluated true.
+        {{- end }}
+        {{- end }}
+{{- end }}
