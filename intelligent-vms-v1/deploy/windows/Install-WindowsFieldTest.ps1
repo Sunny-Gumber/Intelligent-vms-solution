@@ -109,6 +109,7 @@ foreach ($path in @($Root,$ConfigRoot,$RuntimeRoot,$LogsRoot,$BackupRoot,$Record
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
 Protect-Directory $ConfigRoot
+Protect-Directory $RuntimeRoot
 Protect-Directory $RecordingRoot
 
 $postgresService = Find-PostgresService $PostgresServiceName
@@ -151,11 +152,94 @@ $appPathFile = Join-Path $sitePackages "intelligent_vms_app.pth"
 Set-Content -LiteralPath $appPathFile -Value $AppRoot -Encoding ascii
 Invoke-Checked $venvPython @("-c","import deploy.windows.service_host; print('windows_service_host_import_ok')")
 
-$pythonDll = (& $venvPython -c "import pathlib, sys; print(pathlib.Path(sys.base_prefix) / f'python{sys.version_info.major}{sys.version_info.minor}.dll')").Trim()
+# Build a self-contained pywin32 service-host runtime under protected VMS ownership.
+# pythonservice.exe is an embedding host; unlike the ordinary venv launcher it
+# must have deterministic access to servicemanager, win32 extensions, stdlib,
+# site-packages, and the VMS application when SCM starts it as LocalSystem.
+$basePrefix = (& $venvPython -c "import sys; print(sys.base_prefix)").Trim()
+if (-not $basePrefix) { throw "Could not resolve Python 3.12 base runtime." }
+$baseLib = Join-Path $basePrefix "Lib"
+$baseDlls = Join-Path $basePrefix "DLLs"
+if (-not (Test-Path -LiteralPath $baseLib)) { throw "Python standard library missing: $baseLib" }
+if (-not (Test-Path -LiteralPath $baseDlls)) { throw "Python DLL directory missing: $baseDlls" }
+
+$win32Root = Join-Path $sitePackages "win32"
+$win32Lib = Join-Path $win32Root "lib"
+$serviceExeSource = Join-Path $win32Root "pythonservice.exe"
+$pywin32Pth = Join-Path $sitePackages "pywin32.pth"
+$serviceManagerPyd = Get-ChildItem -LiteralPath $win32Root -Filter "servicemanager*.pyd" -File | Select-Object -First 1
+$win32ServicePyd = Get-ChildItem -LiteralPath $win32Root -Filter "win32service*.pyd" -File | Select-Object -First 1
+$win32EventPyd = Get-ChildItem -LiteralPath $win32Root -Filter "win32event*.pyd" -File | Select-Object -First 1
+$win32ServiceUtil = Join-Path $win32Lib "win32serviceutil.py"
+$pywintypesDll = Get-ChildItem -LiteralPath (Join-Path $sitePackages "pywin32_system32") -Filter "pywintypes312.dll" -File | Select-Object -First 1
+$pythoncomDll = Get-ChildItem -LiteralPath (Join-Path $sitePackages "pywin32_system32") -Filter "pythoncom312.dll" -File | Select-Object -First 1
+foreach($artifact in @($serviceExeSource,$pywin32Pth,$win32ServiceUtil)){
+    if(-not (Test-Path -LiteralPath $artifact)){ throw "Required pywin32 service artifact missing: $artifact" }
+}
+foreach($artifact in @($serviceManagerPyd,$win32ServicePyd,$win32EventPyd,$pywintypesDll,$pythoncomDll)){
+    if($null -eq $artifact){ throw "Required pywin32 service runtime artifact missing." }
+}
+
+Invoke-Checked $venvPython @("-c",@'
+import importlib.util
+from pathlib import Path
+import site
+for name in ("servicemanager","win32service","win32event","win32serviceutil","pywintypes","pythoncom"):
+    spec = importlib.util.find_spec(name)
+    if spec is None or spec.origin is None:
+        raise SystemExit(f"missing pywin32 module: {name}")
+    print(f"pywin32_layout {name}={Path(spec.origin)}")
+sp = Path(site.getsitepackages()[0])
+print(f"pywin32_layout pywin32.pth={sp / 'pywin32.pth'}")
+print(f"pywin32_layout win32={sp / 'win32'}")
+print(f"pywin32_layout win32_lib={sp / 'win32' / 'lib'}")
+'@)
+
+# Copy the CPython standard runtime into the VMS-owned service environment.
+& robocopy.exe $baseLib (Join-Path $VenvRoot "Lib") /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD site-packages __pycache__ | Out-Null
+if ($LASTEXITCODE -gt 7) { throw "Failed to stage Python standard library (robocopy exit $LASTEXITCODE)." }
+& robocopy.exe $baseDlls (Join-Path $VenvRoot "DLLs") /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -gt 7) { throw "Failed to stage Python runtime DLLs (robocopy exit $LASTEXITCODE)." }
+
+foreach($runtimeDll in Get-ChildItem -LiteralPath $basePrefix -Filter "python*.dll" -File){
+    Copy-Item -LiteralPath $runtimeDll.FullName -Destination (Join-Path $VenvRoot $runtimeDll.Name) -Force
+}
+$pythonDll = Join-Path $VenvRoot "python312.dll"
 if (-not (Test-Path -LiteralPath $pythonDll)) { throw "Python service runtime DLL missing: $pythonDll" }
-$serviceRuntimeDll = Join-Path $VenvRoot (Split-Path -Leaf $pythonDll)
-Copy-Item -LiteralPath $pythonDll -Destination $serviceRuntimeDll -Force
-Invoke-Checked $venvPython @("-c","import pathlib, win32serviceutil; p=pathlib.Path(win32serviceutil.LocatePythonServiceExe()); assert p.is_file(), p; print(p)")
+
+$serviceExe = Join-Path $VenvRoot "pythonservice.exe"
+Copy-Item -LiteralPath $serviceExeSource -Destination $serviceExe -Force
+Copy-Item -LiteralPath $pywintypesDll.FullName -Destination (Join-Path $VenvRoot $pywintypesDll.Name) -Force
+Copy-Item -LiteralPath $pythoncomDll.FullName -Destination (Join-Path $VenvRoot $pythoncomDll.Name) -Force
+
+# python312._pth is the CPython-supported isolated embedded-runtime path
+# contract. All entries are relative to the protected VMS runtime; no user
+# profile, mutable PATH, current directory, or GitHub-hosted-runner path is used.
+$servicePth = Join-Path $VenvRoot "python312._pth"
+@(
+    ".",
+    "Lib",
+    "DLLs",
+    "Lib\site-packages",
+    "Lib\site-packages\win32",
+    "Lib\site-packages\win32\lib",
+    "..\..\app"
+) | Set-Content -LiteralPath $servicePth -Encoding ascii
+
+# Validate the same python312.dll + python312._pth import contract used by
+# pythonservice.exe before creating any SCM registration.
+$probeExe = Join-Path $VenvRoot "service-runtime-python.exe"
+$basePythonExe = Join-Path $basePrefix "python.exe"
+if (-not (Test-Path -LiteralPath $basePythonExe)) { throw "Python runtime probe executable missing: $basePythonExe" }
+Copy-Item -LiteralPath $basePythonExe -Destination $probeExe -Force
+try {
+    Invoke-Checked $probeExe @("-c","import servicemanager, win32service, win32event, win32serviceutil, deploy.windows.service_host; print('windows_service_runtime_import_ok')")
+} finally {
+    Remove-Item -LiteralPath $probeExe -Force -ErrorAction SilentlyContinue
+}
+foreach($artifact in @($serviceExe,$pythonDll,$servicePth,(Join-Path $VenvRoot "pywintypes312.dll"),(Join-Path $VenvRoot "pythoncom312.dll"))){
+    if(-not (Test-Path -LiteralPath $artifact)){ throw "Prepared Windows service runtime artifact missing: $artifact" }
+}
 
 $mediaZip = Join-Path $env:TEMP "mediamtx_v1.21.1_windows_amd64.zip"
 $mediaUrl = "https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/mediamtx_v1.21.1_windows_amd64.zip"

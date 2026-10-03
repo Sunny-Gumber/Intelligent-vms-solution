@@ -121,14 +121,23 @@ def test_windows_service_model_is_native_and_dependency_ordered():
     assert "IntelligentVMSControl" in SERVICE_HOST
     assert "IntelligentVMSMedia" in SERVICE_HOST
     assert "win32serviceutil.InstallService" in SERVICE_MANAGER
-    assert "win32serviceutil.LocatePythonServiceExe()" in SERVICE_MANAGER
+    assert 'Path(sys.prefix) / "pythonservice.exe"' in SERVICE_MANAGER
+    assert "LocatePythonServiceExe()" not in SERVICE_MANAGER
     assert 'exeArgs="-service"' not in SERVICE_MANAGER
     assert "intelligent_vms_app.pth" in INSTALL
     assert "import deploy.windows.service_host" in INSTALL
     assert "windows_service_host_import_ok" in INSTALL
     assert "sys.base_prefix" in INSTALL
     assert "Python service runtime DLL missing" in INSTALL
-    assert "Copy-Item -LiteralPath $pythonDll -Destination $serviceRuntimeDll -Force" in INSTALL
+    assert "python312._pth" in INSTALL
+    assert "windows_service_runtime_import_ok" in INSTALL
+    assert "servicemanager" in INSTALL
+    assert "win32service" in INSTALL
+    assert "win32event" in INSTALL
+    assert "win32serviceutil" in INSTALL
+    assert "pywintypes312.dll" in INSTALL
+    assert "pythoncom312.dll" in INSTALL
+    assert 'Protect-Directory $RuntimeRoot' in INSTALL
     assert "sitePackages \"win32\\pythonservice.exe\"" not in INSTALL
     assert 'serviceDeps=[postgres_service]' in SERVICE_MANAGER
     assert 'serviceDeps=["IntelligentVMSControl"]' in SERVICE_MANAGER
@@ -279,3 +288,27 @@ def test_windows_pywin32_registration_and_raw_event_diagnostics_contract():
     assert "RecordId=$event.RecordId" in block
     assert "Properties=(@($event.Properties)" in block
     assert "$event.ToXml()" in block
+
+
+def test_windows_service_runtime_is_vms_owned_complete_and_profile_independent():
+    assert '$serviceExe = Join-Path $VenvRoot "pythonservice.exe"' in INSTALL
+    assert '$servicePth = Join-Path $VenvRoot "python312._pth"' in INSTALL
+    assert '"Lib\\site-packages\\win32"' in INSTALL
+    assert '"Lib\\site-packages\\win32\\lib"' in INSTALL
+    assert '"..\\..\\app"' in INSTALL
+    assert "servicemanager*.pyd" in INSTALL
+    assert "win32service*.pyd" in INSTALL
+    assert "win32event*.pyd" in INSTALL
+    assert "win32serviceutil.py" in INSTALL
+    assert "pywin32.pth" in INSTALL
+    assert "pywintypes312.dll" in INSTALL
+    assert "pythoncom312.dll" in INSTALL
+    assert "service-runtime-python.exe" in INSTALL
+    assert "windows_service_runtime_import_ok" in INSTALL
+    runtime_block = INSTALL.split("# Build a self-contained pywin32 service-host runtime", 1)[1].split("$mediaZip =", 1)[0]
+    assert "$env:PATH" not in runtime_block
+    assert "$env:USERPROFILE" not in runtime_block
+    assert "hostedtoolcache" not in runtime_block
+    assert 'Path(sys.prefix) / "pythonservice.exe"' in SERVICE_MANAGER
+    assert "deploy.windows.service_host.ControlService" in SERVICE_MANAGER
+    assert "deploy.windows.service_host.MediaService" in SERVICE_MANAGER
