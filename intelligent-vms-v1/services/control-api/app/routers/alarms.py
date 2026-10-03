@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, require_roles, require_scope
+from app.core.config import settings
 from app.db.session import get_session
 from app.models.entities import AlarmInstanceEntity, AlarmRuleEntity, CameraEntity
 from app.models.schemas import (
@@ -14,7 +15,17 @@ from app.models.schemas import (
     AlarmRuleUpdate,
 )
 
-router = APIRouter(prefix="/api/v1/alarms", tags=["alarms"])
+def _require_alarm_processing() -> None:
+    """Reject alarm APIs when the active deployment profile has no alarm processor."""
+    if not settings.alarm_processing_enabled:
+        raise HTTPException(503, "Alarm processing unavailable in deployment profile")
+
+
+router = APIRouter(
+    prefix="/api/v1/alarms",
+    tags=["alarms"],
+    dependencies=[Depends(_require_alarm_processing)],
+)
 
 
 def rule_read(row: AlarmRuleEntity) -> AlarmRuleRead:
