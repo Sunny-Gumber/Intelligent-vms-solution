@@ -151,8 +151,10 @@ $appPathFile = Join-Path $sitePackages "intelligent_vms_app.pth"
 Set-Content -LiteralPath $appPathFile -Value $AppRoot -Encoding ascii
 Invoke-Checked $venvPython @("-c","import deploy.windows.service_host; print('windows_service_host_import_ok')")
 
-$sitePackages = & $venvPython -c "import site; print(site.getsitepackages()[0])"
-Set-Content -LiteralPath (Join-Path $sitePackages "intelligent_vms_app.pth") -Value $AppRoot -Encoding ASCII
+$pythonDll = (& $venvPython -c "import pathlib, sys; print(pathlib.Path(sys.base_prefix) / f'python{sys.version_info.major}{sys.version_info.minor}.dll')").Trim()
+if (-not (Test-Path -LiteralPath $pythonDll)) { throw "Python service runtime DLL missing: $pythonDll" }
+$serviceRuntimeDll = Join-Path $VenvRoot (Split-Path -Leaf $pythonDll)
+Copy-Item -LiteralPath $pythonDll -Destination $serviceRuntimeDll -Force
 Invoke-Checked $venvPython @("-c","import pathlib, win32serviceutil; p=pathlib.Path(win32serviceutil.LocatePythonServiceExe()); assert p.is_file(), p; print(p)")
 
 $mediaZip = Join-Path $env:TEMP "mediamtx_v1.21.1_windows_amd64.zip"
