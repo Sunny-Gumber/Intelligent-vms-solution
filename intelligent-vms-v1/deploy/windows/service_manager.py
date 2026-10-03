@@ -15,8 +15,8 @@ SERVICES = ("IntelligentVMSControl", "IntelligentVMSMedia")
 
 
 def _service_exe() -> str:
-    """Return the venv-local pythonservice host prepared by the installer."""
-    candidate = Path(sys.prefix) / "Scripts" / "pythonservice.exe"
+    """Locate pywin32's service host using its supported environment-aware resolver."""
+    candidate = Path(win32serviceutil.LocatePythonServiceExe())
     if not candidate.is_file():
         raise RuntimeError(f"pythonservice.exe missing: {candidate}")
     return str(candidate)
