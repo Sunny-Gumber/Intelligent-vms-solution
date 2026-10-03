@@ -284,7 +284,7 @@ def test_windows_pywin32_registration_and_raw_event_diagnostics_contract():
     assert '$pythonClassKey = "$key\\\\PythonClass"' in block
     assert '.GetValue("")' in block
     assert "PythonClass(default)=" in block
-    assert 'ProviderName="Python Service";Id=14' in block
+    assert '$_.ProviderName -eq "Python Service" -and $_.Id -eq 14' in block
     assert "RecordId=$event.RecordId" in block
     assert "Properties=(@($event.Properties)" in block
     assert "$event.ToXml()" in block
