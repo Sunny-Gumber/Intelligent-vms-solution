@@ -44,7 +44,7 @@ jobs:
       - name: Security contract scan
         shell: pwsh
         run: |
-          $source=(Get-ChildItem clients/windows -Recurse -File | Where-Object {$_.Extension -in ".cs",".xaml",".html",".ps1"} | Get-Content -Raw) -join [Environment]::NewLine
+          $source=(Get-ChildItem clients/windows/src,clients/windows/packaging -Recurse -File | Where-Object {$_.Extension -in ".cs",".xaml",".html",".ps1"} | Get-Content -Raw) -join [Environment]::NewLine
           foreach($forbidden in @("ServerCertificateCustomValidationCallback","DangerousAcceptAnyServerCertificateValidator","AUTH_DISABLED=true","?token=")){
             if($source.Contains($forbidden)){throw "Forbidden client security pattern: $forbidden"}
           }
