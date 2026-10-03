@@ -1,0 +1,28 @@
+logLevel: info
+authMethod: jwt
+authJWTJWKS: http://127.0.0.1:8000/internal/v1/media/jwks
+authJWTIssuer: intelligent-vms-control
+authJWTAudience: intelligent-vms-live
+authJWTExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+  - action: playback
+api: yes
+apiAddress: 127.0.0.1:9997
+metrics: yes
+metricsAddress: 127.0.0.1:9998
+playback: yes
+playbackAddress: 127.0.0.1:9996
+hls: yes
+hlsAddress: 127.0.0.1:8888
+webrtc: yes
+webrtcAddress: 127.0.0.1:8889
+webrtcLocalUDPAddress: 127.0.0.1:8189
+rtsp: yes
+rtspAddress: 127.0.0.1:8554
+pathDefaults:
+  rtspTransport: tcp
+  record: false
+paths:
+  all_others:
