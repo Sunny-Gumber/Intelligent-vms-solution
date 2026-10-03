@@ -264,3 +264,18 @@ def test_windows_failure_evidence_runs_before_cleanup_and_avoids_secrets():
     assert "-Tail 100" in block
     assert "vms.env" not in block
     assert "VMS_SECRET_KEY" not in block
+
+
+def test_windows_pywin32_registration_and_raw_event_diagnostics_contract():
+    assert "deploy.windows.service_host.ControlService" in SERVICE_MANAGER
+    assert "deploy.windows.service_host.MediaService" in SERVICE_MANAGER
+    failure = WORKFLOW.index("Capture Windows service failure evidence")
+    cleanup = WORKFLOW.index("Cleanup ephemeral hosted-runner state")
+    block = WORKFLOW[failure:cleanup]
+    assert '$pythonClassKey = "$key\\\\PythonClass"' in block
+    assert '.GetValue("")' in block
+    assert "PythonClass(default)=" in block
+    assert 'ProviderName="Python Service";Id=14' in block
+    assert "RecordId=$event.RecordId" in block
+    assert "Properties=(@($event.Properties)" in block
+    assert "$event.ToXml()" in block
