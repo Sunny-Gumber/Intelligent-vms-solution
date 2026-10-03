@@ -144,6 +144,19 @@ jobs:
               }
               [pscustomobject]$safe | Format-List
             }
+            $pythonClassKey = "$key\\PythonClass"
+            if(Test-Path $pythonClassKey){
+              Write-Host "=== $name PythonClass registry ==="
+              Get-Item $pythonClassKey | Format-List Name,Property
+              $pythonClass = (Get-Item $pythonClassKey).GetValue("")
+              Write-Host "PythonClass(default)=$pythonClass"
+              foreach($property in @("PythonPath","AppDirectory")){
+                $value = (Get-Item $pythonClassKey).GetValue($property, $null)
+                if($null -ne $value){Write-Host "$property=$value"}
+              }
+            } else {
+              Write-Host "PythonClass subkey missing for $name"
+            }
           }
           Write-Host "=== recent service/application events ==="
           $providers = @("Service Control Manager","Python Service","PythonService","Application Error","Windows Error Reporting")
@@ -153,6 +166,20 @@ jobs:
               Sort-Object TimeCreated |
               Select-Object TimeCreated,ProviderName,Id,LevelDisplayName,Message |
               Format-List
+          }
+          Write-Host "=== raw recent Python Service Event 14 ==="
+          $pythonEvents = Get-WinEvent -FilterHashtable @{LogName="Application";ProviderName="Python Service";Id=14;StartTime=$since} -ErrorAction SilentlyContinue
+          foreach($event in @($pythonEvents)){
+            [pscustomobject]@{
+              TimeCreated=$event.TimeCreated
+              RecordId=$event.RecordId
+              ProviderName=$event.ProviderName
+              Id=$event.Id
+              LevelDisplayName=$event.LevelDisplayName
+              Properties=(@($event.Properties) | ForEach-Object {$_.Value}) -join " | "
+            } | Format-List
+            Write-Host "--- Event14 XML ---"
+            $event.ToXml()
           }
           Write-Host "=== runtime layout ==="
           $runtime = Join-Path $root "runtime\\venv"
