@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./vms.db"
     vms_secret_key: str = ""
     auto_create_schema: bool = False
+    deployment_profile: str = "enterprise-distributed"
+    web_static_dir: str = ""
 
     mediamtx_api_url: str = "http://localhost:9997"
     mediamtx_webrtc_public_base: str = "http://localhost:8889"
@@ -41,6 +43,11 @@ class Settings(BaseSettings):
     outbox_delivered_retention_hours: int = 24
     outbox_dead_retention_days: int = 30
     outbox_max_payload_bytes: int = 262144
+    event_pipeline_enabled: bool = True
+    event_history_enabled: bool = True
+    alarm_processing_enabled: bool = True
+    ai_ui_enabled: bool = True
+    recording_metadata_events_enabled: bool = True
 
     clickhouse_url: str = "http://clickhouse:8123"
     clickhouse_database: str = "vms"
@@ -50,6 +57,7 @@ class Settings(BaseSettings):
     recording_hook_token: str = ""
     regional_spool_token: str = ""
     recording_hook_callback_url: str = "http://control-api:8000/internal/v1/recording/segments/complete"
+    recording_hook_command: str = ""
     recording_path_template: str = "/recordings/%path/%Y/%m/%d/%H/%s"
     recording_query_max_window_hours: int = 168
     recording_query_max_segments: int = 10000
