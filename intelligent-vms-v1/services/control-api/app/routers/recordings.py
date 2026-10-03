@@ -775,8 +775,12 @@ def _parse_duration(value: str) -> float:
 
 def _segment_start(path: str, duration: float) -> datetime:
     stem = Path(path).stem
+    # MediaMTX v1.21 requires %f in recordPath. Windows field-test segments use
+    # %s-%f so the stable Unix-seconds prefix remains authoritative while
+    # microseconds provide the required filename uniqueness.
+    epoch_text = stem.split("-", 1)[0]
     try:
-        return datetime.fromtimestamp(int(stem), tz=timezone.utc)
+        return datetime.fromtimestamp(int(epoch_text), tz=timezone.utc)
     except ValueError:
         return datetime.now(timezone.utc) - timedelta(seconds=duration)
 

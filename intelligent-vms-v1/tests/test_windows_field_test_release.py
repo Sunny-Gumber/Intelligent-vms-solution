@@ -61,7 +61,7 @@ def test_windows_generator_creates_explicit_small_site_profile(tmp_path, capsys)
     assert "EVENT_HISTORY_ENABLED=false" in body
     assert "RECORDING_METADATA_EVENTS_ENABLED=false" in body
     assert "PLACEMENT_EXECUTION_ENABLED=false" in body
-    assert "RECORDING_PATH_TEMPLATE=D:/VMS/Recordings/%path/%Y/%m/%d/%H/%s" in body
+    assert "RECORDING_PATH_TEMPLATE=D:/VMS/Recordings/%path/%Y/%m/%d/%H/%s-%f" in body
     assert 'RECORDING_HOOK_COMMAND="C:/ProgramData/IntelligentVMS/runtime/venv/Scripts/python.exe"' in body
     assert "bbbbbbbb" not in stdout
     assert "secret values were generated but intentionally not printed" in stdout
@@ -344,3 +344,20 @@ def test_windows_failure_diagnostics_emit_product_logs_before_nonfatal_event14_q
     assert 'ProviderName="Python Service";Id=14' not in block
     assert '$_.ProviderName -eq "Python Service" -and $_.Id -eq 14' in block
     assert "Python Service Event 14 query unavailable" in block
+
+
+def test_windows_recording_path_satisfies_mediamtx_filename_contract(tmp_path):
+    output = tmp_path / "vms.env"
+    generate(
+        output,
+        recording_dir=Path("D:/VMS/Recordings"),
+        app_root=Path("C:/ProgramData/IntelligentVMS/app"),
+        venv_python=Path("C:/ProgramData/IntelligentVMS/runtime/venv/Scripts/python.exe"),
+        postgres_password="c" * 64,
+        postgres_service="postgresql-x64-17",
+        camera_cidrs=["127.0.0.1/32"],
+    )
+    body = output.read_text(encoding="utf-8")
+    record_path = next(line for line in body.splitlines() if line.startswith("RECORDING_PATH_TEMPLATE="))
+    assert "%path" in record_path
+    assert "%s-%f" in record_path

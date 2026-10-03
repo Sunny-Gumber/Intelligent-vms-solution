@@ -101,7 +101,7 @@ def test_mediamtx_continuous_record_path_is_always_on(monkeypatch):
 def test_hook_duration_and_epoch_segment_start():
     assert _parse_duration("15m0s") == 900
     assert _parse_duration("1.5s") == 1.5
-    start = _segment_start("/recordings/cam/2026/09/23/18/1789999999.mp4", 900)
+    start = _segment_start("/recordings/cam/2026/09/23/18/1789999999-123456.mp4", 900)
     assert int(start.timestamp()) == 1789999999
     assert start.tzinfo == timezone.utc
 
@@ -157,3 +157,8 @@ def test_recording_policy_cleanup_uses_pre_rollback_scalar_snapshot():
     assert snapshot < rollback < cleanup
     after_rollback = block[rollback:cleanup]
     assert "row.record_stream_key" not in after_rollback
+
+
+def test_segment_start_accepts_mediamtx_required_microsecond_suffix():
+    start = _segment_start("/recordings/cam/2026/09/23/18/1789999999-000001.mp4", 1)
+    assert int(start.timestamp()) == 1789999999
