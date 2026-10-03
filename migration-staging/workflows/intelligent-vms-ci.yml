@@ -1,0 +1,247 @@
+name: Intelligent VMS CI
+
+on:
+  pull_request:
+    paths:
+      - 'intelligent-vms-v1/**'
+      - '.github/workflows/intelligent-vms-ci.yml'
+      - '.github/copilot-instructions.md'
+      - '.github/agents/**'
+  push:
+    branches: [main]
+    paths:
+      - 'intelligent-vms-v1/**'
+      - '.github/workflows/intelligent-vms-ci.yml'
+      - '.github/copilot-instructions.md'
+      - '.github/agents/**'
+
+permissions:
+  contents: read
+
+jobs:
+  vms-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/control-api/requirements.txt
+          pip install -r tests/requirements.txt
+          pip install pyyaml
+      - name: Compile Python
+        run: python -m compileall -q services tools tests
+      - name: Enforce Python quality gate
+        run: |
+          ruff check services tools tests
+          python tools/check_public_docstrings.py
+      - name: Verify AI coding policy wiring
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          rules_path = Path("docs/program/AI_CODING_RULES.md")
+          text = rules_path.read_text(encoding="utf-8")
+          numbers = [int(value) for value in re.findall(r"^([0-9]+)\.", text, re.MULTILINE)]
+          assert numbers == list(range(1, 68)), f"expected rules 1..67, got {numbers}"
+
+          required_links = [
+              Path("../.github/copilot-instructions.md"),
+              Path("docs/program/AGENT_EXECUTION_PROTOCOL.md"),
+              Path("../.github/agents/vms-boss.agent.md"),
+              Path("../.github/agents/vms-developer.agent.md"),
+              Path("../.github/agents/vms-reviewer.agent.md"),
+          ]
+          for candidate in required_links:
+              body = candidate.read_text(encoding="utf-8")
+              assert "AI_CODING_RULES.md" in body, f"coding policy link missing from {candidate}"
+          print("AI coding policy wiring OK")
+          PY
+      - name: Unit tests
+        env:
+          VMS_SECRET_KEY: ci-test-key
+        run: pytest -q tests
+      - name: Verify market feature catalog
+        run: python tools/feature_catalog.py --check
+      - name: Phase 7 chaos qualification
+        env:
+          VMS_SECRET_KEY: ci-test-key
+        run: python tools/phase7_chaos_matrix.py
+      - name: Phase 8 benchmark harness smoke
+        run: |
+          python tools/phase8_media_plan.py --sources 2 --viewers 1 --output-json /tmp/phase8-media-plan.json
+          python tools/phase8_storage_benchmark.py --path /tmp/phase8-storage --streams 2 --mib-per-stream 1 --chunk-mib 0.25 --output-json /tmp/phase8-storage.json
+          python - <<'PY'
+          import json
+          result=json.load(open('/tmp/phase8-storage.json'))
+          assert result['schema_version']=='phase8-benchmark-v1'
+          assert result['result']['bytes_written']==2*1024*1024
+          assert result['environment']['commit_sha']
+          print('phase8 benchmark smoke OK')
+          PY
+      - name: Phase 9.3 recovery harness smoke
+        run: |
+          for script in deploy/operations/*.sh; do
+            bash -n "$script"
+          done
+
+          rm -rf /tmp/phase9-backup /tmp/phase9-render
+          mkdir -p /tmp/phase9-backup/nested
+          printf 'postgres-test' > /tmp/phase9-backup/postgres.dump
+          printf 'regional-test' > /tmp/phase9-backup/nested/spool.db
+
+          python tools/phase9_dr_evidence.py manifest \
+            --root /tmp/phase9-backup \
+            --output /tmp/phase9-backup.manifest.json
+          python tools/phase9_dr_evidence.py verify \
+            --root /tmp/phase9-backup \
+            --manifest /tmp/phase9-backup.manifest.json
+
+          python tools/phase9_dr_evidence.py exercise \
+            --exercise-id ci-region-loss \
+            --exercise-type region-loss \
+            --failure-at 2026-01-01T00:05:00Z \
+            --restore-point-at 2026-01-01T00:04:00Z \
+            --service-restored-at 2026-01-01T00:10:00Z \
+            --validation pass \
+            --target-rpo-seconds 120 \
+            --target-rto-seconds 600 \
+            --output /tmp/phase9-dr-evidence.json
+
+          python - <<'PY'
+          import json
+          evidence=json.load(open('/tmp/phase9-dr-evidence.json'))
+          assert evidence['observed_rpo_seconds'] == 60.0
+          assert evidence['observed_rto_seconds'] == 300.0
+          assert evidence['rpo_target_met'] is True
+          assert evidence['rto_target_met'] is True
+          assert evidence['qualification'] == 'EXERCISE_EVIDENCE_ONLY_NOT_A_PRODUCTION_RPO_RTO_GUARANTEE'
+          print('Phase 9.3 DR evidence smoke OK')
+          PY
+
+          CHART_PATH=deploy/helm/intelligent-vms \
+          VALUES_FILE=deploy/helm/intelligent-vms/values.yaml \
+          RELEASE_NAME=vms \
+          NAMESPACE=vms \
+          RENDER_DIR=/tmp/phase9-render \
+            bash deploy/operations/upgrade-preflight.sh
+
+      - name: Phase 9 Release Candidate repository gate
+        run: |
+          python tools/phase9_release_gate.py --output /tmp/phase9-release-report.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(
+              Path('/tmp/phase9-release-report.json').read_text(encoding='utf-8')
+          )
+          assert report['software_gate'] == 'PASS'
+          assert report['overall_status'] in {
+              'RELEASE_CANDIDATE_EXTERNAL_QUALIFICATION_PENDING',
+              'EXTERNAL_EVIDENCE_READY_FOR_BOSS_REVIEW',
+          }
+          print('Phase 9 Release Candidate repository gate OK', report['overall_status'])
+          PY
+      - name: Validate Alembic migration
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///./ci_migrations.db
+        run: |
+          rm -f ci_migrations.db
+          alembic upgrade head
+          python - <<'PY'
+          import sqlite3
+          db=sqlite3.connect('ci_migrations.db')
+          names={r[0] for r in db.execute("select name from sqlite_master where type='table'")}
+          assert {'alembic_version','cameras','camera_capabilities','service_state','recording_policies','camera_health_state','alarm_rules','alarm_instances','ai_models','camera_ai_policies','infrastructure_nodes','site_regions','placement_assignments','placement_revocations','event_outbox','recording_health_state'} <= names
+          cols={r[1] for r in db.execute("pragma table_info('placement_assignments')")}
+          assert {'cleanup_node_ids_json','applied_generation','autonomy_expires_at'} <= cols
+          node_cols={r[1] for r in db.execute("pragma table_info('infrastructure_nodes')")}
+          assert 'authority_mode' in node_cols
+          revoke_cols={r[1] for r in db.execute("pragma table_info('placement_revocations')")}
+          assert 'valid_until' in revoke_cols
+          print('migration OK', sorted(names))
+          PY
+          rm -f ci_migrations.db
+      - name: Parse compose
+        run: |
+          python - <<'PY'
+          import yaml
+          with open('compose.yaml','r',encoding='utf-8') as f:
+              data=yaml.safe_load(f)
+          assert 'services' in data
+          assert 'control-api' in data['services']
+          print('compose OK')
+          PY
+
+      - name: Validate Compose interpolation
+        run: |
+          cp .env.example .env
+          docker compose config -q
+      - name: Helm lint and render
+        run: |
+          helm lint deploy/helm/intelligent-vms
+          helm template vms deploy/helm/intelligent-vms > /tmp/vms-central.yaml
+          helm template vms-region deploy/helm/intelligent-vms --set regional.enabled=true > /tmp/vms-regional.yaml
+          helm template vms-observe deploy/helm/intelligent-vms --set observability.prometheusRule.enabled=true > /tmp/vms-observability.yaml
+          helm template vms-security deploy/helm/intelligent-vms \
+            --set networkPolicy.enabled=true \
+            --set externalSecrets.central.enabled=true \
+            --set externalSecrets.central.secretStoreRef.name=production-secret-store \
+            --set-string 'externalSecrets.central.dataFrom[0].extract.key=intelligent-vms/production' \
+            > /tmp/vms-security.yaml
+          if helm template vms-insecure deploy/helm/intelligent-vms --set ingress.enabled=true >/tmp/vms-insecure.yaml 2>/tmp/vms-insecure.err; then
+            echo "TLS-less enabled ingress unexpectedly rendered" >&2
+            exit 1
+          fi
+          grep -q 'kind: Deployment' /tmp/vms-central.yaml
+          grep -q '/api/v1/system/healthz/ready' /tmp/vms-central.yaml
+          grep -q 'AUTH_REQUIRE_OIDC' /tmp/vms-central.yaml
+          grep -q 'runAsNonRoot: true' /tmp/vms-central.yaml
+          grep -q 'containerPort: 8080' /tmp/vms-central.yaml
+          grep -q 'app.kubernetes.io/component: regional-node' /tmp/vms-regional.yaml
+          grep -q 'kind: NetworkPolicy' /tmp/vms-security.yaml
+          grep -q 'kind: ExternalSecret' /tmp/vms-security.yaml
+          python - <<'PY'
+          import json
+          import yaml
+
+          docs = [item for item in yaml.safe_load_all(open('/tmp/vms-observability.yaml', encoding='utf-8')) if item]
+          rules = [item for item in docs if item.get('kind') == 'PrometheusRule']
+          assert len(rules) == 1
+          alert_names = {
+              rule['alert']
+              for group in rules[0]['spec']['groups']
+              for rule in group['rules']
+              if 'alert' in rule
+          }
+          assert 'IntelligentVMSRecordingGapCandidates' in alert_names
+          assert 'IntelligentVMSRecordingHealthUntracked' in alert_names
+          assert 'IntelligentVMSNodeSaturated' in alert_names
+
+          dashboards = [
+              item for item in docs
+              if item.get('kind') == 'ConfigMap'
+              and 'intelligent-vms-overview.json' in item.get('data', {})
+          ]
+          assert len(dashboards) == 1
+          dashboard = json.loads(dashboards[0]['data']['intelligent-vms-overview.json'])
+          assert dashboard['uid'] == 'intelligent-vms-sre'
+          assert len(dashboard['panels']) >= 8
+          print('Phase 9.2 observability render OK')
+          PY
+      - name: Build VMS images
+        run: |
+          cp .env.example .env
+          docker compose build control-api event-writer mediamtx onvif-event-worker alarm-worker placement-controller node-agent regional-spool
+          docker build -f services/web/Dockerfile -t intelligent-vms-web:ci .

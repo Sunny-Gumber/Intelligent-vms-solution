@@ -1,0 +1,36 @@
+# Secrets and runtime configuration
+.env
+.env.*
+!**/.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+*.keystore
+
+# Python/test/runtime artifacts
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+.venv/
+venv/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs, diagnostics and backups
+*.log
+*.dump
+*.bak
+field-test-backups/
+field-test-diagnostics-*
+diagnostics-*.zip
+backups/
+
+# Build/editor/OS noise
+build/
+dist/
+.DS_Store
+.vscode/
+.idea/

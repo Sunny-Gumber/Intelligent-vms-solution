@@ -49,7 +49,7 @@ Content-Type: application/json
 
 {
   "tenant_id": "default",
-  "site_id": "site-noida-01",
+  "site_id": "site-demo-01",
   "name": "Entrances",
   "description": "Vehicle and pedestrian entrance cameras"
 }

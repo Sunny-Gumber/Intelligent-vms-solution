@@ -2,7 +2,7 @@
 
 **Purpose:** permanent project handoff for a new ChatGPT/chat/engineer.
 
-If you are continuing the Intelligent VMS project, read this file first. Do not start by guessing from the root CamVault README: the repository contains an older snapshot-backup product and the newer Intelligent VMS under `intelligent-vms-v1/`.
+If you are continuing the Intelligent VMS project, read this file first. This standalone repository is `Sunny-Gumber/Intelligent-vms-solution`; the product remains under `intelligent-vms-v1/` during migration to minimize architectural risk. The legacy multi-project `Sunny-Gumber/camvault` repository is a frozen recovery/provenance source until the standalone cutover gates pass.
 
 ## 1. Current status
 
@@ -10,9 +10,11 @@ As of 2026-09-28, the Intelligent VMS software baseline is:
 
 **RELEASE CANDIDATE / EXTERNAL QUALIFICATION PENDING**
 
-Release Candidate merge commit:
+Accepted legacy source baseline for this standalone migration:
 
-`c75828efc835f05dabf2d2b7ffdd73e37c0258d6`
+`6a97653e596c9dab3ab212c7b045fea2cd3fbb15`
+
+This destination becomes authoritative only after migration issue #1 completes the required public CI/security/Ubuntu validation and the baseline migration PR is merged.
 
 This means the software/SRE/security release-candidate gates are implemented and accepted. It does **not** mean:
 
@@ -29,15 +31,16 @@ Before changing code, read these files in order:
 
 1. `INTELLIGENT_VMS_START_HERE.md`
 2. `intelligent-vms-v1/docs/product/PRODUCT_REQUIREMENTS.md` — permanent product/platform requirements
-3. `intelligent-vms-v1/docs/program/PROJECT_HANDOFF.md`
-4. `intelligent-vms-v1/docs/program/VMS_BOSS_STATE.md` — live cross-chat execution state
-5. `intelligent-vms-v1/docs/program/DAILY_BATCH_PROTOCOL.md` — one-push-per-day coordination rules
-6. `intelligent-vms-v1/docs/program/IMPLEMENTATION_HISTORY.md`
-7. `intelligent-vms-v1/docs/program/PRODUCTION_EXECUTION_PLAN.md`
-8. `intelligent-vms-v1/docs/program/MARKET_FEATURE_MASTER_PROGRAM.md`
-9. `intelligent-vms-v1/docs/program/AI_CODING_RULES.md`
-10. `intelligent-vms-v1/docs/release/PHASE9_RELEASE_CANDIDATE.md`
-11. `intelligent-vms-v1/docs/product/FEATURE_CATALOG_SUMMARY.md`
+3. `intelligent-vms-v1/docs/program/MIGRATION_PROVENANCE.md` — standalone/recovery-repository authority and exact legacy evidence
+4. `intelligent-vms-v1/docs/program/PROJECT_HANDOFF.md`
+5. `intelligent-vms-v1/docs/program/VMS_BOSS_STATE.md` — live cross-chat execution state
+6. `intelligent-vms-v1/docs/program/DAILY_BATCH_PROTOCOL.md` — one-push-per-day coordination rules
+7. `intelligent-vms-v1/docs/program/IMPLEMENTATION_HISTORY.md`
+8. `intelligent-vms-v1/docs/program/PRODUCTION_EXECUTION_PLAN.md`
+9. `intelligent-vms-v1/docs/program/MARKET_FEATURE_MASTER_PROGRAM.md`
+10. `intelligent-vms-v1/docs/program/AI_CODING_RULES.md`
+11. `intelligent-vms-v1/docs/release/PHASE9_RELEASE_CANDIDATE.md`
+12. `intelligent-vms-v1/docs/product/FEATURE_CATALOG_SUMMARY.md`
 
 Then inspect **current GitHub main, open issues, open PRs and CI** before claiming status. Repository state is more authoritative than an old chat.
 
@@ -215,11 +218,13 @@ If the user says **"follow as per plan"**:
 9. merge only after gates pass;
 10. update handoff/status docs when a major milestone changes.
 
-## 10. Repository distinction
+## 10. Repository authority and provenance
 
-The root repository also contains the original **CamVault snapshot-backup MVP**. Do not confuse that product with the Intelligent VMS.
+This standalone repository contains the Intelligent VMS product only. The original CamVault snapshot-backup product is intentionally **not** migrated here.
 
-Unless the task explicitly says CamVault snapshot backup, new Intelligent VMS work belongs under:
+Historical evidence may still reference `Sunny-Gumber/camvault` issue/PR numbers. Keep those references explicit as **legacy source evidence**; do not rewrite them as destination issue/PR numbers that never existed.
+
+During migration, follow `intelligent-vms-v1/docs/program/MIGRATION_PROVENANCE.md`. After the standalone baseline is publicly validated and accepted, all new Intelligent VMS development belongs in this repository under:
 
 `intelligent-vms-v1/`
 

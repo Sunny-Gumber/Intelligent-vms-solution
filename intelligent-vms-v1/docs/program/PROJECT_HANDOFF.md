@@ -877,3 +877,25 @@ Next Track-A recommendation: perform the Category 2 — Live Monitoring evidence
 - Automated validation is designed for Ubuntu 22.04 and 24.04 x86_64 runners. Physical-machine reboot, real camera/codecs, recording continuity, storage durability and capacity remain External Qualification Pending.
 - Windows work is deliberately deferred; blockers are classified for the next Windows field-test server baseline.
 - No feature-catalog row is promoted solely because of this deployment milestone. Product remains **Release Candidate / External Qualification Pending**.
+
+## Standalone repository migration Phase A — 2026-10-03
+
+- Destination: `Sunny-Gumber/Intelligent-vms-solution`; private staging only.
+- Migration issue: destination #1.
+- Accepted recovery source remains `Sunny-Gumber/camvault@6a97653e596c9dab3ab212c7b045fea2cd3fbb15`.
+- Legacy accepted PR #302 head: `859b213cacd03a99f03e1cc7aa41b93ac55ef915`; merge SHA: `6a97653e596c9dab3ab212c7b045fea2cd3fbb15`.
+- Exact destination import checkpoint: `fa4bdc13e89e41bd925aa448c628d999a1201da3` on `migration-public-release-baseline`.
+- Exact import proof: 323 accepted VMS source files, zero missing, zero blob mismatches, zero active destination workflows.
+- The pre-existing destination `migration` branch was audited and rejected as release authority because it was missing 73 accepted VMS files.
+- Layout remains `INTELLIGENT_VMS_START_HERE.md` + `intelligent-vms-v1/`; no flattening.
+- Unrelated CamVault backend/application/tests/deployment/history are not migrated.
+- The mixed legacy `.github/workflows/ci.yml` is excluded because it contains CamVault backend/image jobs. Dedicated VMS CI/security/Ubuntu workflows are staged non-executably under `migration-staging/workflows/`.
+- Minimum VMS-only root helpers required by the dedicated VMS quality gate are migrated: Copilot instructions plus VMS Boss/Developer/Reviewer agent files.
+- Public-release security audit is `docs/reviews/PUBLIC_REPOSITORY_SECURITY_AUDIT.md`. No publication blocker remains after genericizing real-place sample labels; synthetic test/dev credentials remain explicitly synthetic.
+- Phase-A structural validation: feature catalog 623 rows / 48 categories; Alembic chain 0001 through 0017; sensitive artifact/filename scan PASS.
+- Full compile/Ruff/pytest/Compose/Helm is not falsely claimed as destination validation while private; it is a required Phase-B public Actions gate. Legacy source PR #302 had VMS CI, security, generic VMS job and Ubuntu field-test workflows green.
+- License decision is explicitly pending owner action; repository visibility does not imply an open-source license.
+- Unfinished Windows source remains separate: legacy camvault #303/#304 at `7fc9065a43977329c91988f4dad5e123826f60cc`; do not merge old PR #304.
+- Known first Windows continuation defect is test-environment only: Windows pre-install recording regression tests need a deterministic TEST-ONLY `VMS_SECRET_KEY`. Native Windows installer/service execution is still unproven.
+- Hard publication gate: while repository is private, do not activate `.github/workflows/`. Stop after Phase A and wait for owner to switch visibility to PUBLIC.
+- Product remains **Release Candidate / External Qualification Pending**.

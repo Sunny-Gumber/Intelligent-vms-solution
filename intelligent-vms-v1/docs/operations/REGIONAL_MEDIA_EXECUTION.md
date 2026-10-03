@@ -35,8 +35,8 @@ Endpoint URLs must be HTTP/HTTPS, contain no embedded credentials, query string 
 
 ```json
 {
-  "name": "Noida Media 01",
-  "region_id": "in-north-01",
+  "name": "Demo Media 01",
+  "region_id": "demo-region-01",
   "roles": ["media", "recording"],
   "state": "active",
   "enabled": true,

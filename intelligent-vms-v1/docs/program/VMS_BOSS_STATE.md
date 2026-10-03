@@ -2,24 +2,27 @@
 
 **Purpose:** canonical short handoff for every ChatGPT/engineer session. Read this after `INTELLIGENT_VMS_START_HERE.md` and before changing code.
 
-**Last synchronized:** 2026-10-02 IST  
-**Repository:** Sunny-Gumber/camvault  
+**Last synchronized:** 2026-10-03 IST  
+**Repository:** Sunny-Gumber/Intelligent-vms-solution  
 **Product path:** `intelligent-vms-v1/`
 
 ## Live milestone
 
-- Program: **FIELD-TEST RELEASE TRACK**.
-- Previous accepted milestone: #299 / PR #300, reachable Category-4 playback/timeline, merged at `e2a964ea427ad3545312f0ce8b86d1d925cc357a`.
-- Current milestone: issue #301 — Ubuntu 22.04/24.04 x86_64 deterministic field-test deployment baseline.
-- Current branch: `release/ubuntu-field-test-baseline`.
-- Deployment decision: reuse the existing Compose/PostgreSQL/Redpanda/ClickHouse/MediaMTX/control-api/web architecture; no second database/media/recording/playback stack.
-- Discovered field-test dependencies are limited to deployment reachability: explicit migrations, secure generated runtime configuration, persistence/restart/lifecycle, browser bearer-session bridge, minimal existing-API camera-create UI, diagnostics and release runbooks.
-- Production OIDC remains authoritative for production trust. Local HS256 browser bootstrap is field-test-only, loopback-bound by default, and never a Production Qualified authentication claim.
-- Ubuntu automated matrix targets 22.04 and 24.04 x86_64; physical machine/camera/browser/storage/reboot qualification remains external.
-- Windows installation is not implemented in #301. The classified input inventory is `docs/reviews/WINDOWS_PORTABILITY_BLOCKERS.md`.
-- Product qualification: **Release Candidate / External Qualification Pending**.
-- Security residual #261 remains open for inherited unfixed base-image findings; no security gate is waived.
-- Live GitHub branch/PR/CI state is authoritative over this handoff if newer.
+- Program: **MIGRATION + FIELD-TEST RELEASE TRACK**.
+- Destination repository: `Sunny-Gumber/Intelligent-vms-solution`; currently PRIVATE during Phase A.
+- Migration issue: destination #1 — Public standalone Intelligent VMS repository cutover.
+- Accepted legacy recovery source: `Sunny-Gumber/camvault@6a97653e596c9dab3ab212c7b045fea2cd3fbb15` (legacy issue #301 / PR #302 Ubuntu field-test baseline).
+- Exact destination clean-import checkpoint: `fa4bdc13e89e41bd925aa448c628d999a1201da3` on `migration-public-release-baseline`; 323/323 VMS source blobs matched exactly before publication-hygiene changes.
+- The old partial destination `migration` branch is not authoritative and was found missing 73 accepted files.
+- No active files are allowed under `.github/workflows/` while the destination remains private. Required VMS workflows are staged under `migration-staging/workflows/`.
+- Public-release audit is recorded in `docs/reviews/PUBLIC_REPOSITORY_SECURITY_AUDIT.md`; real-place demo labels are sanitized to generic examples. No license is granted; owner license decision remains pending.
+- Legacy unfinished Windows work remains separate and unaccepted: camvault issue #303 / PR #304 / branch `release/windows-field-test-server-baseline` at frozen legitimate head `7fc9065a43977329c91988f4dad5e123826f60cc`.
+- Do not merge legacy PR #304. After destination baseline public validation/merge, recreate the Windows milestone from destination main and apply that exact legitimate delta.
+- Known first Windows continuation fix: provide a deterministic TEST-ONLY `VMS_SECRET_KEY` to the Windows pre-install regression step; production fail-closed behavior must remain unchanged.
+- `Sunny-Gumber/camvault` remains the frozen authoritative recovery source until public destination baseline validation and merge complete.
+- Product qualification remains **Release Candidate / External Qualification Pending**.
+- Do not start the native Windows desktop client until migration + Windows server baseline are accepted.
+- Live GitHub state is authoritative over this handoff if newer.
 
 ## Cross-chat rules
 

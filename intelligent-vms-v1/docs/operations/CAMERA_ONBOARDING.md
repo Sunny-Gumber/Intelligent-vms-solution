@@ -6,7 +6,7 @@
 ```bash
 curl -X POST http://localhost:8000/api/v1/onvif/discover \
   -H 'Content-Type: application/json' \
-  -d '{"tenant_id":"default","site_id":"site-noida-01","timeout_seconds":2.5}'
+  -d '{"tenant_id":"default","site_id":"site-demo-01","timeout_seconds":2.5}'
 ```
 
 2. Probe a known camera:
@@ -15,7 +15,7 @@ curl -X POST http://localhost:8000/api/v1/onvif/probe \
   -H 'Content-Type: application/json' \
   -d '{
     "tenant_id":"default",
-    "site_id":"site-noida-01",
+    "site_id":"site-demo-01",
     "host":"192.168.1.101",
     "port":80,
     "scheme":"http",
@@ -32,7 +32,7 @@ curl -X POST http://localhost:8000/api/v1/onvif/onboard \
   -H 'Content-Type: application/json' \
   -d '{
     "tenant_id":"default",
-    "site_id":"site-noida-01",
+    "site_id":"site-demo-01",
     "name":"Gate 01",
     "host":"192.168.1.101",
     "port":80,
@@ -61,7 +61,7 @@ with host, main/sub path and credentials. Manual targets are validated against t
 The global fallback policy is configured with `ONVIF_ALLOWED_CIDRS`, but tenant/site-scoped ONVIF probe, onboarding and refresh require an exact entry in `ONVIF_SITE_ALLOWED_CIDRS_JSON`. Example:
 
 ```text
-ONVIF_SITE_ALLOWED_CIDRS_JSON={"default/site-noida-01":["10.40.0.0/16","192.168.10.0/24"]}
+ONVIF_SITE_ALLOWED_CIDRS_JSON={"default/site-demo-01":["10.40.0.0/16","192.168.10.0/24"]}
 ```
 
 Camera-advertised Device/Media service URLs and RTSP stream URIs are rechecked against that same site policy. DNS targets must resolve to exactly one approved address before a downstream connection is made. Credential-bearing ONVIF service URLs are rejected.
