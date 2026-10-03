@@ -339,6 +339,11 @@ async def put_policy(
     row.max_part_size_mb = payload.max_part_size_mb
 
     await session.flush()
+    # Preserve rollback-cleanup identifiers while the ORM row is still loaded.
+    # AsyncSession.rollback() expires ORM state; reading row attributes after
+    # rollback can trigger implicit async I/O and raise MissingGreenlet.
+    cleanup_camera_id = camera.id
+    cleanup_record_stream_key = row.record_stream_key
     try:
         if not settings.placement_execution_enabled:
             await provision_recording(camera, row)
@@ -381,7 +386,7 @@ async def put_policy(
     except Exception as exc:
         await session.rollback()
         if created and not settings.placement_execution_enabled:
-            await _cleanup_created_recording_path(camera.id, row.record_stream_key)
+            await _cleanup_created_recording_path(cleanup_camera_id, cleanup_record_stream_key)
         raise HTTPException(502, f"Recording node could not apply policy: {exc}") from exc
 
     await session.refresh(row)
