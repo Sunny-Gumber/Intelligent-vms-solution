@@ -241,3 +241,26 @@ def test_windows_ci_uses_test_only_secret_and_production_default_fails_closed(mo
     monkeypatch.setattr(settings, "vms_secret_key", "")
     with pytest.raises(RuntimeError, match="VMS_SECRET_KEY must be configured"):
         encrypt_secret("synthetic-camera-password")
+
+
+def test_windows_failure_evidence_runs_before_cleanup_and_avoids_secrets():
+    failure = WORKFLOW.index("Capture Windows service failure evidence")
+    cleanup = WORKFLOW.index("Cleanup ephemeral hosted-runner state")
+    assert failure < cleanup
+    block = WORKFLOW[failure:cleanup]
+    assert "if: failure()" in block
+    for name in ("IntelligentVMSControl", "IntelligentVMSMedia"):
+        assert name in block
+    assert "sc.exe qc" in block and "sc.exe queryex" in block
+    assert "CurrentControlSet" in block
+    for field in ("ImagePath", "ObjectName", "DependOnService", "PythonClass", "PythonPath", "AppDirectory"):
+        assert field in block
+    assert "Get-WinEvent" in block
+    for provider in ("Service Control Manager", "Python Service", "PythonService", "Application Error", "Windows Error Reporting"):
+        assert provider in block
+    for runtime_file in ("pythonservice.exe", "python312.dll", "python.exe", "pythonw.exe", "pyvenv.cfg"):
+        assert runtime_file in block
+    assert "pywintypes*.dll" in block and "pythoncom*.dll" in block
+    assert "-Tail 100" in block
+    assert "vms.env" not in block
+    assert "VMS_SECRET_KEY" not in block
