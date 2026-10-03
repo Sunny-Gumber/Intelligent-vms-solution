@@ -142,12 +142,7 @@ Invoke-Checked $venvPython @("-m","pip","install","-r",(Join-Path $AppRoot "depl
 
 $sitePackages = & $venvPython -c "import site; print(site.getsitepackages()[0])"
 Set-Content -LiteralPath (Join-Path $sitePackages "intelligent_vms_app.pth") -Value $AppRoot -Encoding ASCII
-$serviceExeSource = Join-Path $sitePackages "win32\pythonservice.exe"
-$serviceExeTarget = Join-Path $VenvRoot "Scripts\pythonservice.exe"
-if (-not (Test-Path $serviceExeSource)) { throw "pywin32 pythonservice.exe was not installed." }
-Copy-Item $serviceExeSource $serviceExeTarget -Force
-$pywin32System32 = Join-Path $sitePackages "pywin32_system32"
-Get-ChildItem $pywin32System32 -Filter "*.dll" | Copy-Item -Destination (Join-Path $VenvRoot "Scripts") -Force
+Invoke-Checked $venvPython @("-c","import pathlib, win32serviceutil; p=pathlib.Path(win32serviceutil.LocatePythonServiceExe()); assert p.is_file(), p; print(p)")
 
 $mediaZip = Join-Path $env:TEMP "mediamtx_v1.21.1_windows_amd64.zip"
 $mediaUrl = "https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/mediamtx_v1.21.1_windows_amd64.zip"
