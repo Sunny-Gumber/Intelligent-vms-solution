@@ -864,13 +864,15 @@ async def segment_complete(
         "storage_tier": "hot",
         "object_uri": None,
     }
-    inserted = await enqueue_message_once(
-        session,
-        message_id=f"recording:{segment_id}",
-        topic=settings.kafka_topic_recordings,
-        key_text=f"{camera.tenant_id}:{camera.id}",
-        payload=payload,
-    )
+    inserted = False
+    if settings.recording_metadata_events_enabled:
+        inserted = await enqueue_message_once(
+            session,
+            message_id=f"recording:{segment_id}",
+            topic=settings.kafka_topic_recordings,
+            key_text=f"{camera.tenant_id}:{camera.id}",
+            payload=payload,
+        )
     await record_segment_completion(
         session,
         policy,
@@ -880,4 +882,9 @@ async def segment_complete(
         assignment_generation=assignment_generation,
     )
     await session.commit()
-    return {"accepted": True, "segment_id": segment_id, "new": inserted}
+    return {
+        "accepted": True,
+        "segment_id": segment_id,
+        "new": inserted,
+        "metadata_event_enqueued": bool(settings.recording_metadata_events_enabled and inserted),
+    }
