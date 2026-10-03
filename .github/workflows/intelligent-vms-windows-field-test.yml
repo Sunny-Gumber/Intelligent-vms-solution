@@ -125,6 +125,54 @@ jobs:
           $pg = Get-Service -Name "postgresql-x64-*" | Sort-Object Name -Descending | Select-Object -First 1
           if($pg.Status -ne "Running"){ throw "PostgreSQL service was incorrectly removed/stopped" }
 
+      - name: Capture Windows service failure evidence
+        if: failure()
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:ProgramData "IntelligentVMS"
+          $since = (Get-Date).AddMinutes(-20)
+          foreach($name in @("IntelligentVMSControl","IntelligentVMSMedia")){
+            Write-Host "=== service $name ==="
+            & sc.exe qc $name
+            & sc.exe queryex $name
+            $key = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\$name"
+            if(Test-Path $key){
+              $item = Get-ItemProperty $key
+              $safe = [ordered]@{}
+              foreach($property in @("ImagePath","ObjectName","Start","DependOnService","PythonClass","PythonPath","AppDirectory")){
+                if($null -ne $item.$property){$safe[$property]=$item.$property}
+              }
+              [pscustomobject]$safe | Format-List
+            }
+          }
+          Write-Host "=== recent service/application events ==="
+          $providers = @("Service Control Manager","Python Service","PythonService","Application Error","Windows Error Reporting")
+          foreach($logName in @("System","Application")){
+            Get-WinEvent -FilterHashtable @{LogName=$logName;StartTime=$since} -ErrorAction SilentlyContinue |
+              Where-Object {$providers -contains $_.ProviderName -or $_.Message -match "IntelligentVMS|pythonservice"} |
+              Sort-Object TimeCreated |
+              Select-Object TimeCreated,ProviderName,Id,LevelDisplayName,Message |
+              Format-List
+          }
+          Write-Host "=== runtime layout ==="
+          $runtime = Join-Path $root "runtime\\venv"
+          foreach($path in @(
+            (Join-Path $runtime "pythonservice.exe"),
+            (Join-Path $runtime "python312.dll"),
+            (Join-Path $runtime "Scripts\\python.exe"),
+            (Join-Path $runtime "Scripts\\pythonw.exe"),
+            (Join-Path $runtime "pyvenv.cfg")
+          )){[pscustomobject]@{Path=$path;Exists=Test-Path -LiteralPath $path} | Format-List}
+          foreach($pattern in @("pywintypes*.dll","pythoncom*.dll")){
+            Get-ChildItem $runtime -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName
+          }
+          Write-Host "=== bounded product log tails ==="
+          foreach($name in @("control-api.log","mediamtx.log")){
+            $path = Join-Path $root "logs\\$name"
+            if(Test-Path $path){Get-Content -LiteralPath $path -Tail 100}
+          }
+
       - name: Cleanup ephemeral hosted-runner state
         if: always()
         shell: pwsh
