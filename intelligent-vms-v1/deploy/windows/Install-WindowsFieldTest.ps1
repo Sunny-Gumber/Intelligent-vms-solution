@@ -184,13 +184,13 @@ if (-not (Test-Path $EnvFile)) {
         $env:PGPASSWORD = $adminPassword
         $roleExists = & (Join-Path $pgBin "psql.exe") -h 127.0.0.1 -U postgres -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='vms'"
         if ($LASTEXITCODE -ne 0) { throw "Could not authenticate to PostgreSQL as postgres." }
-        if ($roleExists.Trim() -ne "1") {
+        if (([string]$roleExists).Trim() -ne "1") {
             Invoke-Checked (Join-Path $pgBin "psql.exe") @("-h","127.0.0.1","-U","postgres","-d","postgres","-v","ON_ERROR_STOP=1","-c","CREATE ROLE vms LOGIN PASSWORD '$dbPassword'")
         } else {
             Invoke-Checked (Join-Path $pgBin "psql.exe") @("-h","127.0.0.1","-U","postgres","-d","postgres","-v","ON_ERROR_STOP=1","-c","ALTER ROLE vms PASSWORD '$dbPassword'")
         }
         $dbExists = & (Join-Path $pgBin "psql.exe") -h 127.0.0.1 -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='vms'"
-        if ($dbExists.Trim() -ne "1") {
+        if (([string]$dbExists).Trim() -ne "1") {
             Invoke-Checked (Join-Path $pgBin "createdb.exe") @("-h","127.0.0.1","-U","postgres","-O","vms","vms")
         }
     } finally {
