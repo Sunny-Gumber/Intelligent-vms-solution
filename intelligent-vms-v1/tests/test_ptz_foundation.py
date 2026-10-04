@@ -129,4 +129,4 @@ def test_router_preserves_server_authority_and_safe_error_boundary():
     assert "decrypt_secret(camera.username_enc)" in source
     assert "decrypt_secret(camera.password_enc)" in source
     assert "Camera returned" not in source
-    assert "username" not in source.split("return PtzCommandRead", 1)[-1]
+    assert "Authorization" not in source
