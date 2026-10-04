@@ -377,18 +377,18 @@ public sealed class VmsApiClient : ILiveAccessProvider, IDisposable
         catch(TaskCanceledException) when(!cancellationToken.IsCancellationRequested){return ServerConnectionState.Unreachable;}
     }
     public Task<AuthenticationCapabilities> GetAuthenticationCapabilitiesAsync(CancellationToken ct=default)=>
-        SendJsonAsync<AuthenticationCapabilities>(HttpMethod.Get,"/api/v1/auth/capabilities",ct,false,false);
-    public Task<SessionInfo> GetSessionAsync(CancellationToken ct=default)=>SendJsonAsync<SessionInfo>(HttpMethod.Get,"/api/v1/auth/session",ct,true,true);
-    public Task<SessionInfo> GetSessionWithoutRefreshAsync(CancellationToken ct=default)=>SendJsonAsync<SessionInfo>(HttpMethod.Get,"/api/v1/auth/session",ct,true,false);
+        SendJsonAsync<AuthenticationCapabilities>(HttpMethod.Get,"/api/v1/auth/capabilities",false,false,ct);
+    public Task<SessionInfo> GetSessionAsync(CancellationToken ct=default)=>SendJsonAsync<SessionInfo>(HttpMethod.Get,"/api/v1/auth/session",true,true,ct);
+    public Task<SessionInfo> GetSessionWithoutRefreshAsync(CancellationToken ct=default)=>SendJsonAsync<SessionInfo>(HttpMethod.Get,"/api/v1/auth/session",true,false,ct);
     public async Task<ServerCapabilities> GetCapabilitiesAsync(CancellationToken ct=default)
     {
-        var v=await SendJsonAsync<ServerCapabilities>(HttpMethod.Get,"/api/v1/system/capabilities",ct,true,true);
+        var v=await SendJsonAsync<ServerCapabilities>(HttpMethod.Get,"/api/v1/system/capabilities",true,true,ct);
         if(string.IsNullOrWhiteSpace(v.DeploymentProfile)) throw new IncompatibleServerException(); return v;
     }
-    public Task<List<CameraInfo>> GetCamerasAsync(CancellationToken ct=default)=>SendJsonAsync<List<CameraInfo>>(HttpMethod.Get,"/api/v1/cameras",ct,true,true);
+    public Task<List<CameraInfo>> GetCamerasAsync(CancellationToken ct=default)=>SendJsonAsync<List<CameraInfo>>(HttpMethod.Get,"/api/v1/cameras",true,true,ct);
     public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default)=>SendJsonAsync<LiveAccessGrant>(
-        HttpMethod.Post,$"/api/v1/live/cameras/{Uri.EscapeDataString(cameraId)}/access?stream_role={Uri.EscapeDataString(role)}",cancellationToken,true,true);
-    private async Task<T> SendJsonAsync<T>(HttpMethod method,string relative,CancellationToken ct,bool auth,bool allowRefresh)
+        HttpMethod.Post,$"/api/v1/live/cameras/{Uri.EscapeDataString(cameraId)}/access?stream_role={Uri.EscapeDataString(role)}",true,true,cancellationToken);
+    private async Task<T> SendJsonAsync<T>(HttpMethod method,string relative,bool auth,bool allowRefresh,CancellationToken ct)
     {
         for(var attempt=0;attempt<2;attempt++)
         {
