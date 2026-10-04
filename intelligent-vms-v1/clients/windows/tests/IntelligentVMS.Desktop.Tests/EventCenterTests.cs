@@ -8,6 +8,7 @@ internal static class EventCenterTests
         await TestPaginationAndUnknownType();
         await TestProfileClearAndMetadataSafety();
         await TestReloadStopsOldPollingGeneration();
+        await TestStaleRefreshCannotCrossProfileClear();
     }
 
     private static async Task TestOrderingDedupeAndBounds()
@@ -65,7 +66,35 @@ internal static class EventCenterTests
         if(center.FeedState!=EventFeedState.Connected)throw new InvalidOperationException("Polling did not restart after reload.");
     }
 
+
+    private static async Task TestStaleRefreshCannotCrossProfileClear()
+    {
+        var now=DateTimeOffset.UtcNow;var provider=new DelayedEvents();
+        await using var center=new EventCenterCoordinator(provider,new TestLogger());
+        provider.Immediate=new EventHistoryPageDto();
+        await center.LoadAsync(new EventQuery(now.AddHours(-1),now.AddMinutes(1)));
+        provider.Immediate=null;
+        var refresh=center.RefreshRecentAsync();
+        await provider.Started.Task;
+        center.Clear();
+        provider.Release.SetResult(new EventHistoryPageDto{Items=[Row("stale",now,"motion")]});
+        await refresh;
+        if(center.Events.Count!=0||center.Query is not null)throw new InvalidOperationException("Stale event crossed profile boundary.");
+    }
+
     private static EventRecord Row(string id,DateTimeOffset time,string type)=>new(){EventId=id,TenantId="t",SiteId="s",CameraId="c",OccurredAt=time,EventType=type,Source="camera",Severity="info"};
+
+    private sealed class DelayedEvents:IEventProvider
+    {
+        public EventHistoryPageDto? Immediate;
+        public TaskCompletionSource Started{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<EventHistoryPageDto> Release{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<EventHistoryPageDto> GetEventHistoryAsync(EventQuery query,CancellationToken cancellationToken=default)
+        {
+            if(Immediate is not null){var value=Immediate;Immediate=null;return Task.FromResult(value);}
+            Started.TrySetResult();return Release.Task;
+        }
+    }
     private sealed class FakeEvents:IEventProvider
     {
         public Queue<EventHistoryPageDto> Pages{get;}=new();
