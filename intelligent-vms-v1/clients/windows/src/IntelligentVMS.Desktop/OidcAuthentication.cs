@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -234,7 +235,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
     public bool RememberedSession { get; private set; }
     public DateTimeOffset? TokenExpiry { get; private set; }
     public string LastErrorCategory { get; private set; } = "none";
-    public string CallbackMechanism => "loopback-127.0.0.1";
+    public static string CallbackMechanism => "loopback-127.0.0.1";
 
     public OidcAuthenticationManager(DesktopSession session, ICredentialStore refreshStore, IClientLogger logger, ISystemBrowserLauncher? browser = null)
     {
