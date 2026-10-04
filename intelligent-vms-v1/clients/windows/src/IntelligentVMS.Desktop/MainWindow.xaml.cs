@@ -658,10 +658,16 @@ public partial class MainWindow:Window
         var grid=_grid;
         var tileStates=grid is null?"none":string.Join(",",grid.Tiles.Where(x=>x.HasAssignment)
             .Select(x=>$"{x.TileId}:{x.State}:{(string.IsNullOrWhiteSpace(x.ActualRole)?x.RequestedRole:x.ActualRole)}"));
+        var playback=_playback;
+        var playbackCamera=playback?.Camera is null?"none":$"{playback.Camera.Id}:{playback.Camera.Name}";
+        var playbackDate=playback?.Day?.LocalDate.ToString("yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture)??"none";
+        var playbackPosition=playback?.Position?.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture)??"none";
         return DiagnosticsService.Build(_activeProfile,_connectionState,_capabilities,grid is null?"IDLE":"GRID",
             authMode,authState,remembered,_oidc.TokenExpiry,issuerHost,_oidc.LastErrorCategory,
             oidcEnabled?OidcAuthenticationManager.CallbackMechanism:"none",credentialStatus,
-            grid is null?"1-view":$"{grid.Layout.Count}-view",grid?.ActiveTileCount??0,grid?.ConnectingTileCount??0,grid?.FailedTileCount??0,tileStates);
+            grid is null?"1-view":$"{grid.Layout.Count}-view",grid?.ActiveTileCount??0,grid?.ConnectingTileCount??0,grid?.FailedTileCount??0,tileStates,
+            "WebView2-WHEP",playbackCamera,playbackDate,playback?.State.ToString()??"Idle",playback?.Rate??1.0,playbackPosition,
+            playback?.Segments.Count??0,playback?.GapCount??0,"WebView2-MP4",playback?.ErrorCategory??"none");
     }
 
     private void RefreshDiagnostics()
