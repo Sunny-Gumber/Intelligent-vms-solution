@@ -113,7 +113,10 @@ public sealed record ClientDiagnostics(string ApplicationVersion, string OsVersi
     string PlaybackPosition = "none", int PlaybackSegments = 0, int PlaybackGaps = 0,
     string PlaybackRenderer = "WebView2-MP4", string PlaybackErrorCategory = "none",
     string PtzCamera = "none", string PtzCapability = "none", string PtzState = "Unavailable",
-    int PtzGeneration = 0, string PtzSpeed = "medium", string PtzErrorCategory = "none");
+    int PtzGeneration = 0, string PtzSpeed = "medium", string PtzErrorCategory = "none",
+    string EventCenterState = "Idle", string EventFeedState = "Stopped", int EventDisplayed = 0,
+    string EventLastReceived = "none", string EventErrorCategory = "none", int EventDroppedView = 0,
+    string EventPagination = "end");
 
 public static class ServerProfileIdentity
 {
@@ -382,7 +385,7 @@ public interface ILiveAccessProvider
 {
     Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default);
 }
-public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IPtzProvider, IDisposable
+public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IPtzProvider, IEventProvider, IDisposable
 {
     private readonly HttpClient _http; private readonly Func<string?> _tokenProvider;
     private readonly Func<CancellationToken,Task<bool>>? _refreshProvider;
@@ -429,6 +432,22 @@ public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IPtzP
         SendJsonBodyAsync<PtzCommandAck>(HttpMethod.Post,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/move",request,true,true,cancellationToken);
     public Task<PtzCommandAck> StopPtzAsync(string cameraId,PtzStopRequestDto request,CancellationToken cancellationToken=default)=>
         SendJsonBodyAsync<PtzCommandAck>(HttpMethod.Post,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/stop",request,true,true,cancellationToken);
+
+    public Task<EventHistoryPageDto> GetEventHistoryAsync(EventQuery query,CancellationToken cancellationToken=default)
+    {
+        if(query.End<=query.Start||query.End-query.Start>TimeSpan.FromDays(7)||query.Limit is <1 or >200)
+            throw new ArgumentOutOfRangeException(nameof(query));
+        var parts=new List<string>{
+            "start="+Uri.EscapeDataString(query.Start.ToUniversalTime().ToString("O")),
+            "end="+Uri.EscapeDataString(query.End.ToUniversalTime().ToString("O")),
+            "limit="+query.Limit.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+        static void Add(List<string> values,string name,string? value){if(!string.IsNullOrWhiteSpace(value))values.Add(name+"="+Uri.EscapeDataString(value));}
+        Add(parts,"site_id",query.SiteId);Add(parts,"camera_id",query.CameraId);Add(parts,"event_type",query.EventType);Add(parts,"severity",query.Severity);
+        if(query.Before is DateTimeOffset before)parts.Add("before="+Uri.EscapeDataString(before.ToUniversalTime().ToString("O")));
+        Add(parts,"before_id",query.BeforeId);
+        return SendJsonAsync<EventHistoryPageDto>(HttpMethod.Get,"/api/v1/events/history?"+string.Join("&",parts),true,true,cancellationToken);
+    }
 
     public Task EnsurePlaybackAuthorizedAsync(CancellationToken cancellationToken=default)=>
         GetSessionAsync(cancellationToken);
@@ -576,13 +595,15 @@ public static class DiagnosticsService
         string liveLayout="1-view",int activeTiles=0,int connectingTiles=0,int failedTiles=0,string liveTileStates="none",string rendererType="WebView2-WHEP",
         string playbackCamera="none",string playbackDate="none",string playbackState="Idle",double playbackRate=1.0,string playbackPosition="none",
         int playbackSegments=0,int playbackGaps=0,string playbackRenderer="WebView2-MP4",string playbackErrorCategory="none",
-        string ptzCamera="none",string ptzCapability="none",string ptzState="Unavailable",int ptzGeneration=0,string ptzSpeed="medium",string ptzErrorCategory="none")=>new(
+        string ptzCamera="none",string ptzCapability="none",string ptzState="Unavailable",int ptzGeneration=0,string ptzSpeed="medium",string ptzErrorCategory="none",
+        string eventCenterState="Idle",string eventFeedState="Stopped",int eventDisplayed=0,string eventLastReceived="none",string eventErrorCategory="none",int eventDroppedView=0,string eventPagination="end")=>new(
         typeof(DiagnosticsService).Assembly.GetName().Version?.ToString()??"unknown",RuntimeInformation.OSDescription,RuntimeInformation.ProcessArchitecture.ToString(),
         profile?.SafeAddress??"not configured",state.ToString(),caps?.DeploymentProfile??"unknown",ClientPaths.LogDirectory,mediaState,
         authenticationMode,authenticationState,rememberedSession,tokenExpiry?.ToString("O")??"unknown",oidcIssuerHost,lastAuthErrorCategory,callbackMechanism,credentialStoreStatus,
         liveLayout,activeTiles,connectingTiles,failedTiles,liveTileStates,rendererType,
         playbackCamera,playbackDate,playbackState,playbackRate,playbackPosition,playbackSegments,playbackGaps,playbackRenderer,playbackErrorCategory,
-        ptzCamera,ptzCapability,ptzState,ptzGeneration,ptzSpeed,ptzErrorCategory);
+        ptzCamera,ptzCapability,ptzState,ptzGeneration,ptzSpeed,ptzErrorCategory,
+        eventCenterState,eventFeedState,eventDisplayed,eventLastReceived,eventErrorCategory,eventDroppedView,eventPagination);
     public static async Task<string> ExportAsync(ClientDiagnostics diagnostics,string directory,CancellationToken ct=default)
     {
         Directory.CreateDirectory(directory); var path=Path.Combine(directory,$"intelligent-vms-client-diagnostics-{DateTime.UtcNow:yyyyMMddTHHmmssZ}.json");
