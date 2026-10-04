@@ -24,6 +24,7 @@ $HadManagedState=Test-Path $StateFile
 function Write-SafeLog([string]$Stage,[string]$Message){
   New-Item -ItemType Directory -Force -Path $LogRoot|Out-Null
   $safe=$Message -replace '(?i)(password|secret|token|authorization|credential)\s*[:=]\s*\S+','$1=[REDACTED]'
+  $safe=$safe -replace '(?i)\b((?:rtsp|rtsps|http|https)://)[^/\s:@]+:[^@\s/]+@','$1[REDACTED]@'
   $line=("{0:o} stage={1} {2}" -f [DateTimeOffset]::UtcNow,$Stage,$safe)
   Add-Content -LiteralPath (Join-Path $LogRoot "setup.log") -Value $line -Encoding UTF8
   if(-not $Quiet){Write-Host $line}
@@ -176,7 +177,7 @@ try{
   Write-SafeLog "validate" "success action=$Action components=$Components"
 }catch{
   Collect-FailureDiagnostics "setup"
-  Write-SafeLog "failure" ("category={0}" -f $_.Exception.GetType().Name)
+  Write-SafeLog "failure" ("category={0} message={1}" -f $_.Exception.GetType().Name,$_.Exception.Message)
   if(-not $HadManagedState -and $Action -eq "Install"){
     try{
       Uninstall-Managed
