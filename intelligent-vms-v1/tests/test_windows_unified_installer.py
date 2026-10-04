@@ -75,6 +75,7 @@ def test_nsis_and_artifact_contract():
     assert "WriteUninstaller" in NSIS
     assert "Get-FileHash -Algorithm SHA256" in BUILD
     assert "NSIS 3.13 compiler not found" in BUILD
+    assert "$env:ProgramFiles(x86)" not in BUILD
 
 def test_claims_remain_field_test_only():
     assert "Release Candidate / External Qualification Pending" in ADR
