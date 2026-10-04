@@ -229,3 +229,19 @@ If no remote write is appropriate yet, give the user the findings and leave this
 - F08-001/F08-007/F08-008 are promoted only to QA/software-evidenced; verification remains NV.
 - Windows 10/11 hardware qualification, real WHEP/camera/codec validation, DPI/multi-monitor, GPU/native decoding, high-density grids, OIDC/PKCE interactive UX and final signed installer/update channel remain External Qualification Pending.
 - Product status remains **Release Candidate / External Qualification Pending**.
+
+## Windows Desktop OIDC/PKCE Authentication UX — issue #8 / PR #9 — 2026-10-04
+
+- Verified starting main: `1a6a0b0260e8fd3d2ae32ffe031f8f4acd163384`.
+- Dedicated branch: `feature/windows-desktop-oidc-pkce`.
+- Existing VMS server architecture remains the identity authorization boundary: OIDC/JWKS JWT validation plus tenant/site/RBAC, not a new OAuth authorization server.
+- Added safe unauthenticated `/api/v1/auth/capabilities` metadata so the desktop does not guess server auth policy.
+- Native client uses Duende.IdentityModel.OidcClient 7.1.0, system browser, Authorization Code, PKCE S256, fresh state/verifier/application nonce and a bounded 127.0.0.1 ephemeral callback.
+- No client secret, second identity database/JWT issuer, embedded IdP WebView or desktop authorization bypass is introduced.
+- Access token remains memory-resident. Optional refresh material is stored separately per server profile in Windows Credential Manager only when Remember Me is selected and a refresh token is issued.
+- Refresh is serialized; protected API 401 handling is bounded to one renewal and one retry. Permanent refresh rejection deletes remembered material; transient identity/network failure preserves it without treating the user as authenticated.
+- Profile switch/logout/expiry/app shutdown cancel active auth and preserve live/camera/capability cleanup.
+- Logout is local desktop logout; global IdP/browser logout is not claimed.
+- F08-007/F08-008 receive updated software evidence. F25-003/F25-004 remain TARGET/NV because their broader AD/LDAP/SAML/MFA/certificate/Windows/local-auth wording is not fully implemented.
+- Threat review: `docs/security/WINDOWS_DESKTOP_OIDC_THREAT_REVIEW.md`.
+- Product remains **Release Candidate / External Qualification Pending**. Named IdP, MFA, proxy/private-CA and Windows 10/11 qualification remain external.

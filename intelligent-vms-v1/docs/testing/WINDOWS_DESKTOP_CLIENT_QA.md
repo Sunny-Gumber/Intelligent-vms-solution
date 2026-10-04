@@ -39,3 +39,27 @@ Automated hosted-runner success is not Windows 10/11 qualification and does not 
 - restart preserving safe profiles;
 - uninstall preserving VMS server runtime and recordings;
 - real Windows 10/11 DPI/multi-monitor/control-room behavior.
+
+## OIDC/PKCE deterministic software evidence — issue #8 / PR #9
+
+The Windows Client test suite adds:
+- RFC 7636 S256 known-vector validation;
+- fresh state/verifier/application nonce and prepared-request validation;
+- HTTPS authorization endpoint and no-client-secret checks;
+- wrong/missing state, replay, wrong path and malformed callback rejection;
+- real 127.0.0.1 ephemeral HttpListener callback;
+- callback timeout and cancellation;
+- unauthenticated safe auth-capability parsing;
+- one bounded 401 refresh/retry and repeated-401 failure;
+- profile/purpose-isolated Credential Manager entries;
+- Credential Manager size-bound failure;
+- authorization-code/verifier/access/refresh/ID-token/header redaction;
+- existing camera/live grant/WHEP cleanup regressions;
+- .NET dependency vulnerability audit and production-source auth-boundary scan.
+
+No external IdP credentials are required by normal CI. Real IdP/MFA/proxy/private-CA/Windows 10/11 qualification remains external.
+
+
+## OIDC/PKCE milestone additions
+
+Issue #8 / PR #9 adds deterministic coverage for RFC 7636 S256, fresh library state/verifier plus application nonce, safe auth capability negotiation, loopback callback target/state/replay/timeout/cancellation, invalid callback non-consumption, ambiguous response rejection, profile-origin credential isolation, protected OIDC refresh-token purpose separation, one bounded 401 refresh retry, secret redaction, and stale-attempt generation-fencing contracts. Real IdP/browser/Windows qualification remains external.

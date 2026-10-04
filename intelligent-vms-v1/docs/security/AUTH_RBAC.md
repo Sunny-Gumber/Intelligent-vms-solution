@@ -75,3 +75,12 @@ The minimal static web wall remains development-only. Production UI must obtain 
 See `PHASE9_PRODUCTION_SECURITY.md` for OIDC key/certificate rotation, structured
 mutation/auth-failure audit logging, External Secrets/KMS integration, NetworkPolicy,
 TLS/mTLS boundaries, abuse controls and the security release gate.
+
+## Native Windows desktop OIDC metadata
+
+Native desktop organization sign-in is enabled only when production OIDC trust is configured and:
+- `AUTH_DESKTOP_OIDC_ENABLED=true`
+- `AUTH_OIDC_CLIENT_ID=<public client id>`
+- `AUTH_OIDC_SCOPES="openid ..."`
+
+The public client has no client secret. `GET /api/v1/auth/capabilities` returns only safe public authentication metadata. The desktop uses the configured HTTPS issuer/authority for system-browser Authorization Code + PKCE, then presents the resulting access token to the existing VMS JWT validation and tenant/site/RBAC boundary.
