@@ -29,8 +29,8 @@ from app.services import ptz as ptz_service
 router = APIRouter(prefix="/api/v1/ptz", tags=["ptz"])
 
 _generation_lock = asyncio.Lock()
-_generations: dict[tuple[str, str], int] = {}
-_last_move_at: dict[tuple[str, str], float] = {}
+_generations: dict[tuple[str, str, str], int] = {}
+_last_move_at: dict[tuple[str, str, str], float] = {}
 _MIN_MOVE_INTERVAL_SECONDS = 0.075
 
 
@@ -78,10 +78,11 @@ async def _claim_generation(
     principal: Principal,
     camera_id: str,
     generation: int,
+    context_id: str,
     *,
     movement: bool,
 ) -> None:
-    key = (principal.subject, camera_id)
+    key = (principal.subject, camera_id, context_id)
     async with _generation_lock:
         current = _generations.get(key, 0)
         if generation <= current:
@@ -132,7 +133,9 @@ async def move_camera(
 ):
     """Issue one fenced, bounded continuous PTZ movement command."""
     camera, capability, username, password = await _context(camera_id, session, principal)
-    await _claim_generation(principal, camera.id, payload.generation, movement=True)
+    await _claim_generation(
+        principal, camera.id, payload.generation, str(payload.context_id), movement=True
+    )
     try:
         await ptz_service.continuous_move(
             capability.services_json or [],
@@ -159,7 +162,9 @@ async def stop_camera(
 ):
     """Issue a stop-priority fenced PTZ stop command."""
     camera, capability, username, password = await _context(camera_id, session, principal)
-    await _claim_generation(principal, camera.id, payload.generation, movement=False)
+    await _claim_generation(
+        principal, camera.id, payload.generation, str(payload.context_id), movement=False
+    )
     try:
         await ptz_service.stop(
             capability.services_json or [],
