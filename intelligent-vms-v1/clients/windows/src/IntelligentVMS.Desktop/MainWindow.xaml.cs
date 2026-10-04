@@ -530,6 +530,7 @@ public partial class MainWindow:Window
         if(_capabilities?.EventHistory!=true){RenderEventCenter();return;}
         var center=new EventCenterCoordinator(_api,_logger);
         center.Changed+=EventCenter_Changed;
+        center.AuthenticationExpired+=EventCenter_AuthenticationExpired;
         _eventCenter=center;
         RenderEventCenter();
     }
@@ -538,7 +539,7 @@ public partial class MainWindow:Window
     {
         var center=_eventCenter;
         if(center is null){_eventRows.Clear();RenderEventCenter();return;}
-        center.Changed-=EventCenter_Changed;_eventCenter=null;
+        center.Changed-=EventCenter_Changed;center.AuthenticationExpired-=EventCenter_AuthenticationExpired;_eventCenter=null;
         await center.DisposeAsync();_eventRows.Clear();RenderEventCenter();
     }
 
@@ -546,6 +547,16 @@ public partial class MainWindow:Window
     {
         if(!Dispatcher.CheckAccess()){Dispatcher.BeginInvoke(RenderEventCenter);return;}
         RenderEventCenter();
+    }
+
+    private async void EventCenter_AuthenticationExpired(object? sender,EventArgs e)
+    {
+        if(!Dispatcher.CheckAccess())
+        {
+            await Dispatcher.InvokeAsync(async()=>await HandleSessionExpiredAsync());
+            return;
+        }
+        await HandleSessionExpiredAsync();
     }
 
     private void PopulateEventCameraFilter(IEnumerable<CameraInfo> cameras)
