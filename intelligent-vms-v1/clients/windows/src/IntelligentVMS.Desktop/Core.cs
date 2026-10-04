@@ -18,7 +18,7 @@ public static class ClientPaths
     public static string CacheDirectory => Path.Combine(Root, "cache");
     public static string WebView2CacheDirectory => Path.Combine(CacheDirectory, "webview2");
     public static string ProfilesFile => Path.Combine(ConfigDirectory, "profiles.json");
-    public static string LiveGridFile => Path.Combine(ConfigDirectory, "live-grid.json");
+    public static string LiveGridFile(Guid profileId) => Path.Combine(ConfigDirectory, $"live-grid-{profileId:D}.json");
     public static void EnsureCreated()
     {
         Directory.CreateDirectory(ConfigDirectory);
