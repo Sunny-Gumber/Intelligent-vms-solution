@@ -5,7 +5,7 @@ using IntelligentVMS.Desktop;
 
 var tests=new List<(string,Func<Task>)>{
 ("server URL validation",TestServerProfiles),("profile persistence/corruption",TestProfiles),("credential storage",TestCredentials),
-("token redaction",TestRedaction),("OIDC PKCE security contracts",OidcSecurityTests.RunAllAsync),("multi-camera live grid",LiveGridTests.RunAllAsync),("desktop playback foundation",PlaybackTests.RunAllAsync),("authentication transitions",TestSession),("remembered-session failure policy",TestRememberedSessionFailures),("401 expiry",TestUnauthorized),
+("token redaction",TestRedaction),("OIDC PKCE security contracts",OidcSecurityTests.RunAllAsync),("multi-camera live grid",LiveGridTests.RunAllAsync),("desktop PTZ foundation",PtzTests.RunAllAsync),("desktop playback foundation",PlaybackTests.RunAllAsync),("authentication transitions",TestSession),("remembered-session failure policy",TestRememberedSessionFailures),("401 expiry",TestUnauthorized),
 ("capability/camera parsing",TestApiParsing),("playback API refresh contract",TestPlaybackApiRefresh),("camera tree",TestCameraTree),("live API auth contract",TestLiveApiContract),("live grant/session cleanup",TestLive),("WHEP renderer contract",TestRendererContract),
 ("TLS/media policy",TestTls),("diagnostics",TestDiagnostics),("package isolation",TestPackaging),("interpolation guard",TestInterpolationGuard)};
 var failures=0;
