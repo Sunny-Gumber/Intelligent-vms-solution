@@ -183,6 +183,14 @@ Section "Install"
   Pop $0
   ${If} $0 != 0
     DetailPrint "Setup orchestration failed with exit code $0."
+    IfFileExists "$PROGRAMDATA\IntelligentVMS\installer-state.json" managed_state_present
+      RMDir /r "$INSTDIR\Client"
+      RMDir /r "$INSTDIR\Setup"
+      Delete "$INSTDIR\Uninstall.exe"
+      DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\IntelligentVMS"
+      DeleteRegKey HKLM "Software\IntelligentVMS"
+      RMDir "$INSTDIR"
+    managed_state_present:
     Abort
   ${EndIf}
 SectionEnd
