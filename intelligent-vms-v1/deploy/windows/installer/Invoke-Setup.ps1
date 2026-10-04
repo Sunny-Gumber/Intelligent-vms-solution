@@ -11,7 +11,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference="Stop"
 
-$ProgramRoot=Join-Path $env:ProgramFiles "Intelligent VMS"
+$MachineProgramFiles=[Environment]::GetEnvironmentVariable("ProgramW6432")
+if(-not $MachineProgramFiles){$MachineProgramFiles=$env:ProgramFiles}
+$ProgramRoot=Join-Path $MachineProgramFiles "Intelligent VMS"
 $ClientRoot=Join-Path $ProgramRoot "Client"
 $ServerRoot=Join-Path $env:ProgramData "IntelligentVMS"
 $StateFile=Join-Path $ServerRoot "installer-state.json"
