@@ -84,6 +84,17 @@ function Invoke-Checked([string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Exe failed with exit code $LASTEXITCODE" }
 }
+function Get-Sha256Hex([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
 
 Assert-Administrator
 if (-not [Environment]::Is64BitOperatingSystem) { throw "Windows x64 is required." }
@@ -256,7 +267,7 @@ $mediaUrl = "https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/me
 $mediaSha = "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"
 if (-not (Test-Path (Join-Path $MediaRoot "mediamtx.exe"))) {
     Invoke-WebRequest -Uri $mediaUrl -OutFile $mediaZip -UseBasicParsing
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $mediaZip).Hash.ToLowerInvariant()
+    $actual = Get-Sha256Hex $mediaZip
     if ($actual -ne $mediaSha) { throw "MediaMTX download checksum mismatch." }
     if (Test-Path $MediaRoot) { Remove-Item $MediaRoot -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $MediaRoot | Out-Null
