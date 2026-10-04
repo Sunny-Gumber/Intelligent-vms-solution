@@ -2,6 +2,9 @@ using System.IO;
 using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Shapes;
+using Microsoft.Win32;
 
 namespace IntelligentVMS.Desktop;
 
@@ -22,6 +25,7 @@ public partial class MainWindow:Window
     private ServerCapabilities? _capabilities;
     private CameraInfo? _selectedCamera;
     private LiveGridCoordinator? _grid;
+    private PlaybackCoordinator? _playback;
     private ServerConnectionState _connectionState=ServerConnectionState.Disconnected;
 
     public MainWindow(IClientLogger logger)
@@ -35,7 +39,10 @@ public partial class MainWindow:Window
         Loaded+=MainWindow_Loaded;
         Closing+=MainWindow_Closing;
         SchemeCombo.SelectedIndex=0;
+        PlaybackDatePicker.SelectedDate=DateTime.Today;
+        PlaybackRateCombo.SelectedIndex=0;
         RenderLiveGrid();
+        RenderPlayback();
     }
 
     private void InitializeLiveTiles()
@@ -139,6 +146,7 @@ public partial class MainWindow:Window
 
     private async void Logout_Click(object sender,RoutedEventArgs e)
     {
+        await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);
         if(_activeProfile is not null)await _oidc.LogoutAsync(_activeProfile.Id);
         await _session.LogoutAsync();ClearAuthorizedState();_connectionState=ServerConnectionState.AuthenticationRequired;
@@ -155,6 +163,7 @@ public partial class MainWindow:Window
             _authorizedCameras=cameras.ToDictionary(x=>x.Id,StringComparer.Ordinal);
             PopulateCameraTree(cameras);
             await InitializeGridCoordinatorAsync();
+            await InitializePlaybackCoordinatorAsync();
             EventsTab.Visibility=_capabilities.EventHistory?Visibility.Visible:Visibility.Collapsed;
             LogoutButton.IsEnabled=true;UpdateServerState();
         }
@@ -179,10 +188,11 @@ public partial class MainWindow:Window
     {
         if(e.NewValue is not TreeViewItem{Tag:CameraInfo camera})
         {
-            _selectedCamera=null;StreamRoleCombo.ItemsSource=null;return;
+            _selectedCamera=null;StreamRoleCombo.ItemsSource=null;PlaybackCameraText.Text="Select one authorized camera.";return;
         }
         _selectedCamera=camera;
         LiveSelectionText.Text=$"{camera.Name} · {camera.SiteId}";
+        PlaybackCameraText.Text=$"{camera.Name} · {camera.SiteId}";
         try{UpdateRoleOptions(camera.AvailableLiveRoles,LiveStreamRolePolicy.Preferred(camera,_grid?.FocusedTile is not null||_grid?.Layout.Count==1));}
         catch(InvalidOperationException){StreamRoleCombo.ItemsSource=null;LiveSelectionText.Text=$"{camera.Name} has no advertised live stream role.";}
     }
@@ -348,6 +358,7 @@ public partial class MainWindow:Window
 
     private async Task HandleSessionExpiredAsync()
     {
+        await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);
         if(_activeProfile is not null)await _oidc.InvalidateAsync(_activeProfile.Id);
         await _session.MarkExpiredAsync();
@@ -365,7 +376,9 @@ public partial class MainWindow:Window
     private void MainWindow_Closing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
         _oidc.CancelActiveAttempt();
+        try{DeactivatePlaybackAsync().GetAwaiter().GetResult();}catch{}
         try{DeactivateGridAsync(true).GetAwaiter().GetResult();}catch{}
+        try{PlaybackMedia.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}
         foreach(var tile in _tileViews){try{tile.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}}
         try{_oidc.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}
         _api.Dispose();
@@ -373,6 +386,7 @@ public partial class MainWindow:Window
 
     private async Task EndSessionForServerChangeAsync()
     {
+        await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);_oidc.Deactivate();
         if(_session.State!=DesktopSessionState.SignedOut)await _session.LogoutAsync();
         _authCapabilities=null;ClearAuthorizedState();_connectionState=ServerConnectionState.Disconnected;
@@ -442,6 +456,7 @@ public partial class MainWindow:Window
     private void ClearAuthorizedState()
     {
         _selectedCamera=null;_authorizedCameras=new Dictionary<string,CameraInfo>(StringComparer.Ordinal);
+        PlaybackCameraText.Text="Select one authorized camera.";PlaybackDayStateText.Text="No day loaded";PlaybackStatusText.Text="Ready";
         CameraTree.Items.Clear();StreamRoleCombo.ItemsSource=null;_capabilities=null;
         EventsTab.Visibility=Visibility.Collapsed;LogoutButton.IsEnabled=false;RenderLiveGrid();
     }
