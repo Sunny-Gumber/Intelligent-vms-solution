@@ -411,7 +411,7 @@ def test_windows_programdata_execution_and_persistent_paths_are_explicitly_prote
 
 
 def test_windows_backup_hashing_does_not_depend_on_get_file_hash_autoload():
-    assert "function Get-Sha256Hex" in MANAGE
-    assert "[Security.Cryptography.SHA256]::Create()" in MANAGE
-    assert "(Get-Sha256Hex $dump)" in MANAGE
-    assert "Get-FileHash -Algorithm SHA256 $dump" not in MANAGE
+    assert "function Get-Sha256Hex" in LIFECYCLE
+    assert "[Security.Cryptography.SHA256]::Create()" in LIFECYCLE
+    assert "(Get-Sha256Hex $dump)" in LIFECYCLE
+    assert "Get-FileHash -Algorithm SHA256 $dump" not in LIFECYCLE
