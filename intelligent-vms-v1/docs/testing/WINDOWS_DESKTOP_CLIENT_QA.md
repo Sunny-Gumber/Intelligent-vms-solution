@@ -58,3 +58,8 @@ The Windows Client test suite adds:
 - .NET dependency vulnerability audit and production-source auth-boundary scan.
 
 No external IdP credentials are required by normal CI. Real IdP/MFA/proxy/private-CA/Windows 10/11 qualification remains external.
+
+
+## OIDC/PKCE milestone additions
+
+Issue #8 / PR #9 adds deterministic coverage for RFC 7636 S256, fresh library state/verifier plus application nonce, safe auth capability negotiation, loopback callback target/state/replay/timeout/cancellation, invalid callback non-consumption, ambiguous response rejection, profile-origin credential isolation, protected OIDC refresh-token purpose separation, one bounded 401 refresh retry, secret redaction, and stale-attempt generation-fencing contracts. Real IdP/browser/Windows qualification remains external.
