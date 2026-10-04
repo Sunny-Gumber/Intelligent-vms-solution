@@ -299,6 +299,7 @@ public sealed class DesktopSession
     public DesktopSessionState State { get; private set; } = DesktopSessionState.SignedOut;
     public string? AccessToken { get; private set; }
     public Guid? ProfileId { get; private set; }
+    public bool RememberedSession { get; private set; }
     public async Task<SessionInfo> AuthenticateAsync(Guid profileId, string token, bool remember,
         Func<CancellationToken,Task<SessionInfo>> validate, CancellationToken cancellationToken=default)
     {
@@ -309,9 +310,9 @@ public sealed class DesktopSession
             var info=await validate(cancellationToken);
             if(!info.Authenticated) throw new UnauthorizedAccessException();
             if(remember) await _credentials.SaveAsync(profileId,AccessToken,cancellationToken); else await _credentials.DeleteAsync(profileId,cancellationToken);
-            State=DesktopSessionState.Authenticated; _logger.Info("auth","desktop session authenticated"); return info;
+            RememberedSession=remember; State=DesktopSessionState.Authenticated; _logger.Info("auth","desktop session authenticated"); return info;
         }
-        catch { AccessToken=null; ProfileId=null; State=DesktopSessionState.SignedOut; throw; }
+        catch { AccessToken=null; ProfileId=null; RememberedSession=false; State=DesktopSessionState.SignedOut; throw; }
     }
     public async Task<bool> TryRestoreAsync(Guid profileId, Func<CancellationToken,Task<SessionInfo>> validate, CancellationToken cancellationToken=default)
     {
@@ -319,12 +320,12 @@ public sealed class DesktopSession
         try { await AuthenticateAsync(profileId,token,true,validate,cancellationToken); return true; }
         catch (SessionExpiredException) { await _credentials.DeleteAsync(profileId,cancellationToken); return false; }
         catch (UnauthorizedAccessException) { await _credentials.DeleteAsync(profileId,cancellationToken); return false; }
-        catch { AccessToken=null; ProfileId=null; State=DesktopSessionState.SignedOut; _logger.Warning("auth","remembered session restore unavailable"); return false; }
+        catch { AccessToken=null; ProfileId=null; RememberedSession=false; State=DesktopSessionState.SignedOut; _logger.Warning("auth","remembered session restore unavailable"); return false; }
     }
     public async Task LogoutAsync(CancellationToken cancellationToken=default)
     {
         if(ProfileId is Guid id) await _credentials.DeleteAsync(id,cancellationToken);
-        AccessToken=null; ProfileId=null; State=DesktopSessionState.SignedOut; _logger.Info("auth","desktop session signed out");
+        AccessToken=null; ProfileId=null; RememberedSession=false; State=DesktopSessionState.SignedOut; _logger.Info("auth","desktop session signed out");
     }
     public void ReplaceAccessToken(Guid profileId, string token)
     {
@@ -334,12 +335,12 @@ public sealed class DesktopSession
     }
     public void DisconnectRuntime()
     {
-        AccessToken=null; ProfileId=null; State=DesktopSessionState.SignedOut;
+        AccessToken=null; ProfileId=null; RememberedSession=false; State=DesktopSessionState.SignedOut;
     }
     public async Task MarkExpiredAsync(CancellationToken cancellationToken=default)
     {
         if(ProfileId is Guid id) await _credentials.DeleteAsync(id,cancellationToken);
-        AccessToken=null; ProfileId=null; State=DesktopSessionState.Expired; _logger.Warning("auth","desktop session expired");
+        AccessToken=null; ProfileId=null; RememberedSession=false; State=DesktopSessionState.Expired; _logger.Warning("auth","desktop session expired");
     }
 }
 
