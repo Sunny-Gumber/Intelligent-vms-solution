@@ -6,8 +6,11 @@ on:
       - 'intelligent-vms-v1/clients/windows/**'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_CLIENT_FOUNDATION.md'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_LIVE_GRID.md'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_PLAYBACK_FOUNDATION.md'
       - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_LIVE_GRID_SECURITY_REVIEW.md'
+      - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_PLAYBACK_SECURITY_REVIEW.md'
       - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_CLIENT_QA.md'
+      - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_PLAYBACK_QA.md'
       - 'intelligent-vms-v1/docs/operations/WINDOWS_DESKTOP_CLIENT.md'
       - '.github/workflows/intelligent-vms-windows-client.yml'
   push:
@@ -16,8 +19,11 @@ on:
       - 'intelligent-vms-v1/clients/windows/**'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_CLIENT_FOUNDATION.md'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_LIVE_GRID.md'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_PLAYBACK_FOUNDATION.md'
       - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_LIVE_GRID_SECURITY_REVIEW.md'
+      - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_PLAYBACK_SECURITY_REVIEW.md'
       - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_CLIENT_QA.md'
+      - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_PLAYBACK_QA.md'
       - 'intelligent-vms-v1/docs/operations/WINDOWS_DESKTOP_CLIENT.md'
       - '.github/workflows/intelligent-vms-windows-client.yml'
 
