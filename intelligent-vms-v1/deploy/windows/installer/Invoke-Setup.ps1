@@ -130,8 +130,14 @@ function Install-Server {
   if(-not (Test-Path $script)){throw "Server payload is missing."}
   $args=@("-NoProfile","-ExecutionPolicy","Bypass","-File",$script,"-RecordingRoot",$RecordingRoot)
   if($Action -in @("Upgrade","Repair")){$args+="-Upgrade"}
-  $output=& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @args 2>&1
-  $code=$LASTEXITCODE
+  $previousPreference=$ErrorActionPreference
+  try {
+    $ErrorActionPreference="Continue"
+    $output=& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @args 2>&1
+    $code=$LASTEXITCODE
+  } finally {
+    $ErrorActionPreference=$previousPreference
+  }
   foreach($line in @($output)){
     $text=[string]$line
     if($text){Write-SafeLog "server" $text}
