@@ -102,6 +102,14 @@ async def _claim_generation(
         _generations[key] = generation
 
 
+async def _is_current_generation(
+    principal: Principal, camera_id: str, generation: int, context_id: str
+) -> bool:
+    key = (principal.subject, camera_id, context_id)
+    async with _generation_lock:
+        return _generations.get(key) == generation
+
+
 @router.get("/cameras/{camera_id}/capabilities", response_model=PtzCapabilitiesRead)
 async def camera_ptz_capabilities(
     camera_id: str,
@@ -148,6 +156,26 @@ async def move_camera(
             camera.tenant_id,
             camera.site_id,
         )
+        if not await _is_current_generation(
+            principal, camera.id, payload.generation, str(payload.context_id)
+        ):
+            # A newer STOP/context command won while the device call was in flight.
+            # Compensate after late MOVE completion so motion cannot remain active.
+            try:
+                await ptz_service.stop(
+                    capability.services_json or [],
+                    capability.main_profile_token,
+                    username,
+                    password,
+                    camera.tenant_id,
+                    camera.site_id,
+                )
+            except Exception:
+                pass
+            raise HTTPException(
+                409,
+                {"code": "STALE_PTZ_COMMAND", "message": "PTZ movement was superseded"},
+            )
         return PtzCommandRead(camera_id=camera.id, state="moving", generation=payload.generation)
     except Exception as exc:
         raise _http_error(exc) from exc
