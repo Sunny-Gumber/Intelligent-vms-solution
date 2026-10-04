@@ -164,7 +164,7 @@ public static partial class SecretRedactor
 {
     [GeneratedRegex(@"(?i)Bearer\s+[A-Za-z0-9._~+\-/]+=*")] private static partial Regex BearerRegex();
     [GeneratedRegex(@"(?i)\b((?:rtsp|rtsps|http|https)://)[^/\s:@]+:[^@\s/]+@")] private static partial Regex CredentialUriRegex();
-    [GeneratedRegex(@"(?i)(authorization|access_token|refresh_token|password|token)=([^\s&]+)")] private static partial Regex NamedSecretRegex();
+    [GeneratedRegex(@"(?i)(authorization|access_token|refresh_token|id_token|password|token|code|code_verifier)=([^\s&]+)")] private static partial Regex NamedSecretRegex();
     public static string Redact(string? value)
     {
         var text = BearerRegex().Replace(value ?? string.Empty, "Bearer [REDACTED]");
