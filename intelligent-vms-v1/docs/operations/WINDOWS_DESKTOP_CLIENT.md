@@ -31,7 +31,7 @@ Profiles contain display name, scheme, host and port only. Credentials are not a
 
 The desktop foundation does not create a new identity store or login bypass. It accepts an existing VMS access token and validates it through the current server authority. Optional remembered session material is stored in Windows Credential Manager, never profiles JSON.
 
-Interactive OIDC/PKCE is not claimed in this milestone.
+System-browser OIDC Authorization Code + PKCE S256 is implemented as generic software evidence in issue #8 / PR #9. No named IdP or external Windows qualification is claimed.
 
 ## Live media
 
@@ -79,7 +79,7 @@ Authentication success is not treated as authorization by itself. The returned a
 
 Remember Me is explicit:
 - OFF: OIDC access/session material is transient.
-- ON: when the IdP issues a refresh token, only that minimum renewal credential is stored in Windows Credential Manager under a server-profile-specific OIDC target.
+- ON: when the IdP issues a refresh token, only that minimum renewal credential is stored in Windows Credential Manager under a server-profile-specific OIDC target. If a saved profile's server origin changes, the old remembered credential identity is deleted and a new profile identity is created before authentication can be restored.
 - Access tokens remain memory-resident.
 
 A 401 can trigger one serialized renewal and one retry. A second 401 expires the VMS desktop session. Permanent refresh rejection removes remembered material; transient network/IdP failure preserves it but does not claim the user is currently authenticated.
