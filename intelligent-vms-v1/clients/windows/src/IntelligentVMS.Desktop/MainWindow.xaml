@@ -27,8 +27,8 @@
    <Border Grid.Column="0" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" Padding="8" Margin="0,0,8,0">
     <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="Authorized cameras" FontWeight="SemiBold" Margin="4"/><TreeView x:Name="CameraTree" Grid.Row="1" SelectedItemChanged="CameraTree_SelectedItemChanged" MouseDoubleClick="CameraTree_MouseDoubleClick" Background="#121922" Foreground="{StaticResource TextPrimary}"/></Grid>
    </Border>
-   <TabControl Grid.Column="1" Background="{StaticResource PanelBackground}">
-    <TabItem Header="Live">
+   <TabControl x:Name="MainTabs" Grid.Column="1" Background="{StaticResource PanelBackground}" SelectionChanged="MainTabs_SelectionChanged">
+    <TabItem x:Name="LiveTab" Header="Live">
      <Grid Margin="8">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <DockPanel Grid.Row="0" LastChildFill="True">
@@ -59,7 +59,7 @@
       <DockPanel Grid.Row="0" LastChildFill="True">
        <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
         <TextBlock x:Name="PlaybackCameraText" Text="Select one authorized camera." VerticalAlignment="Center" Margin="4"/>
-        <DatePicker x:Name="PlaybackDatePicker" Width="150" Margin="8,2"/>
+        <DatePicker x:Name="PlaybackDatePicker" Width="150" Margin="8,2" SelectedDateChanged="PlaybackDate_SelectedDateChanged"/>
         <Button Content="Load recording day" Click="PlaybackLoad_Click"/>
        </StackPanel>
        <TextBlock x:Name="PlaybackDayStateText" Text="No day loaded" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="12,4"/>
