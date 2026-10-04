@@ -933,3 +933,12 @@ Next Track-A recommendation: perform the Category 2 — Live Monitoring evidence
 - F08-007/F08-008 receive updated software evidence. F25-003/F25-004 remain TARGET/NV because their broader AD/LDAP/SAML/MFA/certificate/Windows/local-auth wording is not fully implemented.
 - Threat review: `docs/security/WINDOWS_DESKTOP_OIDC_THREAT_REVIEW.md`.
 - Product remains **Release Candidate / External Qualification Pending**. Named IdP, MFA, proxy/private-CA and Windows 10/11 qualification remain external.
+## Native Windows multi-camera live-grid continuation
+
+The desktop live-grid milestone is tracked in destination issue #10 / PR #11.
+
+It builds on the accepted Windows desktop foundation and OIDC/PKCE authentication. The desktop remains a client of the existing control API and MediaMTX/WHEP media plane. Native grid software supports deterministic 1/4/9/16 layout architecture, independent tile lifecycles, server-advertised MAIN/SUB/THIRD role policy, duplicate prevention, focus mode, safe cleanup, and assignment persistence.
+
+The current renderer remains WebView2/WHEP behind ILiveMediaRenderer and is explicitly replaceable by a later native/hardware-decoded implementation. CI evidence for 16 logical tiles is not a real 16-stream workstation performance qualification.
+
+After PR #11 acceptance, future work must still preserve: no direct camera RTSP/credentials, no second recorder/media backend, no hidden live-session leaks, and no capacity claims without real external measurement.
