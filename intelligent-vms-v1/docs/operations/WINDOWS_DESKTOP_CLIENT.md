@@ -68,3 +68,22 @@ The client installer/uninstaller does not manage IntelligentVMSControl, Intellig
 - Disconnect/soak behavior on real desktop environments.
 - Native/GPU decoder path and multi-camera capacity.
 - Final signed Server / Client / Both commercial installer and update channel.
+
+## Organization sign-in (OIDC/PKCE)
+
+The desktop negotiates authentication policy from `GET /api/v1/auth/capabilities`. It only shows organization sign-in when the server advertises a compatible public-client contract.
+
+Organization sign-in opens the **system default browser**. The IdP sign-in page is never hosted in the media WebView2 control. The native flow uses Authorization Code + PKCE S256 and a temporary `127.0.0.1` callback.
+
+Authentication success is not treated as authorization by itself. The returned access token is validated again through the existing VMS session endpoint before server capabilities or authorized cameras are loaded.
+
+Remember Me is explicit:
+- OFF: OIDC access/session material is transient.
+- ON: when the IdP issues a refresh token, only that minimum renewal credential is stored in Windows Credential Manager under a server-profile-specific OIDC target.
+- Access tokens remain memory-resident.
+
+A 401 can trigger one serialized renewal and one retry. A second 401 expires the VMS desktop session. Permanent refresh rejection removes remembered material; transient network/IdP failure preserves it but does not claim the user is currently authenticated.
+
+Logout is local desktop logout in this milestone: active media is stopped, in-memory tokens are cleared and protected desktop session material is deleted. Remote/global IdP SSO logout is not claimed.
+
+No named IdP, Windows 10/11, MFA, conditional-access, proxy or private-CA qualification is claimed.
