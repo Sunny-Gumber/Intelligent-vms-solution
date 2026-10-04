@@ -553,7 +553,7 @@ public partial class MainWindow:Window
     {
         if(!Dispatcher.CheckAccess())
         {
-            await Dispatcher.InvokeAsync(async()=>await HandleSessionExpiredAsync());
+            Dispatcher.BeginInvoke(new Action(()=>_ = HandleSessionExpiredAsync()));
             return;
         }
         await HandleSessionExpiredAsync();
