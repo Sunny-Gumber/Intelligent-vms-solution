@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import hmac
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, require_roles, require_scope
@@ -13,6 +13,7 @@ from app.models.entities import EventHistoryEntity
 from app.models.schemas import EventCenterRead, EventHistoryPage, EventIn, EventRead
 from app.routers.cameras import authorized_camera
 from app.services.event_search import EventSearchError, event_search
+from app.services.local_event_store import persist_local_event_once
 from app.services.outbox import OutboxPayloadTooLarge, enqueue_event_once
 
 router = APIRouter(prefix="/api/v1/events", tags=["events"])
@@ -81,25 +82,11 @@ def _read_local(row: EventHistoryEntity) -> EventRead:
     )
 
 
-async def _persist_local_event(session: AsyncSession, event: EventIn) -> bool:
-    existing = await session.get(EventHistoryEntity, event.event_id)
-    if existing is not None:
-        return False
-    values = event.model_dump()
-    attributes = values.pop("attributes", {})
-    row = EventHistoryEntity(**values, attributes_json=attributes)
-    session.add(row)
-    cutoff = datetime.now(timezone.utc) - timedelta(
-        days=max(1, settings.event_local_retention_days)
-    )
-    await session.execute(delete(EventHistoryEntity).where(EventHistoryEntity.timestamp < cutoff))
-    await session.commit()
-    return True
-
-
 async def _store_event(session: AsyncSession, event: EventIn) -> bool:
     if settings.event_local_store_enabled:
-        return await _persist_local_event(session, event)
+        inserted = await persist_local_event_once(session, event.model_dump())
+        await session.commit()
+        return inserted
     if not settings.event_pipeline_enabled:
         raise HTTPException(503, "Event pipeline unavailable in deployment profile")
     payload = event.model_dump(mode="json")
