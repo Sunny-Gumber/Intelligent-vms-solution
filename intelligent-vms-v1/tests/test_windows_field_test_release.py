@@ -58,7 +58,9 @@ def test_windows_generator_creates_explicit_small_site_profile(tmp_path, capsys)
     assert "KAFKA_BOOTSTRAP_SERVERS=\n" in body
     assert "OUTBOX_ENABLED=false" in body
     assert "EVENT_PIPELINE_ENABLED=false" in body
-    assert "EVENT_HISTORY_ENABLED=false" in body
+    assert "EVENT_HISTORY_ENABLED=true" in body
+    assert "EVENT_LOCAL_STORE_ENABLED=true" in body
+    assert "EVENT_LOCAL_RETENTION_DAYS=7" in body
     assert "RECORDING_METADATA_EVENTS_ENABLED=false" in body
     assert "PLACEMENT_EXECUTION_ENABLED=false" in body
     assert "RECORDING_PATH_TEMPLATE=D:/VMS/Recordings/%path/%Y/%m/%d/%H/%s-%f" in body
@@ -102,9 +104,12 @@ def test_small_site_does_not_enqueue_undeliverable_recording_metadata():
     assert '"metadata_event_enqueued"' in block
 
 
-def test_small_site_event_pipeline_is_explicitly_unavailable():
-    assert EVENTS.count("Event pipeline unavailable in deployment profile") >= 2
+def test_small_site_event_history_is_local_without_enterprise_pipeline():
+    assert "Event pipeline unavailable in deployment profile" in EVENTS
     assert "Event history unavailable in deployment profile" in EVENTS
+    assert "event_local_store_enabled" in EVENTS
+    assert "EventHistoryEntity" in EVENTS
+    assert '"/history"' in EVENTS
     assert "Alarm processing unavailable in deployment profile" in ALARMS
     assert "dependencies=[Depends(_require_alarm_processing)]" in ALARMS
     assert "event_history" in WEB and "alarm_processing" in WEB and "ai_ui" in WEB
@@ -228,7 +233,8 @@ def test_windows_small_site_profile_fails_closed_if_enterprise_services_are_enab
     monkeypatch.setattr(settings, "kafka_bootstrap_servers", "")
     monkeypatch.setattr(settings, "outbox_enabled", False)
     monkeypatch.setattr(settings, "event_pipeline_enabled", False)
-    monkeypatch.setattr(settings, "event_history_enabled", False)
+    monkeypatch.setattr(settings, "event_history_enabled", True)
+    monkeypatch.setattr(settings, "event_local_store_enabled", True)
     monkeypatch.setattr(settings, "alarm_processing_enabled", False)
     monkeypatch.setattr(settings, "ai_ui_enabled", False)
     monkeypatch.setattr(settings, "recording_metadata_events_enabled", False)
@@ -237,7 +243,7 @@ def test_windows_small_site_profile_fails_closed_if_enterprise_services_are_enab
     monkeypatch.setattr(settings, "auth_require_oidc", False)
     validate_security_posture()
 
-    monkeypatch.setattr(settings, "event_history_enabled", True)
+    monkeypatch.setattr(settings, "event_local_store_enabled", False)
     with pytest.raises(RuntimeError, match="EVENT_HISTORY_ENABLED"):
         validate_security_posture()
 
