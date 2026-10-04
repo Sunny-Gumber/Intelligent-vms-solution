@@ -27,6 +27,8 @@ public partial class MainWindow:Window
     private LiveGridCoordinator? _grid;
     private PlaybackCoordinator? _playback;
     private PtzCoordinator? _ptz;
+    private EventCenterCoordinator? _eventCenter;
+    private readonly ObservableCollection<EventRecord> _eventRows=[];
     private bool _ptzPointerHeld;
     private ServerConnectionState _connectionState=ServerConnectionState.Disconnected;
 
@@ -46,9 +48,13 @@ public partial class MainWindow:Window
         PlaybackDatePicker.SelectedDate=DateTime.Today;
         PlaybackRateCombo.SelectedIndex=0;
         PtzSpeedCombo.SelectedIndex=1;
+        EventWindowCombo.SelectedIndex=0;
+        EventSeverityCombo.SelectedIndex=0;
+        EventList.ItemsSource=_eventRows;
         RenderLiveGrid();
         RenderPlayback();
         RenderPtz();
+        RenderEventCenter();
     }
 
     private void InitializeLiveTiles()
@@ -152,6 +158,7 @@ public partial class MainWindow:Window
 
     private async void Logout_Click(object sender,RoutedEventArgs e)
     {
+        await DeactivateEventCenterAsync();
         await DeactivatePtzAsync();
         await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);
@@ -172,6 +179,8 @@ public partial class MainWindow:Window
             await InitializeGridCoordinatorAsync();
             await InitializePtzCoordinatorAsync();
             await InitializePlaybackCoordinatorAsync();
+            await InitializeEventCenterAsync();
+            PopulateEventCameraFilter(cameras);
             EventsTab.Visibility=_capabilities.EventHistory?Visibility.Visible:Visibility.Collapsed;
             LogoutButton.IsEnabled=true;UpdateServerState();
         }
@@ -515,6 +524,131 @@ public partial class MainWindow:Window
             _=>"PTZ unavailable for active live tile"};
     }
 
+    private async Task InitializeEventCenterAsync()
+    {
+        await DeactivateEventCenterAsync();
+        if(_capabilities?.EventHistory!=true){RenderEventCenter();return;}
+        var center=new EventCenterCoordinator(_api,_logger);
+        center.Changed+=EventCenter_Changed;
+        _eventCenter=center;
+        RenderEventCenter();
+    }
+
+    private async Task DeactivateEventCenterAsync()
+    {
+        var center=_eventCenter;
+        if(center is null){_eventRows.Clear();RenderEventCenter();return;}
+        center.Changed-=EventCenter_Changed;_eventCenter=null;
+        await center.DisposeAsync();_eventRows.Clear();RenderEventCenter();
+    }
+
+    private void EventCenter_Changed(object? sender,EventArgs e)
+    {
+        if(!Dispatcher.CheckAccess()){Dispatcher.BeginInvoke(RenderEventCenter);return;}
+        RenderEventCenter();
+    }
+
+    private void PopulateEventCameraFilter(IEnumerable<CameraInfo> cameras)
+    {
+        var selected=(EventCameraCombo.SelectedItem as CameraInfo)?.Id;
+        var rows=new List<CameraInfo>{new(){Id="",Name="All cameras",SiteId=""}};
+        rows.AddRange(cameras.OrderBy(x=>x.Name,StringComparer.OrdinalIgnoreCase));
+        EventCameraCombo.ItemsSource=rows;
+        EventCameraCombo.SelectedItem=rows.FirstOrDefault(x=>x.Id==selected)??rows[0];
+    }
+
+    private EventQuery BuildEventQuery()
+    {
+        var hours=1;
+        if(EventWindowCombo.SelectedItem is ComboBoxItem{Tag:string tag}&&int.TryParse(tag,out var parsed))hours=parsed;
+        var end=DateTimeOffset.UtcNow;var start=end-TimeSpan.FromHours(hours);
+        var cameraId=EventCameraCombo.SelectedItem is CameraInfo camera&&!string.IsNullOrWhiteSpace(camera.Id)?camera.Id:null;
+        var type=string.IsNullOrWhiteSpace(EventTypeBox.Text)?null:EventTypeBox.Text.Trim();
+        var severity=EventSeverityCombo.SelectedItem is ComboBoxItem severityItem&&severityItem.Content?.ToString() is string s&&s!="All"?s:null;
+        return new EventQuery(start,end,CameraId:cameraId,EventType:type,Severity:severity,Limit:100);
+    }
+
+    private async void EventRefresh_Click(object sender,RoutedEventArgs e)
+    {
+        if(_eventCenter is null)return;
+        try{await _eventCenter.LoadAsync(BuildEventQuery());_eventCenter.StartPolling();}
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+    }
+
+    private async void EventOlder_Click(object sender,RoutedEventArgs e)
+    {
+        if(_eventCenter is null)return;
+        try{await _eventCenter.LoadNextAsync();}
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+    }
+
+    private void EventList_SelectionChanged(object sender,SelectionChangedEventArgs e)
+    {
+        RenderEventDetails(EventList.SelectedItem as EventRecord);
+    }
+
+    private void RenderEventDetails(EventRecord? row)
+    {
+        EventOpenLiveButton.IsEnabled=row is not null&&_authorizedCameras.ContainsKey(row.CameraId);
+        EventOpenPlaybackButton.IsEnabled=EventOpenLiveButton.IsEnabled;
+        if(row is null){EventDetailsText.Text="Select an event to inspect safe details.";return;}
+        var metadata=EventMetadataFormatter.Format(row);
+        EventDetailsText.Text=$"Time: {row.OccurredAt.ToLocalTime():yyyy-MM-dd HH:mm:ss zzz}\nCamera: {row.CameraName}\nSite: {row.SiteId}\nType: {row.DisplayType} ({row.EventType})\nSeverity: {row.Severity}\nSource: {row.Source}"+
+            (string.IsNullOrWhiteSpace(row.ObjectType)?"":$"\nObject: {row.ObjectType}")+
+            (string.IsNullOrWhiteSpace(row.ZoneId)?"":$"\nZone: {row.ZoneId}")+
+            (string.IsNullOrWhiteSpace(metadata)?"":$"\n\nMetadata:\n{metadata}");
+    }
+
+    private async void EventOpenLive_Click(object sender,RoutedEventArgs e)
+    {
+        if(EventList.SelectedItem is not EventRecord row||_grid is null||!_authorizedCameras.TryGetValue(row.CameraId,out var camera)){EventStatusText.Text="Referenced camera is no longer authorized.";return;}
+        try
+        {
+            MainTabs.SelectedItem=LiveTab;_selectedCamera=camera;
+            var existing=_grid.Tiles.FirstOrDefault(x=>x.Index<_grid.Layout.Count&&string.Equals(x.CameraId,camera.Id,StringComparison.Ordinal));
+            if(existing is not null)_grid.SelectTile(existing.Index);
+            else{await StopPtzBestEffortAsync();await _grid.AssignCameraAsync(_grid.SelectedTile,camera);await SaveGridSnapshotAsync();}
+            LiveSelectionText.Text=$"{camera.Name} · event at {row.OccurredAt.ToLocalTime():HH:mm:ss}";
+            RenderLiveGrid();await SyncPtzForGridAsync();
+        }
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+        catch(Exception ex){_logger.LogError("event-center","event to live navigation failed",ex);EventStatusText.Text="Unable to open the event camera in Live.";}
+    }
+
+    private async void EventOpenPlayback_Click(object sender,RoutedEventArgs e)
+    {
+        if(EventList.SelectedItem is not EventRecord row||_playback is null||!_authorizedCameras.TryGetValue(row.CameraId,out var camera)){EventStatusText.Text="Referenced camera is no longer authorized.";return;}
+        try
+        {
+            _selectedCamera=camera;MainTabs.SelectedItem=PlaybackTab;
+            var local=row.OccurredAt.ToLocalTime();
+            PlaybackDatePicker.SelectedDate=local.Date;
+            PlaybackCameraText.Text=$"{camera.Name} · {camera.SiteId}";
+            await _playback.LoadDayAsync(camera,DateOnly.FromDateTime(local.DateTime),TimeZoneInfo.Local);
+            var recorded=await _playback.SeekAsync(row.OccurredAt);
+            PlaybackStatusText.Text=recorded?"Event time selected.":"No recording available at event time.";
+        }
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+        catch(Exception ex){_logger.LogError("event-center","event to playback navigation failed",ex);EventStatusText.Text="Unable to open playback for this event.";}
+    }
+
+    private void RenderEventCenter()
+    {
+        var center=_eventCenter;
+        var selectedId=(EventList.SelectedItem as EventRecord)?.EventId;
+        _eventRows.Clear();
+        if(center is not null)foreach(var row in center.Events)
+        {
+            row.CameraName=_authorizedCameras.TryGetValue(row.CameraId,out var camera)?camera.Name:row.CameraId;
+            _eventRows.Add(row);
+        }
+        if(selectedId is not null)EventList.SelectedItem=_eventRows.FirstOrDefault(x=>x.EventId==selectedId);
+        EventOlderButton.IsEnabled=center?.NextBefore is not null;
+        EventStatusText.Text=center is null?"Unavailable":$"{center.State} · {center.FeedState} · {_eventRows.Count} event(s)";
+        if(EventList.SelectedItem is null)RenderEventDetails(null);
+        RefreshDiagnostics();
+    }
+
     private async Task InitializePlaybackCoordinatorAsync()
     {
         if(_activeProfile is null)return;
@@ -554,6 +688,12 @@ public partial class MainWindow:Window
         try
         {
             if(MainTabs.SelectedItem!=LiveTab)await StopPtzBestEffortAsync();
+            if(MainTabs.SelectedItem==EventsTab&&_eventCenter is not null)
+            {
+                if(_eventCenter.Query is null)await _eventCenter.LoadAsync(BuildEventQuery());
+                _eventCenter.StartPolling();
+            }
+            else _eventCenter?.StopPolling();
             if(MainTabs.SelectedItem==PlaybackTab)await StopLiveAsync();
             else if(_playback?.State is PlaybackState.Playing or PlaybackState.Paused or PlaybackState.Starting or PlaybackState.Seeking)
                 await _playback.StopAsync();
@@ -710,6 +850,7 @@ public partial class MainWindow:Window
 
     private async Task HandleSessionExpiredAsync()
     {
+        await DeactivateEventCenterAsync();
         await DeactivatePtzAsync();
         await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);
@@ -730,6 +871,7 @@ public partial class MainWindow:Window
     {
         _oidc.CancelActiveAttempt();
         ShutdownPtzForClose();
+        try{DeactivateEventCenterAsync().GetAwaiter().GetResult();}catch{}
         try{DeactivatePlaybackAsync().GetAwaiter().GetResult();}catch{}
         try{DeactivateGridAsync(true).GetAwaiter().GetResult();}catch{}
         try{PlaybackMedia.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}
@@ -740,6 +882,7 @@ public partial class MainWindow:Window
 
     private async Task EndSessionForServerChangeAsync()
     {
+        await DeactivateEventCenterAsync();
         await DeactivatePtzAsync();
         await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);_oidc.Deactivate();
@@ -812,8 +955,8 @@ public partial class MainWindow:Window
     {
         _selectedCamera=null;_authorizedCameras=new Dictionary<string,CameraInfo>(StringComparer.Ordinal);
         PlaybackCameraText.Text="Select one authorized camera.";PlaybackDayStateText.Text="No day loaded";PlaybackStatusText.Text="Ready";
-        CameraTree.Items.Clear();StreamRoleCombo.ItemsSource=null;_capabilities=null;
-        EventsTab.Visibility=Visibility.Collapsed;LogoutButton.IsEnabled=false;RenderLiveGrid();
+        CameraTree.Items.Clear();StreamRoleCombo.ItemsSource=null;EventCameraCombo.ItemsSource=null;_eventRows.Clear();_capabilities=null;
+        EventsTab.Visibility=Visibility.Collapsed;LogoutButton.IsEnabled=false;RenderLiveGrid();RenderEventCenter();
     }
 
     private bool TryBuildProfile(out ServerProfile p,out string error)
@@ -853,13 +996,16 @@ public partial class MainWindow:Window
             _ptz?.Capabilities is null?"none":$"pan_tilt={_ptz.Capabilities.PanTilt},zoom={_ptz.Capabilities.Zoom},presets={_ptz.Capabilities.Presets}",
             _ptz?.State.ToString()??"Unavailable",_ptz?.Generation??0,
             (PtzSpeedCombo.SelectedItem as ComboBoxItem)?.Content?.ToString()?.ToLowerInvariant()??"medium",
-            _ptz?.ErrorCategory??"none");
+            _ptz?.ErrorCategory??"none",
+            _eventCenter?.State.ToString()??"Idle",_eventCenter?.FeedState.ToString()??"Stopped",_eventRows.Count,
+            _eventCenter?.LastReceivedAt?.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture)??"none",
+            _eventCenter?.ErrorCategory??"none",_eventCenter?.DroppedViewCount??0,_eventCenter?.NextBefore is null?"end":"more");
     }
 
     private void RefreshDiagnostics()
     {
         var d=BuildDiagnostics();
-        DiagnosticsText.Text=$"Version: {d.ApplicationVersion}\nOS: {d.OsVersion}\nArchitecture: {d.Architecture}\nServer: {d.ServerAddress}\nConnection: {d.ConnectionState}\nServer profile: {d.DeploymentProfile}\nMedia: {d.MediaState}\nAuthentication: {d.AuthenticationMode} / {d.AuthenticationState}\nRemembered: {d.RememberedSession}\nToken expiry: {d.TokenExpiry}\nOIDC issuer host: {d.OidcIssuerHost}\nLast auth error: {d.LastAuthErrorCategory}\nCallback: {d.CallbackMechanism}\nCredential store: {d.CredentialStoreStatus}\nLive layout: {d.LiveLayout}\nActive tiles: {d.ActiveTiles}\nConnecting tiles: {d.ConnectingTiles}\nFailed tiles: {d.FailedTiles}\nTile states: {d.LiveTileStates}\nRenderer: {d.RendererType}\nPTZ camera: {d.PtzCamera}\nPTZ capability: {d.PtzCapability}\nPTZ state: {d.PtzState}\nPTZ generation: {d.PtzGeneration}\nPTZ speed: {d.PtzSpeed}\nPTZ last error: {d.PtzErrorCategory}\nLogs: {d.LogLocation}";
+        DiagnosticsText.Text=$"Version: {d.ApplicationVersion}\nOS: {d.OsVersion}\nArchitecture: {d.Architecture}\nServer: {d.ServerAddress}\nConnection: {d.ConnectionState}\nServer profile: {d.DeploymentProfile}\nMedia: {d.MediaState}\nAuthentication: {d.AuthenticationMode} / {d.AuthenticationState}\nRemembered: {d.RememberedSession}\nToken expiry: {d.TokenExpiry}\nOIDC issuer host: {d.OidcIssuerHost}\nLast auth error: {d.LastAuthErrorCategory}\nCallback: {d.CallbackMechanism}\nCredential store: {d.CredentialStoreStatus}\nLive layout: {d.LiveLayout}\nActive tiles: {d.ActiveTiles}\nConnecting tiles: {d.ConnectingTiles}\nFailed tiles: {d.FailedTiles}\nTile states: {d.LiveTileStates}\nRenderer: {d.RendererType}\nPTZ camera: {d.PtzCamera}\nPTZ capability: {d.PtzCapability}\nPTZ state: {d.PtzState}\nPTZ generation: {d.PtzGeneration}\nPTZ speed: {d.PtzSpeed}\nPTZ last error: {d.PtzErrorCategory}\nEvent Center: {d.EventCenterState} / {d.EventFeedState}\nDisplayed events: {d.EventDisplayed}\nLast event receive: {d.EventLastReceived}\nEvent error: {d.EventErrorCategory}\nEvent view drops: {d.EventDroppedView}\nEvent pagination: {d.EventPagination}\nLogs: {d.LogLocation}";
     }
 
     private static string FriendlyConnection(ServerConnectionState s)=>s switch
