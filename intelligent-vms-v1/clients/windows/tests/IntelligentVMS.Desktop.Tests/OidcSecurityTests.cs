@@ -14,6 +14,8 @@ internal static class OidcSecurityTests
         TestRfc7636S256Vector();
         await TestLibraryGeneratesFreshStateNonceAndS256Async();
         TestCallbackStateAndReplay();
+        TestInvalidCallbackDoesNotConsumeAttempt();
+        TestProfileCredentialOriginIsolation();
         await TestLoopbackListenerAsync();
         await TestLoopbackTimeoutAndCancellationAsync();
         TestCapabilityValidation();
@@ -75,6 +77,28 @@ internal static class OidcSecurityTests
         Throws<AuthenticationFlowException>(()=>new OidcCallbackGate().ValidateAndClaim(new Uri("http://127.0.0.1:45678/oidc/callback/?state=expected"),"expected"));
     }
 
+    private static void TestInvalidCallbackDoesNotConsumeAttempt()
+    {
+        var gate=new OidcCallbackGate();
+        Throws<AuthenticationFlowException>(()=>gate.ValidateAndClaim(new Uri("http://127.0.0.1:45678/oidc/callback/?code=stale&state=wrong"),"expected"));
+        var accepted=gate.ValidateAndClaim(new Uri("http://127.0.0.1:45678/oidc/callback/?code=fresh&state=expected"),"expected");
+        Assert(accepted.Contains("code=fresh",StringComparison.Ordinal));
+        var ambiguous=new OidcCallbackGate();
+        Throws<AuthenticationFlowException>(()=>ambiguous.ValidateAndClaim(new Uri("http://127.0.0.1:45678/oidc/callback/?code=abc&error=access_denied&state=expected"),"expected"));
+    }
+
+    private static void TestProfileCredentialOriginIsolation()
+    {
+        var id=Guid.NewGuid();
+        var serverA=new ServerProfile(id,"A","https","vms-a.example.test",443);
+        var renamedA=new ServerProfile(id,"Renamed","https","VMS-A.EXAMPLE.TEST",443);
+        var serverB=new ServerProfile(id,"B","https","vms-b.example.test",443);
+        var portChange=new ServerProfile(id,"A2","https","vms-a.example.test",8443);
+        Assert(ServerProfileIdentity.SameCredentialOrigin(serverA,renamedA));
+        Assert(!ServerProfileIdentity.SameCredentialOrigin(serverA,serverB));
+        Assert(!ServerProfileIdentity.SameCredentialOrigin(serverA,portChange));
+    }
+
     private static async Task TestLoopbackListenerAsync()
     {
         await using var listener=LoopbackCallbackListener.Create();
@@ -118,6 +142,7 @@ internal static class OidcSecurityTests
         var valid=new OidcCapability{Enabled=true,Required=true,Authority="https://identity.example.test/",ClientId="desktop",Scopes=["openid","offline_access"],Callback="loopback",PkceMethods=["S256"]};
         OidcCapabilityValidator.Validate(valid);
         Throws<AuthenticationFlowException>(()=>OidcCapabilityValidator.Validate(withAuthority("http://identity.example.test/")));
+        Throws<AuthenticationFlowException>(()=>OidcCapabilityValidator.Validate(withAuthority("https://identity.example.test/?tenant=other")));
         Throws<AuthenticationFlowException>(()=>OidcCapabilityValidator.Validate(new OidcCapability{Enabled=true,Authority="https://identity.example.test/",ClientId="desktop",Scopes=["profile"],Callback="loopback",PkceMethods=["S256"]}));
         Throws<AuthenticationFlowException>(()=>OidcCapabilityValidator.Validate(new OidcCapability{Enabled=true,Authority="https://identity.example.test/",ClientId="desktop",Scopes=["openid"],Callback="loopback",PkceMethods=["plain"]}));
         static OidcCapability withAuthority(string authority)=>new(){Enabled=true,Required=true,Authority=authority,ClientId="desktop",Scopes=["openid"],Callback="loopback",PkceMethods=["S256"]};
