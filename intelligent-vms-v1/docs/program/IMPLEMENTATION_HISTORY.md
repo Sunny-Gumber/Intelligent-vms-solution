@@ -477,3 +477,12 @@ Still required for Full Market Feature Complete:
 - F08-007/F08-008 receive updated software evidence. F25-003/F25-004 remain TARGET/NV because their broader AD/LDAP/SAML/MFA/certificate/Windows/local-auth wording is not fully implemented.
 - Threat review: `docs/security/WINDOWS_DESKTOP_OIDC_THREAT_REVIEW.md`.
 - Product remains **Release Candidate / External Qualification Pending**. Named IdP, MFA, proxy/private-CA and Windows 10/11 qualification remain external.
+## 2026-10-04 — Native Windows Multi-Camera Live Grid Foundation
+
+Issue #10 / PR #11 extends the accepted .NET 10 WPF desktop client from one active tile to a centralized multi-camera live-grid foundation.
+
+The implementation adds deterministic 1/4/9/16 layouts, independent tile state/renderers, a central LiveGridCoordinator, duplicate-camera prevention, bounded connection establishment, per-tile generation/cancellation fencing, SUB-preferred grid role selection, MAIN-preferred 1-view/focus selection, layout-shrink cleanup, profile/auth/app-close cleanup, safe client-local assignment persistence, and grid diagnostics.
+
+The media path is unchanged: authorized camera -> existing VMS live grant -> existing MediaMTX/WHEP -> renderer. No direct RTSP, camera credentials, second recorder, second media backend, token-in-URL path, or recording-policy mutation is introduced.
+
+The current WebView2-per-tile renderer is intentionally replaceable. This milestone provides software architecture/lifecycle evidence only and does not qualify real 16-stream smoothness, GPU decoding, Windows 10/11, camera/codec capacity, CPU/RAM, WAN, DPI/multi-monitor, or long-duration soak.
