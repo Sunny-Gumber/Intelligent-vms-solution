@@ -5,7 +5,7 @@ using IntelligentVMS.Desktop;
 
 var tests=new List<(string,Func<Task>)>{
 ("server URL validation",TestServerProfiles),("profile persistence/corruption",TestProfiles),("credential storage",TestCredentials),
-("token redaction",TestRedaction),("authentication transitions",TestSession),("401 expiry",TestUnauthorized),
+("token redaction",TestRedaction),("authentication transitions",TestSession),("remembered-session failure policy",TestRememberedSessionFailures),("401 expiry",TestUnauthorized),
 ("capability/camera parsing",TestApiParsing),("camera tree",TestCameraTree),("live API auth contract",TestLiveApiContract),("live grant/session cleanup",TestLive),("WHEP renderer contract",TestRendererContract),
 ("TLS/media policy",TestTls),("diagnostics",TestDiagnostics),("package isolation",TestPackaging),("interpolation guard",TestInterpolationGuard)};
 var failures=0;
@@ -39,6 +39,14 @@ static async Task TestSession(){
  Assert(info.Authenticated&&session.State==DesktopSessionState.Authenticated&&credentials.Value=="opaque-secret");
  await session.MarkExpiredAsync();Assert(session.State==DesktopSessionState.Expired&&session.AccessToken is null&&credentials.Value is null);
  await session.LogoutAsync();Assert(session.State==DesktopSessionState.SignedOut);
+}
+static async Task TestRememberedSessionFailures(){
+ var credentials=new MemoryCredentials{Value="remembered"};var session=new DesktopSession(credentials,new MemoryLogger());var id=Guid.NewGuid();
+ var restored=await session.TryRestoreAsync(id,_=>Task.FromException<SessionInfo>(new HttpRequestException("offline")));
+ Assert(!restored&&credentials.Value=="remembered"&&session.State==DesktopSessionState.SignedOut&&session.ProfileId is null);
+ credentials.Value="expired";
+ restored=await session.TryRestoreAsync(id,_=>Task.FromException<SessionInfo>(new SessionExpiredException()));
+ Assert(!restored&&credentials.Value is null&&session.State==DesktopSessionState.SignedOut&&session.ProfileId is null);
 }
 static async Task TestUnauthorized(){
  using var api=new VmsApiClient(()=>"token",new StubHandler(_=>new HttpResponseMessage(HttpStatusCode.Unauthorized)));api.Configure(new(Guid.NewGuid(),"Remote","https","vms.example.com",443));
