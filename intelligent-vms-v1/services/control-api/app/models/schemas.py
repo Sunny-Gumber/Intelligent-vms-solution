@@ -262,10 +262,30 @@ class EventRead(EventIn):
 
 
 
-class EventHistoryPage(BaseModel):
-    """Serialize one bounded deterministic page of authorized event history."""
+class EventCenterRead(BaseModel):
+    """Serialize the credential/URL-safe Event Center projection."""
 
-    items: list[EventRead] = Field(default_factory=list)
+    event_id: str
+    tenant_id: str
+    site_id: str
+    camera_id: str
+    timestamp: datetime
+    event_type: str
+    object_type: str | None = None
+    source: Literal["camera", "vms", "ai", "integration"]
+    confidence: float | None = None
+    zone_id: str | None = None
+    severity: Literal["info", "low", "medium", "high", "critical"] = "info"
+    recording_start: datetime | None = None
+    recording_end: datetime | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    ingested_at: datetime | None = None
+
+
+class EventHistoryPage(BaseModel):
+    """Serialize one bounded deterministic page of authorized Event Center history."""
+
+    items: list[EventCenterRead] = Field(default_factory=list)
     next_before: datetime | None = None
     next_before_id: str | None = None
 
