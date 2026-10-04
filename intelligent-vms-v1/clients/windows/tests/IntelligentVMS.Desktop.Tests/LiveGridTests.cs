@@ -108,6 +108,7 @@ internal static class LiveGridTests
     {
         var dir=Path.Combine(Path.GetTempPath(),"ivms-live-grid-tests",Guid.NewGuid().ToString("N"));
         var path=Path.Combine(dir,"live-grid.json");var profile=Guid.NewGuid();var store=new LiveGridSettingsStore(path);
+        var anotherProfile=Guid.NewGuid();Assert(ClientPaths.LiveGridFile(profile)!=ClientPaths.LiveGridFile(anotherProfile));
         var snapshot=new LiveGridSnapshot(4,2,["authorized","removed",null,null]);
         await store.SaveAsync(profile,snapshot);
         var raw=await File.ReadAllTextAsync(path);
@@ -144,6 +145,10 @@ internal static class LiveGridTests
         Assert(grid.ActiveTileCount==0&&grid.ConnectingTileCount==0);
         Assert(grid.Tiles[0].HasAssignment&&grid.Tiles[1].HasAssignment);
         Assert(renderers.Sum(x=>x.Stops)>=22);
+
+        var root=FindRepoRoot();
+        var windowSource=await File.ReadAllTextAsync(Path.Combine(root,"clients","windows","src","IntelligentVMS.Desktop","MainWindow.xaml.cs"));
+        Assert(!windowSource.Contains("LiveGridHost.Children.Clear()",StringComparison.Ordinal));
     }
 
     private static LiveGridCoordinator Grid(ILiveAccessProvider provider,IReadOnlyList<GridRenderer> renderers)
@@ -151,6 +156,17 @@ internal static class LiveGridTests
         var grid=new LiveGridCoordinator(provider,new ServerProfile(Guid.NewGuid(),"Test","https","vms.example.test",443),new GridLogger(),4);
         for(var i=0;i<renderers.Count;i++)grid.RegisterTile(i,renderers[i]);
         return grid;
+    }
+
+    private static string FindRepoRoot()
+    {
+        var current=new DirectoryInfo(Directory.GetCurrentDirectory());
+        while(current is not null)
+        {
+            if(Directory.Exists(Path.Combine(current.FullName,"clients","windows")))return current.FullName;
+            current=current.Parent;
+        }
+        throw new InvalidOperationException("Repository root not found.");
     }
 
     private static List<GridRenderer> Renderers()=>Enumerable.Range(0,16).Select(_=>new GridRenderer()).ToList();
