@@ -245,3 +245,21 @@ If no remote write is appropriate yet, give the user the findings and leave this
 - F08-007/F08-008 receive updated software evidence. F25-003/F25-004 remain TARGET/NV because their broader AD/LDAP/SAML/MFA/certificate/Windows/local-auth wording is not fully implemented.
 - Threat review: `docs/security/WINDOWS_DESKTOP_OIDC_THREAT_REVIEW.md`.
 - Product remains **Release Candidate / External Qualification Pending**. Named IdP, MFA, proxy/private-CA and Windows 10/11 qualification remain external.
+## Windows Desktop — Multi-Camera Live Grid Foundation
+
+Current milestone: issue #10 / PR #11.
+
+Scope is limited to the native live-grid foundation on top of the accepted WPF/OIDC client. Reused catalog IDs are F02-002, F02-007, F02-008 and F02-012.
+
+Implemented branch behavior:
+- deterministic 1/4/9/16 layouts;
+- independent tile/session state;
+- centralized coordinator and bounded connection establishment;
+- duplicate camera prevention;
+- SUB-preferred grid and MAIN-preferred focus/1-view from server-advertised roles;
+- per-tile stale completion fencing;
+- layout shrink/focus/logout/profile-switch/app-close cleanup;
+- safe assignment persistence after auth/authorized-camera validation;
+- redacted grid diagnostics.
+
+Product status remains Release Candidate / External Qualification Pending. No 16-stream performance, GPU, 4K, Windows 10/11, camera/codec, or hardware qualification claim is permitted from CI.

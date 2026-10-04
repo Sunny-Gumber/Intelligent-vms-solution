@@ -5,6 +5,9 @@ on:
     paths:
       - 'intelligent-vms-v1/clients/windows/**'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_CLIENT_FOUNDATION.md'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_LIVE_GRID.md'
+      - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_LIVE_GRID_SECURITY_REVIEW.md'
+      - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_CLIENT_QA.md'
       - 'intelligent-vms-v1/docs/operations/WINDOWS_DESKTOP_CLIENT.md'
       - '.github/workflows/intelligent-vms-windows-client.yml'
   push:
@@ -12,6 +15,9 @@ on:
     paths:
       - 'intelligent-vms-v1/clients/windows/**'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_CLIENT_FOUNDATION.md'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_LIVE_GRID.md'
+      - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_LIVE_GRID_SECURITY_REVIEW.md'
+      - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_CLIENT_QA.md'
       - 'intelligent-vms-v1/docs/operations/WINDOWS_DESKTOP_CLIENT.md'
       - '.github/workflows/intelligent-vms-windows-client.yml'
 
@@ -61,6 +67,12 @@ jobs:
           $oidc=Get-Content clients/windows/src/IntelligentVMS.Desktop/OidcAuthentication.cs -Raw
           if($oidc -notmatch 'UseShellExecute\s*=\s*true'){throw "OIDC authentication must use the system browser"}
           if($oidc -match 'WebView2'){throw "OIDC authentication must not use the media WebView2 boundary"}
+          $grid=Get-Content clients/windows/src/IntelligentVMS.Desktop/LiveGrid.cs -Raw
+          foreach($forbidden in @("rtsp://","access_token","refresh_token","code_verifier","password=")){
+            if($grid -match [regex]::Escape($forbidden)){throw "Live-grid source contains forbidden secret/media pattern: $forbidden"}
+          }
+          if($grid -notmatch 'SupportedCounts=\[1,4,9,16\]'){throw "Native live-grid layout contract missing"}
+          if($grid -match 'setInterval|while\s*\(\s*true\s*\)'){throw "Live-grid must not introduce automatic retry storms"}
       - name: Publish deterministic win-x64 package
         shell: pwsh
         run: .\clients\windows\packaging\Publish-Client.ps1 -Version "0.1.${{ github.run_number }}" -OutputRoot "$env:RUNNER_TEMP\client-artifacts"

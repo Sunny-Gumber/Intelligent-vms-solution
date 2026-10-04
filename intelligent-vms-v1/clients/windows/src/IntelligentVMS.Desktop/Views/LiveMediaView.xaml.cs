@@ -8,16 +8,16 @@ namespace IntelligentVMS.Desktop;
 
 // SemaphoreSlim is used only as an async serialization primitive; AvailableWaitHandle is never requested.
 #pragma warning disable CA1001
-public partial class LiveMediaView : UserControl, ILiveMediaRenderer
+public partial class LiveMediaView : UserControl, ILiveMediaRenderer, IAsyncDisposable
 {
     private bool _initialized;
     private readonly SemaphoreSlim _gate = new(1,1);
     public string State { get; private set; } = "IDLE";
+    public event EventHandler<LiveRendererStateChangedEventArgs>? StateChanged;
 
     public LiveMediaView()
     {
         InitializeComponent();
-        Unloaded += async (_,_) => await StopAsync();
     }
 
     public async Task StartAsync(LiveAccessGrant grant,CancellationToken cancellationToken=default)
@@ -79,6 +79,14 @@ public partial class LiveMediaView : UserControl, ILiveMediaRenderer
         State=state;
         StateText.Text=state switch{"LIVE"=>"LIVE","CONNECTING"=>"Connecting live view…","FAILED"=>"Live view unavailable",_=>"No live session"};
         StateOverlay.Visibility=state=="LIVE"?Visibility.Collapsed:Visibility.Visible;
+        StateChanged?.Invoke(this,new LiveRendererStateChangedEventArgs(state));
+    }
+    public async ValueTask DisposeAsync()
+    {
+        await StopAsync();
+        if(_initialized) WebView.Dispose();
+        _gate.Dispose();
+        GC.SuppressFinalize(this);
     }
 }
 #pragma warning restore CA1001

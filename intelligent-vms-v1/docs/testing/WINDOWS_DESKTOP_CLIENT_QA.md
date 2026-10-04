@@ -63,3 +63,26 @@ No external IdP credentials are required by normal CI. Real IdP/MFA/proxy/privat
 ## OIDC/PKCE milestone additions
 
 Issue #8 / PR #9 adds deterministic coverage for RFC 7636 S256, fresh library state/verifier plus application nonce, safe auth capability negotiation, loopback callback target/state/replay/timeout/cancellation, invalid callback non-consumption, ambiguous response rejection, profile-origin credential isolation, protected OIDC refresh-token purpose separation, one bounded 401 refresh retry, secret redaction, and stale-attempt generation-fencing contracts. Real IdP/browser/Windows qualification remains external.
+## Native multi-camera live-grid QA — issue #10 / PR #11
+
+Deterministic Windows Client CI now validates the native grid state/session layer in addition to the existing OIDC, camera, live-grant, WHEP, TLS, diagnostics, packaging and smoke-launch contracts.
+
+Covered software scenarios include:
+
+- deterministic 1x1, 2x2, 3x3 and 4x4 layout definitions;
+- 1, 4, 9 and 16 logical tile architecture;
+- server-advertised role policy: SUB grid preference, MAIN 1-view/focus preference and safe fallback;
+- duplicate-camera rejection;
+- layout shrink teardown;
+- focus enter/exit role transition and hidden-session stop;
+- one tile failure while another remains live;
+- rapid camera A -> B replacement with stale/cancelled A unable to replace B;
+- 16 logical sessions using deterministic fake live-grant/render components;
+- safe persisted layout without tokens/WHEP URLs/passwords;
+- restore filtering for removed/unauthorized camera IDs;
+- repeated assign/start/clear lifecycle;
+- stop-all cleanup with no logical active sessions remaining.
+
+The 16-session test is a state/lifecycle test only. It does not decode sixteen real streams and is not evidence for real workstation capacity.
+
+Independent QA must still review the exact candidate head and the existing live API/WHEP contract. Real WebView2 media rendering against representative cameras/codecs remains External Qualification Pending.

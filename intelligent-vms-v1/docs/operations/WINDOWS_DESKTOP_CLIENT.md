@@ -87,3 +87,30 @@ A 401 can trigger one serialized renewal and one retry. A second 401 expires the
 Logout is local desktop logout in this milestone: active media is stopped, in-memory tokens are cleared and protected desktop session material is deleted. Remote/global IdP SSO logout is not claimed.
 
 No named IdP, Windows 10/11, MFA, conditional-access, proxy or private-CA qualification is claimed.
+## Native multi-camera live grid foundation
+
+Issue #10 / PR #11 adds a native WPF live-grid workspace with deterministic 1/4/9/16 view layouts. This extends the existing one-tile secure live path without changing the VMS server/media authority.
+
+Implemented behavior:
+
+- one centralized LiveGridCoordinator;
+- sixteen independent logical tile slots;
+- camera-to-selected-tile assignment and camera double-click assignment;
+- accidental duplicate-camera prevention;
+- per-tile explicit Empty/Loading/Connecting/Live/Offline/Unauthorized/Failed/Stopping state;
+- independent per-tile live-grant/WHEP lifecycle;
+- generation/cancellation fencing for rapid camera/role/layout changes;
+- grid SUB preference when advertised;
+- 1-view/focus MAIN preference when advertised;
+- safe fallback only to server-advertised MAIN/SUB/THIRD roles;
+- in-window focus mode with non-focused sessions stopped;
+- layout shrink cleanup;
+- logout/profile-switch/session-expiry/application-close grid teardown;
+- client-local safe layout persistence;
+- redacted layout/tile diagnostics.
+
+The persistence file contains profile ID, fixed layout, selected tile, and camera IDs only. It never contains access tokens, refresh tokens, media grants, WHEP resource URLs, Authorization headers, RTSP URLs, or camera credentials. Layout assignments are restored only after authentication and the authorized camera inventory are validated; live media does not auto-start after process restart.
+
+Duplicate cameras are intentionally prevented in this foundation to avoid accidental duplicate WHEP readers. Automatic reconnect is intentionally not implemented; failed tiles remain operator-driven to avoid retry storms.
+
+Current WebView2 remains a replaceable media-only renderer. One renderer per tile is acceptable for software-foundation evidence, but 16-view architecture is not a measured performance claim. CPU/RAM/GPU, real-camera codecs, real 1/4/9/16 stream smoothness, DPI/multi-monitor, low-bandwidth/packet-loss, and soak qualification remain external.
