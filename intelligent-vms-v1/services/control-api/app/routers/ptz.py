@@ -35,6 +35,8 @@ _MIN_MOVE_INTERVAL_SECONDS = 0.075
 
 
 def _http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        return exc
     if isinstance(exc, TargetNotAllowed):
         return HTTPException(
             400,
