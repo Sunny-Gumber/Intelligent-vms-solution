@@ -5,11 +5,11 @@ Issue #19.
 Required exact-head review:
 - machine-wide elevation is explicit and bounded to setup;
 - setup/client binaries live under Program Files; accepted server executable/runtime remains under protected ProgramData;
-- no executable runs from user-writable TEMP;
+- only the bounded preflight script runs from NSIS private per-run `$PLUGINSDIR`; installed/runtime executables never run from user-writable locations;
 - existing ProgramData ACL hardening remains authoritative;
 - secrets are generated/stored by accepted server logic and never printed by installer;
 - installer logs redact secret/token/password/credential-like assignments;
-- no VMS secret is passed on setup command lines;
+- no VMS secret is passed on setup command lines; PostgreSQL bootstrap credential is inherited only through the child-process environment and is cleared immediately after preflight failure or setup completion;
 - recording paths reject UNC, drive roots and overlap with Program Files/ProgramData;
 - service image paths remain quoted and dependencies remain PostgreSQL → Control → Media;
 - no broad firewall rule and no public PostgreSQL exposure;
