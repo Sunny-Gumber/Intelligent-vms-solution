@@ -236,7 +236,7 @@ public sealed class PtzCoordinator:IAsyncDisposable
     private static void ValidateAxis(double value){if(!double.IsFinite(value)||value < -1||value > 1)throw new ArgumentOutOfRangeException(nameof(value));}
     private static string Safe(string value)=>new(value.Where(c=>char.IsLetterOrDigit(c)||c is '-' or '_' or '.').Take(96).ToArray());
     private void Notify()=>Changed?.Invoke(this,EventArgs.Empty);
-    private void ThrowIfDisposed(){if(_disposed)throw new ObjectDisposedException(nameof(PtzCoordinator));}
+    private void ThrowIfDisposed()=>ObjectDisposedException.ThrowIf(_disposed,this);
     public async ValueTask DisposeAsync()
     {
         if(_disposed)return;
