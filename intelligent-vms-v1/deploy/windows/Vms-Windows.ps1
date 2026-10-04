@@ -39,6 +39,17 @@ function Find-PgBin([hashtable]$Values) {
 function Import-VmsEnv([hashtable]$Values) {
     foreach ($key in $Values.Keys) { [Environment]::SetEnvironmentVariable($key,$Values[$key],"Process") }
 }
+function Get-Sha256Hex([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash($stream)
+        return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
 function Wait-Health {
     $deadline=(Get-Date).AddSeconds(60)
     do {
@@ -91,7 +102,7 @@ switch ($Action) {
             $dump=Join-Path $target "database.dump"
             & (Join-Path $pgBin "pg_dump.exe") -h 127.0.0.1 -U vms -d vms -Fc -f $dump
             if($LASTEXITCODE -ne 0){throw "PostgreSQL backup failed"}
-            (Get-FileHash -Algorithm SHA256 $dump).Hash | Set-Content (Join-Path $target "database.dump.sha256")
+            (Get-Sha256Hex $dump) | Set-Content (Join-Path $target "database.dump.sha256")
         } finally { $env:PGPASSWORD=$previous }
         Copy-Item (Join-Path $ConfigRoot "mediamtx.yml") $target
         "Recording media is NOT included. Path: $($values['WINDOWS_RECORDING_ROOT'])" | Set-Content (Join-Path $target "RECORDING_MEDIA_NOT_BACKED_UP.txt")
