@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import hmac
+import re
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import and_, or_, select
@@ -59,6 +60,31 @@ async def _authorize_filters(
     allowed_sites = None if "*" in principal.site_ids or site_id else sorted(principal.site_ids)
     tenant = None if principal.tenant_id == "*" else principal.tenant_id
     return tenant, allowed_sites
+
+
+def _safe_event_attributes(attributes: dict) -> dict:
+    sensitive = ("password", "token", "secret", "authorization", "credential", "url", "uri", "path")
+    safe: dict[str, str | int | float | bool | None] = {}
+    for raw_key, value in list((attributes or {}).items())[:64]:
+        key = str(raw_key)[:128]
+        if any(word in key.lower() for word in sensitive):
+            continue
+        if not isinstance(value, (str, int, float, bool)) and value is not None:
+            continue
+        if isinstance(value, str):
+            if re.search(r"(?i)\b(?:https?|rtsp|rtsps)://", value):
+                continue
+            value = value[:256]
+        safe[key] = value
+        if len(safe) >= 32:
+            break
+    return safe
+
+
+def _event_center_projection(item: EventRead) -> EventCenterRead:
+    values = item.model_dump(exclude={"snapshot_uri"})
+    values["attributes"] = _safe_event_attributes(dict(values.get("attributes") or {}))
+    return EventCenterRead.model_validate(values)
 
 
 def _read_local(row: EventHistoryEntity) -> EventRead:
@@ -290,12 +316,7 @@ async def event_history_page(
     )
     has_more = len(rows) > limit
     items = rows[:limit]
-    safe_items = [
-        EventCenterRead.model_validate(
-            item.model_dump(exclude={"snapshot_uri"})
-        )
-        for item in items
-    ]
+    safe_items = [_event_center_projection(item) for item in items]
     if has_more and items:
         last = items[-1]
         return EventHistoryPage(
