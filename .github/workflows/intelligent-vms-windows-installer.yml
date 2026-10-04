@@ -212,6 +212,55 @@ jobs:
           $ctl="$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1"
           if(Test-Path $ctl){try{& $ctl -Action Uninstall}catch{}}
 
+  component-ownership:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: IntelligentVMS-FieldTest-Setup-x64
+          path: ${{ runner.temp }}/installer
+      - name: Preserve ownership when adding Client to Server
+        shell: pwsh
+        env:
+          VMS_POSTGRES_ADMIN_PASSWORD: root
+        run: |
+          $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
+          $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Ownership-Recordings"
+          New-Item -ItemType Directory -Force -Path $record|Out-Null
+          "ownership-sentinel"|Set-Content (Join-Path $record "preserve.me")
+          $server=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=server","/RECORDINGROOT=$record") -Wait -PassThru
+          if($server.ExitCode -ne 0){throw "Initial Server install failed"}
+          $client=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=client") -Wait -PassThru
+          if($client.ExitCode -ne 0){throw "Client add-on install failed"}
+          $state=Get-Content "$env:ProgramData\IntelligentVMS\installer-state.json" -Raw|ConvertFrom-Json
+          if($state.components -ne "Both"){throw "Combined component ownership was not preserved"}
+          if($state.recording_root -ne $record){throw "Server recording ownership was lost while adding Client"}
+          $un="$env:ProgramFiles\Intelligent VMS\Uninstall.exe"
+          $remove=Start-Process $un -ArgumentList "/S" -Wait -PassThru
+          if($remove.ExitCode -ne 0){throw "Combined uninstall failed"}
+          if(Get-Service IntelligentVMSControl -ErrorAction SilentlyContinue){throw "Combined uninstall left Control service behind"}
+          if(Get-Service IntelligentVMSMedia -ErrorAction SilentlyContinue){throw "Combined uninstall left Media service behind"}
+          if(Test-Path "$env:ProgramFiles\Intelligent VMS\Client\IntelligentVMS.Desktop.exe"){throw "Combined uninstall left Client binary behind"}
+          if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Combined uninstall deleted recordings"}
+          if(-not (Test-Path "$env:ProgramData\IntelligentVMS\config\vms.env")){throw "Combined uninstall deleted server configuration"}
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process IntelligentVMS.Desktop -ErrorAction SilentlyContinue|Stop-Process -Force -ErrorAction SilentlyContinue
+          $ctl="$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1"
+          if(Test-Path $ctl){try{& $ctl -Action Uninstall}catch{}}
+
   upgrade-and-negative:
     needs: build
     runs-on: windows-2022
