@@ -425,10 +425,10 @@ public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IPtzP
 
     public Task<PtzCapabilities> GetPtzCapabilitiesAsync(string cameraId,CancellationToken cancellationToken=default)=>
         SendJsonAsync<PtzCapabilities>(HttpMethod.Get,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/capabilities",true,true,cancellationToken);
-    public Task<PtzCommandAck> MovePtzAsync(string cameraId,PtzMoveRequestDto payload,CancellationToken cancellationToken=default)=>
-        SendJsonBodyAsync<PtzCommandAck>(HttpMethod.Post,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/move",payload,true,true,cancellationToken);
-    public Task<PtzCommandAck> StopPtzAsync(string cameraId,PtzStopRequestDto payload,CancellationToken cancellationToken=default)=>
-        SendJsonBodyAsync<PtzCommandAck>(HttpMethod.Post,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/stop",payload,true,true,cancellationToken);
+    public Task<PtzCommandAck> MovePtzAsync(string cameraId,PtzMoveRequestDto request,CancellationToken cancellationToken=default)=>
+        SendJsonBodyAsync<PtzCommandAck>(HttpMethod.Post,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/move",request,true,true,cancellationToken);
+    public Task<PtzCommandAck> StopPtzAsync(string cameraId,PtzStopRequestDto request,CancellationToken cancellationToken=default)=>
+        SendJsonBodyAsync<PtzCommandAck>(HttpMethod.Post,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/stop",request,true,true,cancellationToken);
 
     public Task EnsurePlaybackAuthorizedAsync(CancellationToken cancellationToken=default)=>
         GetSessionAsync(cancellationToken);
