@@ -59,7 +59,7 @@ jobs:
       - name: Build field-test setup and checksum
         shell: pwsh
         run: |
-          .\deploy\windows\installer\Build-Installer.ps1 -OutputRoot "$env:RUNNER_TEMP\installer" -CommitSha "${{ github.sha }}"
+          .\deploy\windows\installer\Build-Installer.ps1 -OutputRoot "$env:RUNNER_TEMP\installer" -CommitSha "${{ github.event.pull_request.head.sha || github.sha }}"
       - name: Validate artifact metadata
         shell: pwsh
         run: |
