@@ -102,6 +102,8 @@ jobs:
           path: ${{ runner.temp }}/installer
       - name: Install selected mode
         shell: pwsh
+        env:
+          VMS_POSTGRES_ADMIN_PASSWORD: root
         run: |
           $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
           $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Recordings"
@@ -127,6 +129,8 @@ jobs:
       - name: Repair Both mode
         if: matrix.mode == 'both'
         shell: pwsh
+        env:
+          VMS_POSTGRES_ADMIN_PASSWORD: root
         run: |
           $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
           $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Recordings"
@@ -222,6 +226,8 @@ jobs:
           path: ${{ runner.temp }}/installer
       - name: Accepted-baseline upgrade simulation
         shell: pwsh
+        env:
+          VMS_POSTGRES_ADMIN_PASSWORD: root
         run: |
           $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Upgrade-Recordings"
           New-Item -ItemType Directory -Force -Path $record|Out-Null
@@ -243,6 +249,8 @@ jobs:
           if($LASTEXITCODE -ne 0){throw "Upgrade server health failed"}
       - name: Unsafe downgrade is blocked
         shell: pwsh
+        env:
+          VMS_POSTGRES_ADMIN_PASSWORD: root
         run: |
           $state="$env:ProgramData\IntelligentVMS\installer-state.json"
           $obj=Get-Content $state -Raw|ConvertFrom-Json
@@ -254,6 +262,8 @@ jobs:
           if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Downgrade rejection changed recording data"}
       - name: Invalid UNC fails before install mutation
         shell: pwsh
+        env:
+          VMS_POSTGRES_ADMIN_PASSWORD: root
         run: |
           Remove-Item "$env:ProgramData\IntelligentVMS\installer-state.json" -Force -ErrorAction SilentlyContinue
           $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
