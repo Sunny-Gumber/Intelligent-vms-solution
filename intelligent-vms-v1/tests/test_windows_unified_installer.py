@@ -71,6 +71,8 @@ def test_failed_fresh_install_has_data_safe_rollback_contract():
 
 def test_secret_and_firewall_boundaries():
     assert "[REDACTED]" in SETUP
+    assert "CredentialUri" not in SETUP
+    assert "category={0} message={1}" in SETUP
     for forbidden in ("New-NetFirewallRule","Set-NetFirewallProfile","VMS_SECRET_KEY=","AUTH_HS256_SECRET="):
         assert forbidden not in SETUP
     assert "No broad firewall rules" in ADR
