@@ -21,7 +21,8 @@ public static class OidcCapabilityValidator
     {
         if (!capability.Enabled) throw new AuthenticationFlowException("oidc_unavailable", "Organization sign-in is not available on this VMS server.");
         if (!Uri.TryCreate(capability.Authority, UriKind.Absolute, out var authority) || authority.Scheme != Uri.UriSchemeHttps ||
-            string.IsNullOrWhiteSpace(authority.Host) || !string.IsNullOrEmpty(authority.UserInfo) || !string.IsNullOrEmpty(authority.Fragment))
+            string.IsNullOrWhiteSpace(authority.Host) || !string.IsNullOrEmpty(authority.UserInfo) ||
+            !string.IsNullOrEmpty(authority.Query) || !string.IsNullOrEmpty(authority.Fragment))
             throw new AuthenticationFlowException("oidc_configuration", "The VMS server returned an unsafe identity-provider authority.");
         if (string.IsNullOrWhiteSpace(capability.ClientId) || capability.ClientId.Any(char.IsWhiteSpace))
             throw new AuthenticationFlowException("oidc_configuration", "The VMS server returned an invalid public client identifier.");
@@ -82,8 +83,6 @@ public sealed class OidcCallbackGate
     private int _completed;
     public string ValidateAndClaim(Uri callback, string expectedState)
     {
-        if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
-            throw new AuthenticationFlowException("callback_replay", "Authentication callback was already completed.");
         if (!IPAddress.TryParse(callback.Host, out var address) || !IPAddress.IsLoopback(address) ||
             callback.AbsolutePath != "/oidc/callback/")
             throw new AuthenticationFlowException("callback_target", "Authentication callback target is invalid.");
@@ -94,8 +93,10 @@ public sealed class OidcCallbackGate
             throw new AuthenticationFlowException("state_mismatch", "Authentication response state did not match the active sign-in attempt.");
         var hasCode = q.TryGetValue("code", out var code) && !string.IsNullOrWhiteSpace(code);
         var hasError = q.TryGetValue("error", out var error) && !string.IsNullOrWhiteSpace(error);
-        if (!hasCode && !hasError)
-            throw new AuthenticationFlowException("callback_malformed", "Authentication response did not contain a code or error.");
+        if (hasCode == hasError)
+            throw new AuthenticationFlowException("callback_malformed", "Authentication response must contain exactly one code or error.");
+        if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
+            throw new AuthenticationFlowException("callback_replay", "Authentication callback was already completed.");
         return callback.PathAndQuery;
     }
 }
@@ -149,6 +150,11 @@ public sealed class LoopbackCallbackListener : IAsyncDisposable
                 if (url is null || url.AbsolutePath != "/oidc/callback/")
                 {
                     await RespondAsync(context.Response, HttpStatusCode.NotFound, "This callback path is not available.");
+                    continue;
+                }
+                if (!string.Equals(context.Request.HttpMethod, "GET", StringComparison.Ordinal))
+                {
+                    await RespondAsync(context.Response, HttpStatusCode.MethodNotAllowed, "This callback method is not available.");
                     continue;
                 }
                 try
@@ -252,7 +258,8 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
         OidcCapabilityValidator.Validate(capability);
         CancelActiveAttempt();
         var generation = Volatile.Read(ref _generation);
-        _attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _attempt = attempt;
         State = AuthenticationUxState.Authenticating;
         LastErrorCategory = "none";
         _logger.Info("auth", $"organization sign-in started profile_id={profile.Id:D}");
@@ -262,16 +269,17 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
             var client = CreateClient(capability, callback.RedirectUri);
             var nonce = RandomToken(32);
             var parameters = new Parameters { { "nonce", nonce } };
-            var prepared = await client.PrepareLoginAsync(parameters, _attempt.Token);
+            var prepared = await client.PrepareLoginAsync(parameters, attempt.Token);
             if (prepared.IsError) throw new AuthenticationFlowException("oidc_prepare", "Unable to prepare organization sign-in.");
             if (!Uri.TryCreate(prepared.StartUrl, UriKind.Absolute, out var startUri))
                 throw new AuthenticationFlowException("oidc_request", "Identity-provider authorization URL is invalid.");
             OidcAuthorizationRequestValidator.ValidatePrepared(startUri, callback.RedirectUri, prepared.State, prepared.CodeVerifier, nonce);
-            if (generation != Volatile.Read(ref _generation)) throw new OperationCanceledException(_attempt.Token);
+            if (generation != Volatile.Read(ref _generation)) throw new OperationCanceledException(attempt.Token);
             _browser.Open(prepared.StartUrl);
-            var responseData = await callback.WaitAsync(prepared.State, TimeSpan.FromMinutes(3), _attempt.Token);
-            if (generation != Volatile.Read(ref _generation)) throw new OperationCanceledException(_attempt.Token);
-            var result = await client.ProcessResponseAsync(responseData, prepared, cancellationToken: _attempt.Token);
+            var responseData = await callback.WaitAsync(prepared.State, TimeSpan.FromMinutes(3), attempt.Token);
+            if (generation != Volatile.Read(ref _generation)) throw new OperationCanceledException(attempt.Token);
+            var result = await client.ProcessResponseAsync(responseData, prepared, cancellationToken: attempt.Token);
+            if (generation != Volatile.Read(ref _generation)) throw new OperationCanceledException(attempt.Token);
             if (result.IsError)
                 throw new AuthenticationFlowException(result.Error == "access_denied" ? "cancelled" : "oidc_response", "Organization sign-in was not completed.");
             var returnedNonce = result.User?.FindFirst("nonce")?.Value ?? "";
@@ -280,42 +288,52 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
             if (string.IsNullOrWhiteSpace(result.AccessToken))
                 throw new AuthenticationFlowException("token_response", "Identity provider did not return a usable access token.");
 
-            var session = await _session.AuthenticateAsync(profile.Id, result.AccessToken, false, validateVmsSession, _attempt.Token);
+            var session = await _session.AuthenticateAsync(profile.Id, result.AccessToken, false, validateVmsSession, attempt.Token);
+            if (generation != Volatile.Read(ref _generation)) throw new OperationCanceledException(attempt.Token);
             _client = client;
             _profileId = profile.Id;
             _refreshToken = string.IsNullOrWhiteSpace(result.RefreshToken) ? null : result.RefreshToken;
             TokenExpiry = result.AccessTokenExpiration;
             RememberedSession = remember && _refreshToken is not null;
-            if (RememberedSession) await _refreshStore.SaveAsync(profile.Id, _refreshToken!, _attempt.Token);
-            else await _refreshStore.DeleteAsync(profile.Id, _attempt.Token);
+            if (RememberedSession) await _refreshStore.SaveAsync(profile.Id, _refreshToken!, attempt.Token);
+            else await _refreshStore.DeleteAsync(profile.Id, attempt.Token);
             State = AuthenticationUxState.Authenticated;
             _logger.Info("auth", $"organization sign-in completed profile_id={profile.Id:D} remembered={RememberedSession}");
             return new OidcLoginStatus(session, RememberedSession, result.AccessTokenExpiration);
         }
         catch (OperationCanceledException)
         {
-            LastErrorCategory = "cancelled";
-            State = AuthenticationUxState.AuthenticationRequired;
+            if (generation == Volatile.Read(ref _generation))
+            {
+                LastErrorCategory = "cancelled";
+                State = AuthenticationUxState.AuthenticationRequired;
+            }
             throw;
         }
         catch (AuthenticationFlowException ex)
         {
-            LastErrorCategory = ex.Category;
-            State = AuthenticationUxState.Failed;
-            _logger.Warning("auth", $"organization sign-in failed category={ex.Category}");
+            if (generation == Volatile.Read(ref _generation))
+            {
+                LastErrorCategory = ex.Category;
+                State = AuthenticationUxState.Failed;
+                _logger.Warning("auth", $"organization sign-in failed category={ex.Category}");
+            }
             throw;
         }
         catch (Exception ex)
         {
-            LastErrorCategory = "identity_unreachable";
-            State = AuthenticationUxState.Failed;
-            _logger.LogError("auth", "organization sign-in failed", ex);
+            if (generation == Volatile.Read(ref _generation))
+            {
+                LastErrorCategory = "identity_unreachable";
+                State = AuthenticationUxState.Failed;
+                _logger.LogError("auth", "organization sign-in failed", ex);
+            }
             throw new AuthenticationFlowException("identity_unreachable", "Unable to contact the identity provider.");
         }
         finally
         {
-            _attempt?.Dispose();
-            _attempt = null;
+            if (ReferenceEquals(_attempt, attempt)) _attempt = null;
+            attempt.Dispose();
         }
     }
 
@@ -323,6 +341,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
         Func<CancellationToken,Task<SessionInfo>> validateVmsSession, CancellationToken cancellationToken = default)
     {
         if (!capability.Enabled) return false;
+        var generation = Volatile.Read(ref _generation);
         var refresh = await _refreshStore.LoadAsync(profile.Id, cancellationToken);
         if (string.IsNullOrWhiteSpace(refresh)) return false;
         OidcCapabilityValidator.Validate(capability);
@@ -331,6 +350,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
         {
             var client = CreateClient(capability, "http://127.0.0.1/oidc/callback/");
             var result = await client.RefreshTokenAsync(refresh, cancellationToken: cancellationToken);
+            if (generation != Volatile.Read(ref _generation)) return false;
             if (result.IsError)
             {
                 if (IsPermanentRefreshError(result.Error)) await _refreshStore.DeleteAsync(profile.Id, cancellationToken);
@@ -339,6 +359,11 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
                 return false;
             }
             await _session.AuthenticateAsync(profile.Id, result.AccessToken, false, validateVmsSession, cancellationToken);
+            if (generation != Volatile.Read(ref _generation))
+            {
+                if (_session.ProfileId == profile.Id && _profileId != profile.Id) _session.DisconnectRuntime();
+                return false;
+            }
             _client = client; _profileId = profile.Id;
             _refreshToken = string.IsNullOrWhiteSpace(result.RefreshToken) ? refresh : result.RefreshToken;
             TokenExpiry = result.AccessTokenExpiration; RememberedSession = true; State = AuthenticationUxState.Authenticated; LastErrorCategory = "none";
@@ -347,47 +372,70 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
         }
         catch (HttpRequestException)
         {
-            State = AuthenticationUxState.OfflineWithRestorableSession; LastErrorCategory = "identity_unreachable"; return false;
+            if (generation == Volatile.Read(ref _generation))
+            {
+                State = AuthenticationUxState.OfflineWithRestorableSession; LastErrorCategory = "identity_unreachable";
+            }
+            return false;
         }
         catch (Exception ex)
         {
-            State = AuthenticationUxState.OfflineWithRestorableSession; LastErrorCategory = "refresh_unavailable";
-            _logger.LogError("auth","remembered session restore failed",ex); return false;
+            if (generation == Volatile.Read(ref _generation))
+            {
+                State = AuthenticationUxState.OfflineWithRestorableSession; LastErrorCategory = "refresh_unavailable";
+                _logger.LogError("auth","remembered session restore failed",ex);
+            }
+            return false;
         }
     }
 
     public async Task<bool> TryRefreshAsync(CancellationToken cancellationToken = default)
     {
         if (_client is null || _profileId is null || string.IsNullOrWhiteSpace(_refreshToken)) return false;
+        var generation = Volatile.Read(ref _generation);
+        var profileId = profileId;
         await _refreshGate.WaitAsync(cancellationToken);
         try
         {
+            if (generation != Volatile.Read(ref _generation) || _profileId != profileId) return false;
             State = AuthenticationUxState.Refreshing;
-            var result = await _client.RefreshTokenAsync(_refreshToken, cancellationToken: cancellationToken);
+            var client = _client;
+            var refreshToken = _refreshToken;
+            if (client is null || string.IsNullOrWhiteSpace(refreshToken)) return false;
+            var result = await client.RefreshTokenAsync(refreshToken, cancellationToken: cancellationToken);
+            if (generation != Volatile.Read(ref _generation) || _profileId != profileId) return false;
             if (result.IsError)
             {
                 if (IsPermanentRefreshError(result.Error))
                 {
-                    await _refreshStore.DeleteAsync(_profileId.Value, cancellationToken);
+                    await _refreshStore.DeleteAsync(profileId, cancellationToken);
                     _refreshToken = null; RememberedSession = false; State = AuthenticationUxState.Expired; LastErrorCategory = "refresh_rejected";
                 }
                 else { State = AuthenticationUxState.Failed; LastErrorCategory = "refresh_unavailable"; }
                 return false;
             }
-            _session.ReplaceAccessToken(_profileId.Value, result.AccessToken);
+            _session.ReplaceAccessToken(profileId, result.AccessToken);
             _refreshToken = string.IsNullOrWhiteSpace(result.RefreshToken) ? _refreshToken : result.RefreshToken;
             TokenExpiry = result.AccessTokenExpiration; State = AuthenticationUxState.Authenticated; LastErrorCategory = "none";
-            if (RememberedSession) await _refreshStore.SaveAsync(_profileId.Value, _refreshToken!, cancellationToken);
+            if (RememberedSession) await _refreshStore.SaveAsync(profileId, _refreshToken!, cancellationToken);
             return true;
         }
         catch (HttpRequestException)
         {
-            State = AuthenticationUxState.OfflineWithRestorableSession; LastErrorCategory = "identity_unreachable"; return false;
+            if (generation == Volatile.Read(ref _generation) && _profileId == profileId)
+            {
+                State = AuthenticationUxState.OfflineWithRestorableSession; LastErrorCategory = "identity_unreachable";
+            }
+            return false;
         }
         catch (Exception ex)
         {
-            State = AuthenticationUxState.Failed; LastErrorCategory = "refresh_unavailable";
-            _logger.LogError("auth","session refresh failed",ex); return false;
+            if (generation == Volatile.Read(ref _generation) && _profileId == profileId)
+            {
+                State = AuthenticationUxState.Failed; LastErrorCategory = "refresh_unavailable";
+                _logger.LogError("auth","session refresh failed",ex);
+            }
+            return false;
         }
         finally { _refreshGate.Release(); }
     }
@@ -398,6 +446,9 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
         await _refreshStore.DeleteAsync(profileId, cancellationToken);
         ClearRuntime(AuthenticationUxState.Expired);
     }
+
+    public Task ForgetRememberedAsync(Guid profileId, CancellationToken cancellationToken = default) =>
+        _refreshStore.DeleteAsync(profileId, cancellationToken);
 
     public async Task LogoutAsync(Guid profileId, CancellationToken cancellationToken = default)
     {
