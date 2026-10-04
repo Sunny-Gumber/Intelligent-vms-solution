@@ -393,7 +393,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
     {
         if (_client is null || _profileId is null || string.IsNullOrWhiteSpace(_refreshToken)) return false;
         var generation = Volatile.Read(ref _generation);
-        var profileId = profileId;
+        var profileId = _profileId.Value;
         await _refreshGate.WaitAsync(cancellationToken);
         try
         {
