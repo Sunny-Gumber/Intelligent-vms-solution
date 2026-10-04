@@ -71,6 +71,7 @@ public sealed class PtzCoordinator : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            if(_cameraId==cameraId&&_tileIndex==tileIndex&&Capabilities is not null)return;
             if(_cameraId is not null && (_cameraId!=cameraId||_tileIndex!=tileIndex))
                 await StopLockedAsync(CancellationToken.None,true);
             FencePending();
