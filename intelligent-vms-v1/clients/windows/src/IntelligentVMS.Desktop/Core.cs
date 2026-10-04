@@ -156,7 +156,7 @@ public interface IClientLogger
 {
     void Info(string subsystem, string message);
     void Warning(string subsystem, string message);
-    void Error(string subsystem, string message, Exception? exception = null);
+    void LogError(string subsystem, string message, Exception? exception = null);
 }
 public sealed class BoundedFileLogger : IClientLogger
 {
@@ -167,7 +167,7 @@ public sealed class BoundedFileLogger : IClientLogger
     public BoundedFileLogger(string directory) { _directory = directory; Directory.CreateDirectory(directory); }
     public void Info(string subsystem, string message) => Write("INFO", subsystem, message, null);
     public void Warning(string subsystem, string message) => Write("WARN", subsystem, message, null);
-    public void Error(string subsystem, string message, Exception? exception = null) => Write("ERROR", subsystem, message, exception);
+    public void LogError(string subsystem, string message, Exception? exception = null) => Write("ERROR", subsystem, message, exception);
     private void Write(string level, string subsystem, string message, Exception? exception)
     {
         lock (_gate)
@@ -340,8 +340,8 @@ public sealed class VmsApiClient : ILiveAccessProvider, IDisposable
         if(string.IsNullOrWhiteSpace(v.DeploymentProfile)) throw new IncompatibleServerException(); return v;
     }
     public Task<List<CameraInfo>> GetCamerasAsync(CancellationToken ct=default)=>SendJsonAsync<List<CameraInfo>>(HttpMethod.Get,"/api/v1/cameras",ct);
-    public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken ct=default)=>SendJsonAsync<LiveAccessGrant>(
-        HttpMethod.Post,$"/api/v1/live/cameras/{Uri.EscapeDataString(cameraId)}/access?stream_role={Uri.EscapeDataString(role)}",ct);
+    public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default)=>SendJsonAsync<LiveAccessGrant>(
+        HttpMethod.Post,$"/api/v1/live/cameras/{Uri.EscapeDataString(cameraId)}/access?stream_role={Uri.EscapeDataString(role)}",cancellationToken);
     private async Task<T> SendJsonAsync<T>(HttpMethod method,string relative,CancellationToken ct)
     {
         using var request=new HttpRequestMessage(method,UriFor(relative));
@@ -395,15 +395,16 @@ public sealed class LiveSessionController : IAsyncDisposable
     public ValueTask DisposeAsync()=>new(StopAsync());
 }
 
-public sealed class DiagnosticsService
+public static class DiagnosticsService
 {
-    public ClientDiagnostics Build(ServerProfile? profile,ServerConnectionState state,ServerCapabilities? caps,string mediaState)=>new(
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    public static ClientDiagnostics Build(ServerProfile? profile,ServerConnectionState state,ServerCapabilities? caps,string mediaState)=>new(
         typeof(DiagnosticsService).Assembly.GetName().Version?.ToString()??"unknown",RuntimeInformation.OSDescription,RuntimeInformation.ProcessArchitecture.ToString(),
         profile?.SafeAddress??"not configured",state.ToString(),caps?.DeploymentProfile??"unknown",ClientPaths.LogDirectory,mediaState);
-    public async Task<string> ExportAsync(ClientDiagnostics diagnostics,string directory,CancellationToken ct=default)
+    public static async Task<string> ExportAsync(ClientDiagnostics diagnostics,string directory,CancellationToken ct=default)
     {
         Directory.CreateDirectory(directory); var path=Path.Combine(directory,$"intelligent-vms-client-diagnostics-{DateTime.UtcNow:yyyyMMddTHHmmssZ}.json");
-        var json=JsonSerializer.Serialize(diagnostics,new JsonSerializerOptions{WriteIndented=true}); await File.WriteAllTextAsync(path,SecretRedactor.Redact(json),ct); return path;
+        var json=JsonSerializer.Serialize(diagnostics,JsonOptions); await File.WriteAllTextAsync(path,SecretRedactor.Redact(json),ct); return path;
     }
 }
 public static class ClientSmokeVerifier
