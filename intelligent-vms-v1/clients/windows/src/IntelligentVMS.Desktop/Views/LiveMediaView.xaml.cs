@@ -87,6 +87,7 @@ public partial class LiveMediaView : UserControl, ILiveMediaRenderer, IAsyncDisp
         await StopAsync();
         if(_initialized) WebView.Dispose();
         _gate.Dispose();
+        GC.SuppressFinalize(this);
     }
 }
 #pragma warning restore CA1001
