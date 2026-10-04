@@ -416,6 +416,25 @@ public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IDisp
     public Task<List<CameraInfo>> GetCamerasAsync(CancellationToken ct=default)=>SendJsonAsync<List<CameraInfo>>(HttpMethod.Get,"/api/v1/cameras",true,true,ct);
     public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default)=>SendJsonAsync<LiveAccessGrant>(
         HttpMethod.Post,$"/api/v1/live/cameras/{Uri.EscapeDataString(cameraId)}/access?stream_role={Uri.EscapeDataString(role)}",true,true,cancellationToken);
+
+    public Task EnsurePlaybackAuthorizedAsync(CancellationToken cancellationToken=default)=>
+        GetSessionAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<RecordingSpanDto>> GetRecordingTimelineAsync(string cameraId,DateTimeOffset start,DateTimeOffset end,CancellationToken cancellationToken=default)
+    {
+        var startText=start.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
+        var endText=end.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
+        var relative=$"/api/v1/recordings/cameras/{Uri.EscapeDataString(cameraId)}/timeline?start={Uri.EscapeDataString(startText)}&end={Uri.EscapeDataString(endText)}";
+        return await SendJsonAsync<List<RecordingSpanDto>>(HttpMethod.Get,relative,true,true,cancellationToken);
+    }
+
+    public Uri BuildPlaybackUri(string cameraId,DateTimeOffset start,double durationSeconds)
+    {
+        if(durationSeconds<=0||durationSeconds>14400)throw new ArgumentOutOfRangeException(nameof(durationSeconds));
+        var startText=start.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
+        var durationText=durationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return UriFor($"/api/v1/recordings/cameras/{Uri.EscapeDataString(cameraId)}/play?start={Uri.EscapeDataString(startText)}&duration={durationText}&format=mp4");
+    }
     private async Task<T> SendJsonAsync<T>(HttpMethod method,string relative,bool auth,bool allowRefresh,CancellationToken ct)
     {
         for(var attempt=0;attempt<2;attempt++)
