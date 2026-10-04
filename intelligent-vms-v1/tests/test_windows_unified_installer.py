@@ -58,6 +58,17 @@ def test_uninstall_is_non_destructive_by_default():
     assert "record" not in removes.lower()
     assert "default uninstall preserved recordings config secrets backups database and per-user client data" in SETUP
 
+def test_failed_fresh_install_has_data_safe_rollback_contract():
+    assert "$HadManagedState=Test-Path $StateFile" in SETUP
+    assert 'if(-not $HadManagedState -and $Action -eq "Install")' in SETUP
+    assert "Uninstall-Managed" in SETUP
+    assert "persistent data preserved" in SETUP
+    install=NSIS.split('Section "Install"',1)[1].split('SectionEnd',1)[0]
+    assert 'IfFileExists "$PROGRAMDATA\\IntelligentVMS\\installer-state.json" managed_state_present' in install
+    assert 'DeleteRegKey HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\IntelligentVMS"' in install
+    assert "roll-forward recovery required if schema advanced" in SETUP
+
+
 def test_secret_and_firewall_boundaries():
     assert "[REDACTED]" in SETUP
     for forbidden in ("New-NetFirewallRule","Set-NetFirewallProfile","VMS_SECRET_KEY=","AUTH_HS256_SECRET="):
