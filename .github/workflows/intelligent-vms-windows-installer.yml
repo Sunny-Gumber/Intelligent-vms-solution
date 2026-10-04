@@ -116,7 +116,7 @@ jobs:
             $services=Get-Service IntelligentVMSControl,IntelligentVMSMedia
             if($services.Where({$_.Status -ne "Running"})){throw "Server services unhealthy"}
             & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Health
-            if($LASTEXITCODE -ne 0){throw "Server health failed"}
+            if(-not $?){throw "Server health failed"}
           } else {
             if(Get-Service IntelligentVMSControl -ErrorAction SilentlyContinue){throw "Client-only install touched server service"}
           }
@@ -241,12 +241,16 @@ jobs:
           $before=(Get-FileHash "$env:ProgramData\IntelligentVMS\config\vms.env").Hash
           $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
           $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=both","/ACTION=upgrade","/RECORDINGROOT=$record") -Wait -PassThru
-          if($p.ExitCode -ne 0){throw "Upgrade simulation failed"}
+          if($p.ExitCode -ne 0){
+            $setupLog="$env:ProgramData\IntelligentVMS\installer-logs\setup.log"
+            if(Test-Path $setupLog){Get-Content $setupLog -Tail 120}
+            throw "Upgrade simulation failed exit=$($p.ExitCode)"
+          }
           $after=(Get-FileHash "$env:ProgramData\IntelligentVMS\config\vms.env").Hash
           if($before -ne $after){throw "Upgrade replaced protected configuration"}
           if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Upgrade lost recording data"}
           & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Health
-          if($LASTEXITCODE -ne 0){throw "Upgrade server health failed"}
+          if(-not $?){throw "Upgrade server health failed"}
       - name: Unsafe downgrade is blocked
         shell: pwsh
         env:
