@@ -423,10 +423,10 @@ public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IDisp
     public Task EnsurePlaybackAuthorizedAsync(CancellationToken cancellationToken=default)=>
         GetSessionAsync(cancellationToken);
 
-    public async Task<IReadOnlyList<RecordingSpanDto>> GetRecordingTimelineAsync(string cameraId,DateTimeOffset start,DateTimeOffset end,CancellationToken cancellationToken=default)
+    public async Task<IReadOnlyList<RecordingSpanDto>> GetRecordingTimelineAsync(string cameraId,DateTimeOffset start,DateTimeOffset endTime,CancellationToken cancellationToken=default)
     {
         var startText=start.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
-        var endText=end.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
+        var endText=endTime.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
         var relative=$"/api/v1/recordings/cameras/{Uri.EscapeDataString(cameraId)}/timeline?start={Uri.EscapeDataString(startText)}&end={Uri.EscapeDataString(endText)}";
         return await SendJsonAsync<List<RecordingSpanDto>>(HttpMethod.Get,relative,true,true,cancellationToken);
     }
@@ -440,7 +440,7 @@ public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IDisp
     }
     public async Task ExportClipAsync(string cameraId,DateTimeOffset start,double durationSeconds,Stream destination,CancellationToken cancellationToken=default)
     {
-        if(durationSeconds<=0)throw new ArgumentOutOfRangeException(nameof(durationSeconds));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(durationSeconds);
         var startText=start.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
         var durationText=durationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var relative=$"/api/v1/recordings/cameras/{Uri.EscapeDataString(cameraId)}/export?start={Uri.EscapeDataString(startText)}&duration={durationText}";
