@@ -92,7 +92,7 @@ internal static class OidcSecurityTests
     {
         var valid=new OidcCapability{Enabled=true,Required=true,Authority="https://identity.example.test/",ClientId="desktop",Scopes=["openid","offline_access"],Callback="loopback",PkceMethods=["S256"]};
         OidcCapabilityValidator.Validate(valid);
-        Throws<AuthenticationFlowException>(()=>OidcCapabilityValidator.Validate(valid withAuthority("http://identity.example.test/")));
+        Throws<AuthenticationFlowException>(()=>OidcCapabilityValidator.Validate(withAuthority("http://identity.example.test/")));
         Throws<AuthenticationFlowException>(()=>OidcCapabilityValidator.Validate(new OidcCapability{Enabled=true,Authority="https://identity.example.test/",ClientId="desktop",Scopes=["profile"],Callback="loopback",PkceMethods=["S256"]}));
         Throws<AuthenticationFlowException>(()=>OidcCapabilityValidator.Validate(new OidcCapability{Enabled=true,Authority="https://identity.example.test/",ClientId="desktop",Scopes=["openid"],Callback="loopback",PkceMethods=["plain"]}));
         static OidcCapability withAuthority(string authority)=>new(){Enabled=true,Required=true,Authority=authority,ClientId="desktop",Scopes=["openid"],Callback="loopback",PkceMethods=["S256"]};
