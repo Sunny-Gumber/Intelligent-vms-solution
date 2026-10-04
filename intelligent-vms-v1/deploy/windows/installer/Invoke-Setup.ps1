@@ -19,6 +19,7 @@ $ServerRoot=Join-Path $env:ProgramData "IntelligentVMS"
 $StateFile=Join-Path $ServerRoot "installer-state.json"
 $LogRoot=Join-Path $ServerRoot "installer-logs"
 $mutex=$null
+$HadManagedState=Test-Path $StateFile
 
 function Write-SafeLog([string]$Stage,[string]$Message){
   New-Item -ItemType Directory -Force -Path $LogRoot|Out-Null
@@ -176,6 +177,22 @@ try{
 }catch{
   Collect-FailureDiagnostics "setup"
   Write-SafeLog "failure" ("category={0}" -f $_.Exception.GetType().Name)
+  if(-not $HadManagedState -and $Action -eq "Install"){
+    try{
+      Uninstall-Managed
+      Write-SafeLog "rollback" "fresh-install rollback removed installer-owned services and binaries; persistent data preserved"
+    }catch{
+      Write-SafeLog "rollback" "fresh-install rollback incomplete; diagnostics retained for operator recovery"
+    }
+  } elseif($HadManagedState -and $Action -in @("Upgrade","Repair")){
+    try{
+      $ctl=Join-Path $ServerRoot "app\deploy\windows\Vms-Windows.ps1"
+      if(Test-Path $ctl){& $ctl -Action Start|Out-Null}
+      Write-SafeLog "recovery" "existing installation retained after failed upgrade/repair; roll-forward recovery required if schema advanced"
+    }catch{
+      Write-SafeLog "recovery" "existing installation recovery start failed; preserved data and diagnostics require operator roll-forward"
+    }
+  }
   throw
 }finally{
   if($mutex){try{$mutex.ReleaseMutex()}catch{};$mutex.Dispose()}
