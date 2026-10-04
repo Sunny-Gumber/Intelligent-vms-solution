@@ -6,7 +6,7 @@ using IntelligentVMS.Desktop;
 var tests=new List<(string,Func<Task>)>{
 ("server URL validation",TestServerProfiles),("profile persistence/corruption",TestProfiles),("credential storage",TestCredentials),
 ("token redaction",TestRedaction),("OIDC PKCE security contracts",OidcSecurityTests.RunAllAsync),("multi-camera live grid",LiveGridTests.RunAllAsync),("desktop playback foundation",PlaybackTests.RunAllAsync),("authentication transitions",TestSession),("remembered-session failure policy",TestRememberedSessionFailures),("401 expiry",TestUnauthorized),
-("capability/camera parsing",TestApiParsing),("camera tree",TestCameraTree),("live API auth contract",TestLiveApiContract),("live grant/session cleanup",TestLive),("WHEP renderer contract",TestRendererContract),
+("capability/camera parsing",TestApiParsing),("playback API refresh contract",TestPlaybackApiRefresh),("camera tree",TestCameraTree),("live API auth contract",TestLiveApiContract),("live grant/session cleanup",TestLive),("WHEP renderer contract",TestRendererContract),
 ("TLS/media policy",TestTls),("diagnostics",TestDiagnostics),("package isolation",TestPackaging),("interpolation guard",TestInterpolationGuard)};
 var failures=0;
 foreach(var (name,test) in tests){try{await test();Console.WriteLine($"PASS {name}");}catch(Exception ex){failures++;Console.Error.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");}}
@@ -58,6 +58,35 @@ static async Task TestApiParsing(){
  Json(HttpStatusCode.OK,"[{\"id\":\"c1\",\"tenant_id\":\"t\",\"site_id\":\"s1\",\"name\":\"Gate\",\"enabled\":true,\"desired_state\":\"provisioned\",\"available_live_roles\":[\"main\",\"sub\"]}]")]);
  using var api=new VmsApiClient(()=>"token",new StubHandler(_=>queue.Dequeue()));api.Configure(new(Guid.NewGuid(),"Remote","https","vms.example.com",443));
  var caps=await api.GetCapabilitiesAsync();var cameras=await api.GetCamerasAsync();Assert(caps.DeploymentProfile=="windows-small-site"&&!caps.EventHistory&&cameras.Count==1&&cameras[0].AvailableLiveRoles.Contains("sub"));
+}
+static async Task TestPlaybackApiRefresh(){
+ var profile=new ServerProfile(Guid.NewGuid(),"Remote","https","vms.example.com",443);
+ var token="expired";var refreshes=0;var timelineCalls=0;var timelineAuth=new List<string?>();
+ using(var api=new VmsApiClient(()=>token,new StubHandler(request=>{
+  timelineCalls++;timelineAuth.Add(request.Headers.Authorization?.Parameter);
+  return timelineCalls==1?new HttpResponseMessage(HttpStatusCode.Unauthorized):Json(HttpStatusCode.OK,"[]");
+ }),refreshProvider:_=>{refreshes++;token="renewed";return Task.FromResult(true);})){
+  api.Configure(profile);
+  var spans=await api.GetRecordingTimelineAsync("camera 1",DateTimeOffset.Parse("2026-10-04T00:00:00Z"),DateTimeOffset.Parse("2026-10-05T00:00:00Z"));
+  Assert(spans.Count==0&&timelineCalls==2&&refreshes==1&&timelineAuth.SequenceEqual(new[]{"expired","renewed"}));
+ }
+
+ token="expired";refreshes=0;var exportCalls=0;var exportAuth=new List<string?>();
+ using(var api=new VmsApiClient(()=>token,new StubHandler(request=>{
+  exportCalls++;exportAuth.Add(request.Headers.Authorization?.Parameter);
+  return exportCalls==1?new HttpResponseMessage(HttpStatusCode.Unauthorized):new HttpResponseMessage(HttpStatusCode.OK){Content=new ByteArrayContent(new byte[]{1,2,3})};
+ }),refreshProvider:_=>{refreshes++;token="renewed";return Task.FromResult(true);})){
+  api.Configure(profile);await using var destination=new MemoryStream();
+  await api.ExportClipAsync("camera-1",DateTimeOffset.Parse("2026-10-04T10:00:00Z"),60,destination);
+  Assert(destination.Length==3&&exportCalls==2&&refreshes==1&&exportAuth.SequenceEqual(new[]{"expired","renewed"}));
+ }
+
+ refreshes=0;
+ using(var api=new VmsApiClient(()=>"valid",new StubHandler(_=>new HttpResponseMessage(HttpStatusCode.Forbidden)),refreshProvider:_=>{refreshes++;return Task.FromResult(true);})){
+  api.Configure(profile);
+  await Throws<VmsApiException>(()=>api.GetRecordingTimelineAsync("camera-1",DateTimeOffset.Parse("2026-10-04T00:00:00Z"),DateTimeOffset.Parse("2026-10-05T00:00:00Z")));
+  Assert(refreshes==0);
+ }
 }
 static Task TestCameraTree(){
  var tree=CameraTreeBuilder.Build([new(){Id="1",SiteId="b",Name="B"},new(){Id="2",SiteId="a",Name="Z"},new(){Id="3",SiteId="a",Name="A"}]);
