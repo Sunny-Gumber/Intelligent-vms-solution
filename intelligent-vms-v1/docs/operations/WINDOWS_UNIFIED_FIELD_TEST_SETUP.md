@@ -32,7 +32,7 @@ Existing-version detection converts a normal Install into repair or upgrade. Dow
 
 Client is self-contained .NET 10 win-x64 but requires the official Microsoft WebView2 Evergreen Runtime.
 
-Server/Both reuse the accepted Windows field-test server architecture and currently require Python 3.12 x64 plus a supported local PostgreSQL x64 service version 14 or newer. Setup does not uninstall shared PostgreSQL and does not download arbitrary latest prerequisites.
+Server/Both reuse the accepted Windows field-test server architecture and currently require Python 3.12 x64 plus a supported local PostgreSQL x64 service version 14 or newer. Interactive Setup asks for the local PostgreSQL administrator password in a masked field and passes it only through the child-process environment for first-time DB bootstrap; it is not placed on the command line or installer log. Unattended setup must provide the same `VMS_POSTGRES_ADMIN_PASSWORD` environment variable before launch. Setup does not uninstall shared PostgreSQL and does not download arbitrary latest prerequisites.
 
 ## Data ownership
 
