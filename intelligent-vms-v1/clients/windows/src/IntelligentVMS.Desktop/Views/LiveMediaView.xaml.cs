@@ -18,7 +18,6 @@ public partial class LiveMediaView : UserControl, ILiveMediaRenderer, IAsyncDisp
     public LiveMediaView()
     {
         InitializeComponent();
-        Unloaded += async (_,_) => await StopAsync();
     }
 
     public async Task StartAsync(LiveAccessGrant grant,CancellationToken cancellationToken=default)
