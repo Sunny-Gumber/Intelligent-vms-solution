@@ -129,7 +129,7 @@ public interface IPlaybackMediaRenderer
 public interface IPlaybackProvider
 {
     Task EnsurePlaybackAuthorizedAsync(CancellationToken cancellationToken=default);
-    Task<IReadOnlyList<RecordingSpanDto>> GetRecordingTimelineAsync(string cameraId,DateTimeOffset start,DateTimeOffset end,CancellationToken cancellationToken=default);
+    Task<IReadOnlyList<RecordingSpanDto>> GetRecordingTimelineAsync(string cameraId,DateTimeOffset start,DateTimeOffset endTime,CancellationToken cancellationToken=default);
     Uri BuildPlaybackUri(string cameraId,DateTimeOffset start,double durationSeconds);
     Task ExportClipAsync(string cameraId,DateTimeOffset start,double durationSeconds,Stream destination,CancellationToken cancellationToken=default);
 }
