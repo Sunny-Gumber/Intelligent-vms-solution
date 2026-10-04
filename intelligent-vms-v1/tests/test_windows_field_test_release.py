@@ -328,6 +328,14 @@ def test_windows_service_runtime_uses_sysconfig_purelib_not_site_prefix_order():
     assert '$win32Root = Join-Path $sitePackages "win32"' in INSTALL
 
 
+def test_windows_service_event_log_failure_cannot_kill_service_host():
+    assert "def _safe_event_log(message: str)" in SERVICE_HOST
+    assert "except Exception:" in SERVICE_HOST.split("def _safe_event_log", 1)[1].split("def _root", 1)[0]
+    assert SERVICE_HOST.count("_safe_event_log(") >= 5
+    assert 'servicemanager.LogInfoMsg("Intelligent VMS control API starting")' not in SERVICE_HOST
+    assert 'servicemanager.LogInfoMsg("Intelligent VMS MediaMTX starting")' not in SERVICE_HOST
+
+
 def test_windows_control_service_uses_thread_safe_selector_event_loop():
     assert "loop_factory=asyncio.SelectorEventLoop" in SERVICE_HOST
     assert "WindowsSelectorEventLoopPolicy" not in SERVICE_HOST
