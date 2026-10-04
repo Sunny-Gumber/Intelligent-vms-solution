@@ -6,7 +6,7 @@ using IntelligentVMS.Desktop;
 var tests=new List<(string,Func<Task>)>{
 ("server URL validation",TestServerProfiles),("profile persistence/corruption",TestProfiles),("credential storage",TestCredentials),
 ("token redaction",TestRedaction),("authentication transitions",TestSession),("401 expiry",TestUnauthorized),
-("capability/camera parsing",TestApiParsing),("camera tree",TestCameraTree),("live grant/session cleanup",TestLive),
+("capability/camera parsing",TestApiParsing),("camera tree",TestCameraTree),("live API auth contract",TestLiveApiContract),("live grant/session cleanup",TestLive),("WHEP renderer contract",TestRendererContract),
 ("TLS/media policy",TestTls),("diagnostics",TestDiagnostics),("package isolation",TestPackaging),("interpolation guard",TestInterpolationGuard)};
 var failures=0;
 foreach(var (name,test) in tests){try{await test();Console.WriteLine($"PASS {name}");}catch(Exception ex){failures++;Console.Error.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");}}
@@ -77,6 +77,25 @@ static async Task TestPackaging(){
  foreach(var forbidden in new[]{"ProgramData","IntelligentVMSControl","IntelligentVMSMedia","PostgreSQL","Stop-Service","Remove-Service"})Assert(!combined.Contains(forbidden,StringComparison.OrdinalIgnoreCase));
  Assert(combined.Contains("LocalApplicationData",StringComparison.OrdinalIgnoreCase));
 }
+
+static async Task TestLiveApiContract(){
+ var handler=new RecordingHandler(_=>Json(HttpStatusCode.OK,"{\"camera_id\":\"camera 1\",\"stream_role\":\"sub\",\"path\":\"safe\",\"webrtc_url\":\"https://media.example/safe\",\"access_token\":\"grant\",\"expires_at\":\"2030-01-01T00:00:00Z\"}"));
+ using var api=new VmsApiClient(()=>"desktop-token",handler);api.Configure(new(Guid.NewGuid(),"Remote","https","vms.example.com",443));
+ var grant=await api.GetLiveAccessAsync("camera 1","sub");
+ Assert(grant.CameraId=="camera 1"&&handler.Method==HttpMethod.Post);
+ Assert(handler.Uri?.AbsolutePath=="/api/v1/live/cameras/camera%201/access");
+ Assert(handler.Uri?.Query=="?stream_role=sub");
+ Assert(handler.AuthorizationScheme=="Bearer"&&handler.AuthorizationParameter=="desktop-token");
+}
+static async Task TestRendererContract(){
+ var root=FindRepoRoot();var html=await File.ReadAllTextAsync(Path.Combine(root,"clients","windows","src","IntelligentVMS.Desktop","Media","live.html"));
+ Assert(html.Contains("+'/whep'",StringComparison.Ordinal));
+ Assert(html.Contains("method:'POST'",StringComparison.Ordinal));
+ Assert(html.Contains("method:'DELETE'",StringComparison.Ordinal));
+ Assert(html.Contains("Authorization:'Bearer '+accessToken",StringComparison.Ordinal));
+ Assert(html.Contains("candidate.origin!==whep.origin",StringComparison.Ordinal));
+ Assert(!html.Contains("?token=",StringComparison.OrdinalIgnoreCase));
+}
 static HttpResponseMessage Json(HttpStatusCode code,string json)=>new(code){Content=new StringContent(json,Encoding.UTF8,"application/json")};
 static string TempDir(){var p=Path.Combine(Path.GetTempPath(),"ivms-client-tests",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(p);return p;}
 static string FindRepoRoot(){var d=new DirectoryInfo(Directory.GetCurrentDirectory());while(d is not null){if(Directory.Exists(Path.Combine(d.FullName,"clients","windows")))return d.FullName;d=d.Parent;}throw new InvalidOperationException("Repository root not found.");}
@@ -96,3 +115,11 @@ sealed class MemoryLogger:IClientLogger{public void Info(string s,string m){}pub
 sealed class FakeLiveProvider:ILiveAccessProvider{public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken c=default)=>Task.FromResult(new LiveAccessGrant{CameraId=cameraId,StreamRole=role,Path="path",WebRtcUrl=$"https://media.example/{cameraId}",AccessToken="short-lived",ExpiresAt=DateTimeOffset.UtcNow.AddMinutes(1)});}
 sealed class FakeRenderer:ILiveMediaRenderer{public int Starts,Stops;public string State{get;private set;}="IDLE";public Task StartAsync(LiveAccessGrant g,CancellationToken c=default){Starts++;State="LIVE";return Task.CompletedTask;}public Task StopAsync(CancellationToken c=default){Stops++;State="IDLE";return Task.CompletedTask;}}
 
+
+sealed class RecordingHandler(Func<HttpRequestMessage,HttpResponseMessage> response):HttpMessageHandler{
+ public HttpMethod? Method;public Uri? Uri;public string? AuthorizationScheme;public string? AuthorizationParameter;
+ protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken cancellationToken){
+  Method=request.Method;Uri=request.RequestUri;AuthorizationScheme=request.Headers.Authorization?.Scheme;AuthorizationParameter=request.Headers.Authorization?.Parameter;
+  return Task.FromResult(response(request));
+ }
+}
