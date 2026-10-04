@@ -322,6 +322,9 @@ public sealed class DesktopSession
         catch (UnauthorizedAccessException) { await _credentials.DeleteAsync(profileId,cancellationToken); return false; }
         catch { AccessToken=null; ProfileId=null; RememberedSession=false; State=DesktopSessionState.SignedOut; _logger.Warning("auth","remembered session restore unavailable"); return false; }
     }
+    public Task ForgetRememberedAsync(Guid profileId, CancellationToken cancellationToken=default) =>
+        _credentials.DeleteAsync(profileId, cancellationToken);
+
     public async Task LogoutAsync(CancellationToken cancellationToken=default)
     {
         if(ProfileId is Guid id) await _credentials.DeleteAsync(id,cancellationToken);
