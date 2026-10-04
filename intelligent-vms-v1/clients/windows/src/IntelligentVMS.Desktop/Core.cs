@@ -111,7 +111,9 @@ public sealed record ClientDiagnostics(string ApplicationVersion, string OsVersi
     string LiveTileStates = "none", string RendererType = "WebView2-WHEP",
     string PlaybackCamera = "none", string PlaybackDate = "none", string PlaybackState = "Idle", double PlaybackRate = 1.0,
     string PlaybackPosition = "none", int PlaybackSegments = 0, int PlaybackGaps = 0,
-    string PlaybackRenderer = "WebView2-MP4", string PlaybackErrorCategory = "none");
+    string PlaybackRenderer = "WebView2-MP4", string PlaybackErrorCategory = "none",
+    string PtzCamera = "none", string PtzCapability = "none", string PtzState = "Unavailable",
+    int PtzGeneration = 0, string PtzSpeed = "medium", string PtzErrorCategory = "none");
 
 public static class ServerProfileIdentity
 {
@@ -573,12 +575,14 @@ public static class DiagnosticsService
         string oidcIssuerHost="not configured",string lastAuthErrorCategory="none",string callbackMechanism="none",string credentialStoreStatus="not used",
         string liveLayout="1-view",int activeTiles=0,int connectingTiles=0,int failedTiles=0,string liveTileStates="none",string rendererType="WebView2-WHEP",
         string playbackCamera="none",string playbackDate="none",string playbackState="Idle",double playbackRate=1.0,string playbackPosition="none",
-        int playbackSegments=0,int playbackGaps=0,string playbackRenderer="WebView2-MP4",string playbackErrorCategory="none")=>new(
+        int playbackSegments=0,int playbackGaps=0,string playbackRenderer="WebView2-MP4",string playbackErrorCategory="none",
+        string ptzCamera="none",string ptzCapability="none",string ptzState="Unavailable",int ptzGeneration=0,string ptzSpeed="medium",string ptzErrorCategory="none")=>new(
         typeof(DiagnosticsService).Assembly.GetName().Version?.ToString()??"unknown",RuntimeInformation.OSDescription,RuntimeInformation.ProcessArchitecture.ToString(),
         profile?.SafeAddress??"not configured",state.ToString(),caps?.DeploymentProfile??"unknown",ClientPaths.LogDirectory,mediaState,
         authenticationMode,authenticationState,rememberedSession,tokenExpiry?.ToString("O")??"unknown",oidcIssuerHost,lastAuthErrorCategory,callbackMechanism,credentialStoreStatus,
         liveLayout,activeTiles,connectingTiles,failedTiles,liveTileStates,rendererType,
-        playbackCamera,playbackDate,playbackState,playbackRate,playbackPosition,playbackSegments,playbackGaps,playbackRenderer,playbackErrorCategory);
+        playbackCamera,playbackDate,playbackState,playbackRate,playbackPosition,playbackSegments,playbackGaps,playbackRenderer,playbackErrorCategory,
+        ptzCamera,ptzCapability,ptzState,ptzGeneration,ptzSpeed,ptzErrorCategory);
     public static async Task<string> ExportAsync(ClientDiagnostics diagnostics,string directory,CancellationToken ct=default)
     {
         Directory.CreateDirectory(directory); var path=Path.Combine(directory,$"intelligent-vms-client-diagnostics-{DateTime.UtcNow:yyyyMMddTHHmmssZ}.json");
