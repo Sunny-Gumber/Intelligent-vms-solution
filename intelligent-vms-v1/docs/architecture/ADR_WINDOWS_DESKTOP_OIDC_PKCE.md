@@ -1,6 +1,6 @@
 # ADR — Windows Desktop OIDC Authorization Code + PKCE
 
-**Status:** Proposed for issue #8 / PR #9 exact-head acceptance.  
+**Status:** Implemented; pending final exact-head acceptance for issue #8 / PR #9.  
 **Product status:** Release Candidate / External Qualification Pending.
 
 ## Decision
@@ -19,7 +19,7 @@ Desktop OIDC is disabled unless explicitly configured. Production OIDC posture r
 
 Each attempt uses fresh library state and PKCE verifier plus a fresh application nonce. The client verifies the prepared request uses HTTPS, response_type=code, the current redirect URI, exact state/nonce, S256 and the current SHA-256 challenge, and contains no client secret.
 
-The callback is only `http://127.0.0.1:<ephemeral>/oidc/callback/`. It never binds to LAN/0.0.0.0, is single-use, rejects wrong/missing state, unexpected path and malformed responses, and closes on success, error, cancellation, timeout, profile switch or app shutdown.
+The callback is only `http://127.0.0.1:<ephemeral>/oidc/callback/`. It never binds to LAN/0.0.0.0, is single-use after full validation, rejects wrong/missing state, ambiguous code+error, unexpected path/method and malformed responses, and closes on success, error, cancellation, timeout, profile switch or app shutdown. Invalid stale callbacks do not consume the current valid attempt.
 
 Duende performs discovery, code redemption and token validation. The application additionally binds the validated identity response to its fresh nonce.
 
