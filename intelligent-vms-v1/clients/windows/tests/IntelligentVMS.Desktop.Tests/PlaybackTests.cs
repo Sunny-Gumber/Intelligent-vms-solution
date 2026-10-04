@@ -128,15 +128,19 @@ internal static class PlaybackTests
 
     private sealed class DelayedRenderer:FakeRenderer
     {
-        private int _count;
+        private int _count; private long _generation;
         public TaskCompletionSource<bool> FirstStarted{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<bool> SecondStarted{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<bool> ReleaseFirst{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public override async Task OpenAsync(PlaybackMediaRequest request,CancellationToken cancellationToken=default)
         {
-            var n=Interlocked.Increment(ref _count);if(n==1){FirstStarted.TrySetResult(true);await ReleaseFirst.Task;}else SecondStarted.TrySetResult(true);
+            var generation=Interlocked.Increment(ref _generation);
+            var n=Interlocked.Increment(ref _count);
+            if(n==1){FirstStarted.TrySetResult(true);await ReleaseFirst.Task;}else SecondStarted.TrySetResult(true);
+            if(generation!=Volatile.Read(ref _generation))return;
             await base.OpenAsync(request,CancellationToken.None);
         }
+        public new Task StopAsync(CancellationToken cancellationToken=default){Interlocked.Increment(ref _generation);return base.StopAsync(cancellationToken);}
     }
     private sealed class TestLogger:IClientLogger{public void Info(string subsystem,string message){}public void Warning(string subsystem,string message){}public void LogError(string subsystem,string message,Exception? exception=null){}}
 }
