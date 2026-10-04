@@ -336,6 +336,14 @@ def test_windows_service_event_log_failure_cannot_kill_service_host():
     assert 'servicemanager.LogInfoMsg("Intelligent VMS MediaMTX starting")' not in SERVICE_HOST
 
 
+def test_windows_pywin32_layout_probe_avoids_powershell5_inline_python_quoting():
+    assert 'validate-pywin32-layout.py' in INSTALL
+    probe_block = INSTALL.split('$layoutProbe = Join-Path $VenvRoot "validate-pywin32-layout.py"', 1)[1].split('# Copy the CPython standard runtime', 1)[0]
+    assert 'Invoke-Checked $venvPython @($layoutProbe)' in probe_block
+    assert 'Invoke-Checked $venvPython @("-c",@\'' not in INSTALL
+    assert 'Remove-Item -LiteralPath $layoutProbe' in probe_block
+
+
 def test_windows_control_service_uses_thread_safe_selector_event_loop():
     assert "loop_factory=asyncio.SelectorEventLoop" in SERVICE_HOST
     assert "WindowsSelectorEventLoopPolicy" not in SERVICE_HOST
