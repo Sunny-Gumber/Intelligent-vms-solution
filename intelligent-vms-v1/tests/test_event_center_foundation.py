@@ -71,6 +71,13 @@ def test_generic_event_acknowledgement_is_not_faked():
     assert "Generic event acknowledgement is not exposed" in xaml
 
 
+def test_event_center_history_contract_excludes_snapshot_urls():
+    schemas=(ROOT/"services/control-api/app/models/schemas.py").read_text(encoding="utf-8")
+    block=schemas.split("class EventCenterRead",1)[1].split("class EventHistoryPage",1)[0]
+    assert "snapshot_uri" not in block
+    assert 'exclude={"snapshot_uri"}' in ROUTER
+
+
 def test_event_response_and_client_do_not_use_raw_camera_transport():
     client=(ROOT/"clients/windows/src/IntelligentVMS.Desktop/EventCenter.cs").read_text(encoding="utf-8")
     for forbidden in ("rtsp://","password","Authorization","snapshot_uri"):
