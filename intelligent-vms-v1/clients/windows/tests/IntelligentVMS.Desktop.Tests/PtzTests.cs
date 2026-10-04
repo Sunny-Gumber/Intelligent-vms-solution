@@ -4,7 +4,10 @@ internal static class PtzTests
 {
     public static async Task RunAllAsync()
     {
-        await TestCapabilitiesAndDirectionalMoveAsync();
+        await TestCapabilitiesDirectionalZoomAndRateLimitAsync();
+        await TestUnsupportedCapabilityAsync();
+        await TestRapidInputFinalStopAsync();
+        await TestClearAndDisposeStopAsync();
         await TestStopPreemptsPendingMoveAsync();
         await TestCameraSwitchStopsOldCameraAsync();
         await TestStaleCapabilityIsFencedAsync();
@@ -12,18 +15,64 @@ internal static class PtzTests
         await TestFreshCoordinatorUsesFreshContextAsync();
     }
 
-    private static async Task TestCapabilitiesAndDirectionalMoveAsync()
+    private static async Task TestCapabilitiesDirectionalZoomAndRateLimitAsync()
     {
         var provider=new PtzProvider();
         await using var ptz=new PtzCoordinator(provider,new PtzLogger());
         await ptz.BindAsync(2,"camera-a");
         Assert(ptz.State==PtzState.Ready&&ptz.Capabilities?.PanTilt==true&&ptz.Capabilities.Zoom);
-        await ptz.MoveAsync(-1,0,0,0.65);
-        Assert(ptz.State==PtzState.Moving&&provider.Moves.Count==1);
-        Assert(provider.Moves[0].Camera=="camera-a"&&provider.Moves[0].Request.Pan==-0.65);
+        var vectors=new (double Pan,double Tilt,double Zoom)[]{(0,1,0),(0,-1,0),(-1,0,0),(1,0,0),(0,0,1),(0,0,-1)};
+        foreach(var vector in vectors)
+        {
+            var before=provider.Moves.Count;
+            await ptz.MoveAsync(vector.Pan,vector.Tilt,vector.Zoom,0.65);
+            Assert(ptz.State==PtzState.Moving&&provider.Moves.Count==before+1);
+            await ptz.MoveAsync(vector.Pan,vector.Tilt,vector.Zoom,0.65);
+            Assert(provider.Moves.Count==before+1);
+            await ptz.StopAsync();
+            Assert(ptz.State==PtzState.Ready);
+            Assert(provider.Stops[^1].Request.Generation>provider.Moves[^1].Request.Generation);
+        }
+        Assert(provider.Moves.Any(x=>x.Request.Pan<0)&&provider.Moves.Any(x=>x.Request.Pan>0));
+        Assert(provider.Moves.Any(x=>x.Request.Tilt<0)&&provider.Moves.Any(x=>x.Request.Tilt>0));
+        Assert(provider.Moves.Any(x=>x.Request.Zoom<0)&&provider.Moves.Any(x=>x.Request.Zoom>0));
+    }
+
+    private static async Task TestUnsupportedCapabilityAsync()
+    {
+        var provider=new PtzProvider{SupportsPtz=false,SupportsPanTilt=false,SupportsZoom=false};
+        await using var ptz=new PtzCoordinator(provider,new PtzLogger());
+        await ptz.BindAsync(0,"fixed-camera");
+        Assert(ptz.State==PtzState.Unavailable);
+        await ThrowsAsync<InvalidOperationException>(()=>ptz.MoveAsync(1,0,0));
+        Assert(provider.Moves.Count==0);
+    }
+
+    private static async Task TestRapidInputFinalStopAsync()
+    {
+        var provider=new PtzProvider();
+        await using var ptz=new PtzCoordinator(provider,new PtzLogger());
+        await ptz.BindAsync(0,"camera-a");
+        await ptz.MoveAsync(-1,0,0);
+        await ptz.MoveAsync(1,0,0);
+        await ptz.MoveAsync(0,1,0);
         await ptz.StopAsync();
-        Assert(ptz.State==PtzState.Ready&&provider.Stops.Count==1);
-        Assert(provider.Stops[0].Request.Generation>provider.Moves[0].Request.Generation);
+        Assert(provider.Moves.Count==3&&provider.Stops.Count==1&&ptz.State==PtzState.Ready);
+        Assert(provider.Stops[0].Request.Generation>provider.Moves[^1].Request.Generation);
+    }
+
+    private static async Task TestClearAndDisposeStopAsync()
+    {
+        var provider=new PtzProvider();
+        var ptz=new PtzCoordinator(provider,new PtzLogger());
+        await ptz.BindAsync(0,"camera-a");
+        await ptz.MoveAsync(1,0,0);
+        await ptz.ClearAsync();
+        Assert(provider.Stops.Count==1&&ptz.ActiveCameraId is null&&ptz.State==PtzState.Unavailable);
+        await ptz.BindAsync(1,"camera-b");
+        await ptz.MoveAsync(0,0,1);
+        await ptz.DisposeAsync();
+        Assert(provider.Stops.Count==2&&provider.Stops[^1].Camera=="camera-b");
     }
 
     private static async Task TestStopPreemptsPendingMoveAsync()
@@ -103,6 +152,7 @@ internal static class PtzTests
     private sealed class PtzProvider:IPtzProvider
     {
         public bool DelayMove,FailMove;
+        public bool SupportsPtz=true,SupportsPanTilt=true,SupportsZoom=true;
         public string? DelayCapabilityFor;
         public TaskCompletionSource MoveStarted{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource CapabilityStarted{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -117,7 +167,7 @@ internal static class PtzTests
                 CapabilityStarted.TrySetResult();
                 await ReleaseCapability.Task.WaitAsync(cancellationToken);
             }
-            return new(){CameraId=cameraId,Ptz=true,PanTilt=true,Zoom=true,SoftwareSupported=true,HardwareVerified=false};
+            return new(){CameraId=cameraId,Ptz=SupportsPtz,PanTilt=SupportsPanTilt,Zoom=SupportsZoom,SoftwareSupported=true,HardwareVerified=false};
         }
 
         public async Task<PtzCommandAck> MovePtzAsync(string cameraId,PtzMoveRequestDto request,CancellationToken cancellationToken=default)
