@@ -14,7 +14,7 @@
 | Browser URL leakage | Only protocol-required auth request; no full auth URL logging | Browser history/provider policy |
 | Token persistence | Access token memory-only; optional refresh in Credential Manager | Windows account compromise |
 | Refresh-token theft | Profile/purpose isolated protected target | Windows Credential Manager trust |
-| Cross-profile confusion | Profile switch cancels auth/media and clears API/camera/capability state | None known in software boundary |
+| Cross-profile confusion | Profile switch cancels auth/media and clears API/camera/capability state; changing scheme/host/port rotates the profile credential identity and deletes old remembered material | None known in software boundary |
 | Logout semantics | Local access/refresh removal and media cleanup; no global logout claim | Browser SSO can remain |
 | Secret logging | Code/verifier/access/refresh/ID tokens and auth headers redacted/excluded | OS dump memory |
 | Crash-dump exposure | No plaintext token files | OS crash-dump policy external |
@@ -23,8 +23,8 @@
 | TLS handling | Remote VMS/authority HTTPS; normal chain/hostname/revocation validation | Private CA deployment external |
 | Malicious server profile | Existing target validation + safe advertised authority contract | Trusted malicious VMS can point to its configured IdP |
 | Open redirects | Redirect URI generated locally and exact-match validated | IdP redirect registration external |
-| Race conditions | Attempt generation/cancellation fencing + serialized refresh | OS scheduling external |
-| Stale callback | Fresh state + single-use callback + listener disposal | None known in software boundary |
+| Race conditions | Attempt-local cancellation ownership, generation fencing for login/restore/refresh, profile checks and serialized refresh | OS scheduling external |
+| Stale callback | Invalid state/malformed callbacks do not consume the valid attempt; valid callback is atomically single-use; listener is disposed on completion/cancel/timeout | None known in software boundary |
 
 ## Result
 
