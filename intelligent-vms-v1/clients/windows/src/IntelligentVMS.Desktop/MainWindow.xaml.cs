@@ -11,9 +11,11 @@ public partial class MainWindow : Window
     private readonly IClientLogger _logger;
     private readonly JsonProfileStore _profiles=new();
     private readonly DesktopSession _session;
+    private readonly OidcAuthenticationManager _oidc;
     private readonly VmsApiClient _api;
     private readonly ObservableCollection<ServerProfile> _profileItems=[];
     private ServerProfile? _activeProfile;
+    private AuthenticationCapabilities? _authCapabilities;
     private ServerCapabilities? _capabilities;
     private CameraInfo? _selectedCamera;
     private LiveSessionController? _live;
@@ -21,7 +23,9 @@ public partial class MainWindow : Window
 
     public MainWindow(IClientLogger logger)
     {
-        InitializeComponent();_logger=logger;_session=new DesktopSession(new WindowsCredentialStore(),logger);_api=new VmsApiClient(()=>_session.AccessToken);
+        InitializeComponent();_logger=logger;_session=new DesktopSession(new WindowsCredentialStore(),logger);
+        _oidc=new OidcAuthenticationManager(_session,new WindowsCredentialStore("oidc-refresh"),logger);
+        _api=new VmsApiClient(()=>_session.AccessToken,refreshProvider:TryRefreshCurrentAsync);
         Loaded+=MainWindow_Loaded;Closing+=MainWindow_Closing;SchemeCombo.SelectedIndex=0;
     }
 
@@ -39,7 +43,8 @@ public partial class MainWindow : Window
             await EndSessionForServerChangeAsync();
         _activeProfile=p;DisplayNameBox.Text=p.DisplayName;SelectScheme(p.Scheme);HostBox.Text=p.Host;PortBox.Text=p.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
         _api.Configure(p);_connectionState=ServerConnectionState.Disconnected;UpdateServerState();
-        if(await _session.TryRestoreAsync(p.Id,ct=>_api.GetSessionAsync(ct)))await RefreshServerStateAsync();
+        await LoadAuthenticationCapabilitiesAsync();
+        if(await TryRestoreCurrentSessionAsync())await RefreshServerStateAsync();
     }
     private async void NewProfile_Click(object sender,RoutedEventArgs e)
     {
@@ -60,16 +65,53 @@ public partial class MainWindow : Window
     }
     private async void SignIn_Click(object sender,RoutedEventArgs e)
     {
-        if(_activeProfile is null){ServerStateText.Text="Configure and save a VMS server profile first.";return;}
-        try{await StopLiveAsync();await _session.AuthenticateAsync(_activeProfile.Id,TokenBox.Password,RememberCheck.IsChecked==true,ct=>_api.GetSessionAsync(ct));TokenBox.Clear();LogoutButton.IsEnabled=true;await RefreshServerStateAsync();}
-        catch(SessionExpiredException){TokenBox.Clear();ServerStateText.Text="Your session is invalid or expired. Sign in again.";}
-        catch(Exception ex){TokenBox.Clear();_logger.LogError("auth","desktop sign-in failed",ex);ServerStateText.Text="Unable to authenticate with the VMS server.";}
+        if(_activeProfile is null||_authCapabilities?.ManualTokenLogin!=true){AuthStatusText.Text="This server does not allow access-token sign-in.";return;}
+        try
+        {
+            await StopLiveAsync();SetAuthenticatingUi(true,"Signing in…");
+            await _session.AuthenticateAsync(_activeProfile.Id,TokenBox.Password,RememberCheck.IsChecked==true,ct=>_api.GetSessionWithoutRefreshAsync(ct));
+            TokenBox.Clear();LogoutButton.IsEnabled=true;AuthStatusText.Text="Signed in.";await RefreshServerStateAsync();
+        }
+        catch(SessionExpiredException){TokenBox.Clear();AuthStatusText.Text="Your session is invalid or expired. Sign in again.";}
+        catch(Exception ex){TokenBox.Clear();_logger.LogError("auth","desktop sign-in failed",ex);AuthStatusText.Text="Unable to authenticate with the VMS server.";}
+        finally{SetAuthenticatingUi(false,null);}
     }
-    private async void Logout_Click(object sender,RoutedEventArgs e){await StopLiveAsync();await _session.LogoutAsync();ClearAuthorizedState();_connectionState=ServerConnectionState.AuthenticationRequired;UpdateServerState();}
+    private async void OrganizationSignIn_Click(object sender,RoutedEventArgs e)
+    {
+        if(_activeProfile is null||_authCapabilities?.Oidc.Enabled!=true){AuthStatusText.Text="Organization sign-in is not available on this server.";return;}
+        try
+        {
+            await StopLiveAsync();SetAuthenticatingUi(true,"Your browser is opening for sign-in…");
+            var result=await _oidc.SignInAsync(_activeProfile,_authCapabilities.Oidc,RememberCheck.IsChecked==true,ct=>_api.GetSessionWithoutRefreshAsync(ct));
+            AuthStatusText.Text=result.Remembered?"Signed in. This session can be restored securely.":"Signed in.";
+            LogoutButton.IsEnabled=true;await RefreshServerStateAsync();
+        }
+        catch(OperationCanceledException){AuthStatusText.Text="Authentication was cancelled.";}
+        catch(AuthenticationFlowException ex){AuthStatusText.Text=FriendlyAuthError(ex.Category);}
+        catch(Exception ex){_logger.LogError("auth","organization sign-in failed",ex);AuthStatusText.Text="Unable to complete organization sign-in.";}
+        finally{SetAuthenticatingUi(false,null);RefreshDiagnostics();}
+    }
+    private void CancelAuth_Click(object sender,RoutedEventArgs e)
+    {
+        _oidc.CancelActiveAttempt();AuthStatusText.Text="Cancelling authentication…";
+    }
+    private async void Logout_Click(object sender,RoutedEventArgs e)
+    {
+        await StopLiveAsync();
+        if(_activeProfile is not null)await _oidc.LogoutAsync(_activeProfile.Id);
+        await _session.LogoutAsync();ClearAuthorizedState();_connectionState=ServerConnectionState.AuthenticationRequired;
+        AuthStatusText.Text="Signed out.";UpdateServerState();
+    }
     private async Task RefreshServerStateAsync()
     {
         try{_connectionState=ServerConnectionState.Connected;_capabilities=await _api.GetCapabilitiesAsync();PopulateCameraTree(await _api.GetCamerasAsync());EventsTab.Visibility=_capabilities.EventHistory?Visibility.Visible:Visibility.Collapsed;LogoutButton.IsEnabled=true;UpdateServerState();}
-        catch(SessionExpiredException){await StopLiveAsync();await _session.MarkExpiredAsync();ClearAuthorizedState();_connectionState=ServerConnectionState.AuthenticationRequired;ServerStateText.Text="Your session has expired. Sign in again.";}
+        catch(SessionExpiredException)
+        {
+            await StopLiveAsync();
+            if(_activeProfile is not null)await _oidc.InvalidateAsync(_activeProfile.Id);
+            await _session.MarkExpiredAsync();ClearAuthorizedState();_connectionState=ServerConnectionState.AuthenticationRequired;
+            ServerStateText.Text="Your session has expired. Sign in again.";AuthStatusText.Text="Session expired. Sign in again.";
+        }
         catch(IncompatibleServerException){_connectionState=ServerConnectionState.Incompatible;ServerStateText.Text="The VMS server is incompatible with this client foundation.";}
         catch(Exception ex){_logger.LogError("server","server refresh failed",ex);_connectionState=ServerConnectionState.Unreachable;ServerStateText.Text="Unable to reach VMS server.";}
     }
@@ -85,7 +127,13 @@ public partial class MainWindow : Window
     {
         if(_selectedCamera is null||_activeProfile is null||StreamRoleCombo.SelectedItem is not string role){LiveSelectionText.Text="Select an authorized camera and stream role.";return;}
         try{_live??=new LiveSessionController(_api,LiveMedia,_activeProfile,_logger);await _live.StartAsync(_selectedCamera.Id,role);LiveSelectionText.Text=$"{_selectedCamera.Name} · {role.ToUpperInvariant()}";RefreshDiagnostics();}
-        catch(SessionExpiredException){await StopLiveAsync();await _session.MarkExpiredAsync();ClearAuthorizedState();_connectionState=ServerConnectionState.AuthenticationRequired;LiveSelectionText.Text="Your session has expired. Sign in again.";}
+        catch(SessionExpiredException)
+        {
+            await StopLiveAsync();
+            if(_activeProfile is not null)await _oidc.InvalidateAsync(_activeProfile.Id);
+            await _session.MarkExpiredAsync();ClearAuthorizedState();_connectionState=ServerConnectionState.AuthenticationRequired;
+            LiveSelectionText.Text="Your session has expired. Sign in again.";AuthStatusText.Text="Session expired. Sign in again.";
+        }
         catch(Exception ex){_logger.LogError("live","live view start failed",ex);LiveSelectionText.Text="Live view is unavailable for the selected camera.";}
     }
     private async void StopLive_Click(object sender,RoutedEventArgs e)=>await StopLiveAsync();
@@ -94,14 +142,85 @@ public partial class MainWindow : Window
     {
         var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IntelligentVMS-Diagnostics");var path=await DiagnosticsService.ExportAsync(DiagnosticsService.Build(_activeProfile,_connectionState,_capabilities,_live?.State??"IDLE"),folder);DiagnosticsText.Text=$"Redacted diagnostics exported to:{Environment.NewLine}{path}";
     }
-    private void MainWindow_Closing(object? sender,System.ComponentModel.CancelEventArgs e){try{_live?.StopAsync().GetAwaiter().GetResult();}catch{} _api.Dispose();}
+    private void MainWindow_Closing(object? sender,System.ComponentModel.CancelEventArgs e)
+    {
+        _oidc.CancelActiveAttempt();
+        try{_live?.StopAsync().GetAwaiter().GetResult();}catch{}
+        try{_oidc.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}
+        _api.Dispose();
+    }
     private async Task EndSessionForServerChangeAsync()
     {
-        await StopLiveAsync();
+        await StopLiveAsync();_oidc.Deactivate();
         if(_session.State!=DesktopSessionState.SignedOut)await _session.LogoutAsync();
-        ClearAuthorizedState();
-        _connectionState=ServerConnectionState.Disconnected;
+        _authCapabilities=null;ClearAuthorizedState();_connectionState=ServerConnectionState.Disconnected;
     }
+    private async Task LoadAuthenticationCapabilitiesAsync()
+    {
+        try
+        {
+            _authCapabilities=await _api.GetAuthenticationCapabilitiesAsync();
+            ApplyAuthenticationUx();
+        }
+        catch(Exception ex)
+        {
+            _authCapabilities=null;_connectionState=ServerConnectionState.Incompatible;
+            _logger.LogError("auth","authentication capability negotiation failed",ex);
+            AuthMethodText.Text="Authentication capability negotiation failed.";
+            ManualSignInButton.Visibility=Visibility.Collapsed;TokenBox.Visibility=Visibility.Collapsed;
+            OrganizationSignInButton.Visibility=Visibility.Collapsed;
+        }
+    }
+    private async Task<bool> TryRestoreCurrentSessionAsync()
+    {
+        if(_activeProfile is null||_authCapabilities is null)return false;
+        if(_authCapabilities.Oidc.Enabled)
+        {
+            var restored=await _oidc.TryRestoreAsync(_activeProfile,_authCapabilities.Oidc,ct=>_api.GetSessionWithoutRefreshAsync(ct));
+            if(restored){AuthStatusText.Text="Remembered organization session restored.";return true;}
+            if(_oidc.State==AuthenticationUxState.OfflineWithRestorableSession)
+                AuthStatusText.Text="Saved sign-in is available, but the identity provider is currently unreachable.";
+        }
+        if(_authCapabilities.ManualTokenLogin &&
+           await _session.TryRestoreAsync(_activeProfile.Id,ct=>_api.GetSessionWithoutRefreshAsync(ct)))
+        {
+            AuthStatusText.Text="Remembered session restored.";return true;
+        }
+        return false;
+    }
+    private Task<bool> TryRefreshCurrentAsync(CancellationToken cancellationToken)
+    {
+        if(_activeProfile is null||_authCapabilities?.Oidc.Enabled!=true)return Task.FromResult(false);
+        return _oidc.TryRefreshAsync(cancellationToken);
+    }
+    private void ApplyAuthenticationUx()
+    {
+        var caps=_authCapabilities;
+        if(caps is null)return;
+        ManualSignInButton.Visibility=caps.ManualTokenLogin?Visibility.Visible:Visibility.Collapsed;
+        TokenBox.Visibility=caps.ManualTokenLogin?Visibility.Visible:Visibility.Collapsed;
+        OrganizationSignInButton.Visibility=caps.Oidc.Enabled?Visibility.Visible:Visibility.Collapsed;
+        RememberCheck.Visibility=caps.RememberSession?Visibility.Visible:Visibility.Collapsed;
+        if(caps.Oidc.Enabled)AuthMethodText.Text=caps.Oidc.Required?"Organization sign-in is required.":"Organization sign-in is available.";
+        else if(caps.ManualTokenLogin)AuthMethodText.Text="Sign in with an existing VMS access token.";
+        else AuthMethodText.Text=caps.Oidc.Required?"This server requires organization sign-in but is not configured for the desktop client.":"No supported authentication method is advertised.";
+    }
+    private void SetAuthenticatingUi(bool active,string? message)
+    {
+        OrganizationSignInButton.IsEnabled=!active;ManualSignInButton.IsEnabled=!active;ProfileCombo.IsEnabled=!active;
+        CancelAuthButton.Visibility=active?Visibility.Visible:Visibility.Collapsed;
+        if(message is not null)AuthStatusText.Text=message;
+    }
+    private static string FriendlyAuthError(string category)=>category switch
+    {
+        "cancelled"=>"Authentication was cancelled.",
+        "callback_timeout"=>"Authentication timed out. Try again.",
+        "browser_launch"=>"Unable to open the system browser.",
+        "identity_unreachable"=>"Unable to contact the identity provider.",
+        "state_mismatch" or "callback_replay" or "nonce_mismatch"=>"Authentication response could not be verified.",
+        "oidc_unavailable" or "oidc_configuration"=>"This server is not configured for organization sign-in.",
+        _=>"Authentication could not be completed."
+    };
     private void ClearAuthorizedState()
     {
         _live=null;_selectedCamera=null;CameraTree.Items.Clear();StreamRoleCombo.ItemsSource=null;_capabilities=null;
