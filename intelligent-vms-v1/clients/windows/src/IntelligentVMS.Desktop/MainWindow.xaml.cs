@@ -476,10 +476,10 @@ public partial class MainWindow:Window
     {
         var ptz=_ptz;var caps=ptz?.Capabilities;
         var activeLive=_grid?.Tiles.FirstOrDefault(x=>x.Index==_grid.SelectedTile)?.State==LiveTileState.Live&&MainTabs.SelectedItem==LiveTab;
-        var ready=activeLive&&ptz?.State is PtzState.Ready or PtzState.Moving;
+        var ready=activeLive&&ptz?.State is (PtzState.Ready or PtzState.Moving);
         PtzUpButton.IsEnabled=PtzDownButton.IsEnabled=PtzLeftButton.IsEnabled=PtzRightButton.IsEnabled=ready&&caps?.PanTilt==true;
         PtzZoomInButton.IsEnabled=PtzZoomOutButton.IsEnabled=ready&&caps?.Zoom==true;
-        PtzStopButton.IsEnabled=activeLive&&ptz?.State is PtzState.Moving or PtzState.Stopping;
+        PtzStopButton.IsEnabled=activeLive&&ptz?.State is (PtzState.Moving or PtzState.Stopping);
         PtzSpeedCombo.IsEnabled=ready&&(caps?.PanTilt==true||caps?.Zoom==true);
         PtzStatusText.Text=ptz is null?"PTZ unavailable":ptz.State switch{
             PtzState.Ready=>$"Ready · pan/tilt {(caps?.PanTilt==true?"yes":"no")} · optical zoom {(caps?.Zoom==true?"yes":"no")}",
@@ -684,6 +684,7 @@ public partial class MainWindow:Window
 
     private async Task HandleSessionExpiredAsync()
     {
+        await DeactivatePtzAsync();
         await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);
         if(_activeProfile is not null)await _oidc.InvalidateAsync(_activeProfile.Id);
@@ -702,6 +703,7 @@ public partial class MainWindow:Window
     private void MainWindow_Closing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
         _oidc.CancelActiveAttempt();
+        try{DeactivatePtzAsync().GetAwaiter().GetResult();}catch{}
         try{DeactivatePlaybackAsync().GetAwaiter().GetResult();}catch{}
         try{DeactivateGridAsync(true).GetAwaiter().GetResult();}catch{}
         try{PlaybackMedia.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}
@@ -712,6 +714,7 @@ public partial class MainWindow:Window
 
     private async Task EndSessionForServerChangeAsync()
     {
+        await DeactivatePtzAsync();
         await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);_oidc.Deactivate();
         if(_session.State!=DesktopSessionState.SignedOut)await _session.LogoutAsync();
