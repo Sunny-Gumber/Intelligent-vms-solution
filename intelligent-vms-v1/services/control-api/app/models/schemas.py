@@ -1,5 +1,6 @@
 from datetime import datetime
 import math
+from uuid import UUID
 from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -456,6 +457,7 @@ class PtzMoveRequest(BaseModel):
     tilt: float = Field(default=0.0, ge=-1.0, le=1.0)
     zoom: float = Field(default=0.0, ge=-1.0, le=1.0)
     generation: int = Field(ge=1, le=2147483647)
+    context_id: UUID
 
     @field_validator("pan", "tilt", "zoom")
     @classmethod
@@ -474,9 +476,10 @@ class PtzMoveRequest(BaseModel):
 
 
 class PtzStopRequest(BaseModel):
-    """Carry a monotonic client generation for stop-priority fencing."""
+    """Carry a PTZ context plus monotonic generation for stop-priority fencing."""
 
     generation: int = Field(ge=1, le=2147483647)
+    context_id: UUID
 
 
 class PtzCommandRead(BaseModel):
