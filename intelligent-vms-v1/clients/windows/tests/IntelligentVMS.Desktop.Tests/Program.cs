@@ -5,7 +5,7 @@ using IntelligentVMS.Desktop;
 
 var tests=new List<(string,Func<Task>)>{
 ("server URL validation",TestServerProfiles),("profile persistence/corruption",TestProfiles),("credential storage",TestCredentials),
-("token redaction",TestRedaction),("OIDC PKCE security contracts",OidcSecurityTests.RunAllAsync),("authentication transitions",TestSession),("remembered-session failure policy",TestRememberedSessionFailures),("401 expiry",TestUnauthorized),
+("token redaction",TestRedaction),("OIDC PKCE security contracts",OidcSecurityTests.RunAllAsync),("multi-camera live grid",LiveGridTests.RunAllAsync),("authentication transitions",TestSession),("remembered-session failure policy",TestRememberedSessionFailures),("401 expiry",TestUnauthorized),
 ("capability/camera parsing",TestApiParsing),("camera tree",TestCameraTree),("live API auth contract",TestLiveApiContract),("live grant/session cleanup",TestLive),("WHEP renderer contract",TestRendererContract),
 ("TLS/media policy",TestTls),("diagnostics",TestDiagnostics),("package isolation",TestPackaging),("interpolation guard",TestInterpolationGuard)};
 var failures=0;
@@ -121,7 +121,7 @@ sealed class StubHandler(Func<HttpRequestMessage,HttpResponseMessage> response):
 sealed class MemoryCredentials:ICredentialStore{public string? Value;public Task SaveAsync(Guid p,string t,CancellationToken c=default){Value=t;return Task.CompletedTask;}public Task<string?> LoadAsync(Guid p,CancellationToken c=default)=>Task.FromResult(Value);public Task DeleteAsync(Guid p,CancellationToken c=default){Value=null;return Task.CompletedTask;}}
 sealed class MemoryLogger:IClientLogger{public void Info(string s,string m){}public void Warning(string s,string m){}public void LogError(string s,string m,Exception? e=null){}}
 sealed class FakeLiveProvider:ILiveAccessProvider{public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken c=default)=>Task.FromResult(new LiveAccessGrant{CameraId=cameraId,StreamRole=role,Path="path",WebRtcUrl=$"https://media.example/{cameraId}",AccessToken="short-lived",ExpiresAt=DateTimeOffset.UtcNow.AddMinutes(1)});}
-sealed class FakeRenderer:ILiveMediaRenderer{public int Starts,Stops;public string State{get;private set;}="IDLE";public Task StartAsync(LiveAccessGrant g,CancellationToken c=default){Starts++;State="LIVE";return Task.CompletedTask;}public Task StopAsync(CancellationToken c=default){Stops++;State="IDLE";return Task.CompletedTask;}}
+sealed class FakeRenderer:ILiveMediaRenderer{public int Starts,Stops;public string State{get;private set;}="IDLE";public event EventHandler<LiveRendererStateChangedEventArgs>? StateChanged;public Task StartAsync(LiveAccessGrant g,CancellationToken c=default){Starts++;State="LIVE";StateChanged?.Invoke(this,new LiveRendererStateChangedEventArgs(State));return Task.CompletedTask;}public Task StopAsync(CancellationToken c=default){Stops++;State="IDLE";StateChanged?.Invoke(this,new LiveRendererStateChangedEventArgs(State));return Task.CompletedTask;}}
 
 
 sealed class RecordingHandler(Func<HttpRequestMessage,HttpResponseMessage> response):HttpMessageHandler{
