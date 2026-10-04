@@ -145,9 +145,23 @@ function Install-Server {
   if($code -ne 0){throw "Accepted Windows server installer failed with exit $code."}
   & (Join-Path $PayloadRoot "server\deploy\windows\Vms-Windows.ps1") -Action Health
 }
+function Merge-ComponentOwnership([string]$Existing,[string]$Requested){
+  if([string]::IsNullOrWhiteSpace($Existing)){return $Requested}
+  if($Existing -eq $Requested){return $Requested}
+  if($Existing -eq "Both" -or $Requested -eq "Both"){return "Both"}
+  if($Existing -in @("Server","Client") -and $Requested -in @("Server","Client")){return "Both"}
+  throw "Existing installer component ownership is invalid; repair manually before continuing."
+}
 function Save-State {
   New-Item -ItemType Directory -Force -Path $ServerRoot|Out-Null
-  $obj=[ordered]@{version=$Version;commit=$Commit;components=$Components;recording_root=if($Components -in @("Server","Both")){$RecordingRoot}else{""};updated_utc=[DateTimeOffset]::UtcNow.ToString("O")}
+  $state=Get-InstalledState
+  $owned=if($state){Merge-ComponentOwnership ([string]$state.components) $Components}else{$Components}
+  $recordingRootToStore=""
+  if($owned -in @("Server","Both")){
+    if($Components -in @("Server","Both")){$recordingRootToStore=$RecordingRoot}
+    elseif($state -and ($state.PSObject.Properties.Name -contains "recording_root")){$recordingRootToStore=[string]$state.recording_root}
+  }
+  $obj=[ordered]@{version=$Version;commit=$Commit;components=$owned;recording_root=$recordingRootToStore;updated_utc=[DateTimeOffset]::UtcNow.ToString("O")}
   $obj|ConvertTo-Json|Set-Content -LiteralPath $StateFile -Encoding UTF8
 }
 function Collect-FailureDiagnostics([string]$Stage){
