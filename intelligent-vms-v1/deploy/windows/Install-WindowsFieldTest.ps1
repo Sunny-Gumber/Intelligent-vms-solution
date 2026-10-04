@@ -184,7 +184,8 @@ foreach($artifact in @($serviceManagerPyd,$win32ServicePyd,$win32EventPyd,$pywin
     if($null -eq $artifact){ throw "Required pywin32 service runtime artifact missing." }
 }
 
-Invoke-Checked $venvPython @("-c",@'
+$layoutProbe = Join-Path $VenvRoot "validate-pywin32-layout.py"
+@'
 import importlib.util
 from pathlib import Path
 import sysconfig
@@ -197,7 +198,12 @@ sp = Path(sysconfig.get_paths()["purelib"])
 print(f"pywin32_layout pywin32.pth={sp / 'pywin32.pth'}")
 print(f"pywin32_layout win32={sp / 'win32'}")
 print(f"pywin32_layout win32_lib={sp / 'win32' / 'lib'}")
-'@)
+'@ | Set-Content -LiteralPath $layoutProbe -Encoding ascii
+try {
+    Invoke-Checked $venvPython @($layoutProbe)
+} finally {
+    Remove-Item -LiteralPath $layoutProbe -Force -ErrorAction SilentlyContinue
+}
 
 # Copy the CPython standard runtime into the VMS-owned service environment.
 & robocopy.exe $baseLib (Join-Path $VenvRoot "Lib") /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD site-packages __pycache__ | Out-Null
