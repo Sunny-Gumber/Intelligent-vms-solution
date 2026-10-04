@@ -49,7 +49,8 @@ jobs:
         run: |
           choco install nsis --version=3.13.0 -y --no-progress
           if($LASTEXITCODE -ne 0){throw "Pinned NSIS installation failed"}
-          & "$env:ProgramFiles(x86)\NSIS\makensis.exe" /VERSION
+          $makensis=Join-Path ([Environment]::GetEnvironmentVariable("ProgramFiles(x86)")) "NSIS\makensis.exe"
+          & $makensis /VERSION
       - name: Static installer contract tests
         shell: pwsh
         run: |
