@@ -15,10 +15,12 @@ internal static class OidcSecurityTests
         await TestLibraryGeneratesFreshStateNonceAndS256Async();
         TestCallbackStateAndReplay();
         await TestLoopbackListenerAsync();
+        await TestLoopbackTimeoutAndCancellationAsync();
         TestCapabilityValidation();
         await TestApiAuthCapabilityIsUnauthenticatedAsync();
         await TestBoundedRefreshRetryAsync();
         await TestCredentialPurposeIsolationAsync();
+        await TestCredentialCapacityFailureAsync();
         TestOidcSecretRedaction();
     }
 
@@ -91,6 +93,26 @@ internal static class OidcSecurityTests
         Assert(callback.Contains("code=short-code",StringComparison.Ordinal));
     }
 
+
+    private static async Task TestLoopbackTimeoutAndCancellationAsync()
+    {
+        await using(var timeoutListener=LoopbackCallbackListener.Create())
+        {
+            try
+            {
+                await timeoutListener.WaitAsync("never-arrives",TimeSpan.FromMilliseconds(50),CancellationToken.None);
+                throw new InvalidOperationException("Expected callback timeout.");
+            }
+            catch(AuthenticationFlowException ex){Assert(ex.Category=="callback_timeout");}
+        }
+        await using(var cancelListener=LoopbackCallbackListener.Create())
+        {
+            using var cancelled=new CancellationTokenSource();
+            cancelled.Cancel();
+            await ThrowsAsync<OperationCanceledException>(()=>cancelListener.WaitAsync("cancelled",TimeSpan.FromSeconds(5),cancelled.Token));
+        }
+    }
+
     private static void TestCapabilityValidation()
     {
         var valid=new OidcCapability{Enabled=true,Required=true,Authority="https://identity.example.test/",ClientId="desktop",Scopes=["openid","offline_access"],Callback="loopback",PkceMethods=["S256"]};
@@ -150,6 +172,15 @@ internal static class OidcSecurityTests
             await manual.DeleteAsync(id);
             await oidc.DeleteAsync(id);
         }
+    }
+
+
+    private static async Task TestCredentialCapacityFailureAsync()
+    {
+        if(!OperatingSystem.IsWindows())return;
+        var store=new WindowsCredentialStore("oidc-refresh");
+        var oversized=new string('x',1300);
+        await ThrowsAsync<InvalidOperationException>(()=>store.SaveAsync(Guid.NewGuid(),oversized));
     }
 
     private static void TestOidcSecretRedaction()
