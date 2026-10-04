@@ -48,6 +48,7 @@ public partial class MainWindow:Window
             tile.ClearRequested+=async (_,index)=>await ClearLiveTileAsync(index);
             tile.FocusRequested+=async (_,index)=>await ToggleFocusAsync(index);
             _tileViews.Add(tile);
+            LiveGridHost.Children.Add(tile);
         }
     }
 
@@ -288,22 +289,18 @@ public partial class MainWindow:Window
 
     private void RenderLiveGrid()
     {
-        LiveGridHost.Children.Clear();LiveGridHost.RowDefinitions.Clear();LiveGridHost.ColumnDefinitions.Clear();
         var grid=_grid;
         var focused=grid?.FocusedTile;
         var layout=grid?.Layout??LiveGridLayout.FromCount(1);
-        var visible=focused is int focus?[focus]:Enumerable.Range(0,layout.Count).ToArray();
-        var rows=focused is null?layout.Rows:1;
-        var columns=focused is null?layout.Columns:1;
-        for(var r=0;r<rows;r++)LiveGridHost.RowDefinitions.Add(new RowDefinition());
-        for(var col=0;col<columns;col++)LiveGridHost.ColumnDefinitions.Add(new ColumnDefinition());
-        for(var position=0;position<visible.Length;position++)
+        var visible=focused is int focus?new HashSet<int>{focus}:Enumerable.Range(0,layout.Count).ToHashSet();
+        LiveGridHost.Rows=focused is null?layout.Rows:1;
+        LiveGridHost.Columns=focused is null?layout.Columns:1;
+        for(var index=0;index<_tileViews.Count;index++)
         {
-            var index=visible[position];var tile=_tileViews[index];
+            var tile=_tileViews[index];
+            tile.Visibility=visible.Contains(index)?Visibility.Visible:Visibility.Collapsed;
             var model=grid?.Tiles.FirstOrDefault(x=>x.Index==index);
             tile.Render(model,grid?.SelectedTile==index,focused==index);
-            Grid.SetRow(tile,position/columns);Grid.SetColumn(tile,position%columns);
-            LiveGridHost.Children.Add(tile);
         }
         var active=grid?.ActiveTileCount??0;var connecting=grid?.ConnectingTileCount??0;var failed=grid?.FailedTileCount??0;
         GridStatusText.Text=$"{(focused is null?$"{layout.Count}-view":$"Focus tile {focused.Value+1}")} · {active} live · {connecting} connecting · {failed} failed";
