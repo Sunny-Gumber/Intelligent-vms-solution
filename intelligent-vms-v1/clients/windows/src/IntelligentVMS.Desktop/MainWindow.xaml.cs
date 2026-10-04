@@ -54,7 +54,22 @@ public partial class MainWindow : Window
     }
     private async void SaveProfile_Click(object sender,RoutedEventArgs e)
     {
-        if(!TryBuildProfile(out var p,out var error)){SettingsMessage.Text=error;return;}var old=_profileItems.FirstOrDefault(x=>x.Id==p.Id);if(old is not null)_profileItems.Remove(old);_profileItems.Add(p);await _profiles.SaveAsync(_profileItems);ProfileCombo.SelectedItem=p;SettingsMessage.Text="Client-local server profile saved.";
+        if(!TryBuildProfile(out var p,out var error)){SettingsMessage.Text=error;return;}
+        var previous=_activeProfile;
+        if(previous is not null && !ServerProfileIdentity.SameCredentialOrigin(previous,p))
+        {
+            await EndSessionForServerChangeAsync();
+            await _session.ForgetRememberedAsync(previous.Id);
+            await _oidc.ForgetRememberedAsync(previous.Id);
+            p=p with { Id=Guid.NewGuid() };
+        }
+        var old=previous is null?null:_profileItems.FirstOrDefault(x=>x.Id==previous.Id);
+        if(old is not null)_profileItems.Remove(old);
+        _profileItems.Add(p);
+        await _profiles.SaveAsync(_profileItems);
+        _activeProfile=null;
+        ProfileCombo.SelectedItem=p;
+        SettingsMessage.Text="Client-local server profile saved.";
     }
     private async void TestConnection_Click(object sender,RoutedEventArgs e)
     {
@@ -68,7 +83,7 @@ public partial class MainWindow : Window
         if(_activeProfile is null||_authCapabilities?.ManualTokenLogin!=true){AuthStatusText.Text="This server does not allow access-token sign-in.";return;}
         try
         {
-            await StopLiveAsync();SetAuthenticatingUi(true,"Signing in…");
+            SetAuthenticatingUi(true,"Signing in…");await StopLiveAsync();
             await _session.AuthenticateAsync(_activeProfile.Id,TokenBox.Password,RememberCheck.IsChecked==true,ct=>_api.GetSessionWithoutRefreshAsync(ct));
             TokenBox.Clear();LogoutButton.IsEnabled=true;AuthStatusText.Text="Signed in.";await RefreshServerStateAsync();
         }
@@ -81,7 +96,7 @@ public partial class MainWindow : Window
         if(_activeProfile is null||_authCapabilities?.Oidc.Enabled!=true){AuthStatusText.Text="Organization sign-in is not available on this server.";return;}
         try
         {
-            await StopLiveAsync();SetAuthenticatingUi(true,"Your browser is opening for sign-in…");
+            SetAuthenticatingUi(true,"Your browser is opening for sign-in…");await StopLiveAsync();
             var result=await _oidc.SignInAsync(_activeProfile,_authCapabilities.Oidc,RememberCheck.IsChecked==true,ct=>_api.GetSessionWithoutRefreshAsync(ct));
             AuthStatusText.Text=result.Remembered?"Signed in. This session can be restored securely.":"Signed in.";
             LogoutButton.IsEnabled=true;await RefreshServerStateAsync();
@@ -140,7 +155,7 @@ public partial class MainWindow : Window
     private async Task StopLiveAsync(){if(_live is not null)await _live.StopAsync();RefreshDiagnostics();}
     private async void ExportDiagnostics_Click(object sender,RoutedEventArgs e)
     {
-        var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IntelligentVMS-Diagnostics");var path=await DiagnosticsService.ExportAsync(DiagnosticsService.Build(_activeProfile,_connectionState,_capabilities,_live?.State??"IDLE"),folder);DiagnosticsText.Text=$"Redacted diagnostics exported to:{Environment.NewLine}{path}";
+        var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IntelligentVMS-Diagnostics");var path=await DiagnosticsService.ExportAsync(BuildDiagnostics(),folder);DiagnosticsText.Text=$"Redacted diagnostics exported to:{Environment.NewLine}{path}";
     }
     private void MainWindow_Closing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
@@ -232,6 +247,23 @@ public partial class MainWindow : Window
     }
     private void SelectScheme(string scheme)=>SchemeCombo.SelectedIndex=scheme=="http"?1:0;
     private void UpdateServerState(){ServerStateText.Text=$"{_activeProfile?.DisplayName??"No server"} · {_connectionState}";RefreshDiagnostics();}
-    private void RefreshDiagnostics(){var d=DiagnosticsService.Build(_activeProfile,_connectionState,_capabilities,_live?.State??"IDLE");DiagnosticsText.Text=$"Version: {d.ApplicationVersion}\nOS: {d.OsVersion}\nArchitecture: {d.Architecture}\nServer: {d.ServerAddress}\nConnection: {d.ConnectionState}\nServer profile: {d.DeploymentProfile}\nMedia: {d.MediaState}\nLogs: {d.LogLocation}";}
+    private ClientDiagnostics BuildDiagnostics()
+    {
+        var oidcEnabled=_authCapabilities?.Oidc.Enabled==true;
+        var authMode=oidcEnabled?"OIDC":_authCapabilities?.ManualTokenLogin==true?"access-token":"none";
+        var authState=oidcEnabled?_oidc.State.ToString():_session.State.ToString();
+        var issuerHost="not configured";
+        if(oidcEnabled && Uri.TryCreate(_authCapabilities!.Oidc.Authority,UriKind.Absolute,out var issuer))issuerHost=issuer.Host;
+        var remembered=_oidc.RememberedSession||_session.RememberedSession;
+        var credentialStatus=remembered?"protected remembered material present":"no remembered material";
+        return DiagnosticsService.Build(_activeProfile,_connectionState,_capabilities,_live?.State??"IDLE",
+            authMode,authState,remembered,_oidc.TokenExpiry,issuerHost,_oidc.LastErrorCategory,
+            oidcEnabled?OidcAuthenticationManager.CallbackMechanism:"none",credentialStatus);
+    }
+    private void RefreshDiagnostics()
+    {
+        var d=BuildDiagnostics();
+        DiagnosticsText.Text=$"Version: {d.ApplicationVersion}\nOS: {d.OsVersion}\nArchitecture: {d.Architecture}\nServer: {d.ServerAddress}\nConnection: {d.ConnectionState}\nServer profile: {d.DeploymentProfile}\nMedia: {d.MediaState}\nAuthentication: {d.AuthenticationMode} / {d.AuthenticationState}\nRemembered: {d.RememberedSession}\nToken expiry: {d.TokenExpiry}\nOIDC issuer host: {d.OidcIssuerHost}\nLast auth error: {d.LastAuthErrorCategory}\nCallback: {d.CallbackMechanism}\nCredential store: {d.CredentialStoreStatus}\nLogs: {d.LogLocation}";
+    }
     private static string FriendlyConnection(ServerConnectionState s)=>s switch{ServerConnectionState.Connected=>"VMS server is reachable.",ServerConnectionState.AuthenticationRequired=>"VMS server is reachable; authentication is required.",ServerConnectionState.TlsError=>"TLS/certificate validation failed. Trust must be fixed; validation is not bypassed.",ServerConnectionState.Incompatible=>"Server capability contract is incompatible.",_=>"Unable to reach VMS server."};
 }
