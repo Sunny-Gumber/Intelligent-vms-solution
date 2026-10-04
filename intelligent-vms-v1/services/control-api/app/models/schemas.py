@@ -261,6 +261,14 @@ class EventRead(EventIn):
     ingested_at: datetime | None = None
 
 
+
+class EventHistoryPage(BaseModel):
+    """Serialize one bounded deterministic page of authorized event history."""
+
+    items: list[EventRead] = Field(default_factory=list)
+    next_before: datetime | None = None
+    next_before_id: str | None = None
+
 class CameraHealthStateRead(BaseModel):
     """Serialize persisted camera health and transition state.
 
