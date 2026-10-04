@@ -12,6 +12,7 @@ from app.db.session import SessionLocal
 from app.models.entities import CameraEntity, CameraHealthStateEntity, ServiceStateEntity
 from app.models.placement import InfrastructureNodeEntity
 from app.services.outbox import enqueue_event
+from app.services.local_event_store import persist_local_event_once
 from app.services.mediamtx import mediamtx
 from app.services.node_media import node_clients
 
@@ -419,8 +420,12 @@ class HealthMonitor:
                             },
                         }
                         # Same transaction as the health-state mutation: either
-                        # both commit, or neither does.
-                        enqueue_event(session, event)
+                        # both commit, or neither does. Reduced Windows deployments
+                        # persist locally instead of creating an undeliverable outbox row.
+                        if settings.event_local_store_enabled:
+                            await persist_local_event_once(session, event)
+                        elif settings.event_pipeline_enabled:
+                            enqueue_event(session, event)
 
         stats.total_runs += 1
         stats.last_duration_seconds = time.monotonic() - started
