@@ -380,7 +380,7 @@ public interface ILiveAccessProvider
 {
     Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default);
 }
-public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IDisposable
+public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IPtzProvider, IDisposable
 {
     private readonly HttpClient _http; private readonly Func<string?> _tokenProvider;
     private readonly Func<CancellationToken,Task<bool>>? _refreshProvider;
@@ -419,6 +419,14 @@ public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IDisp
     public Task<List<CameraInfo>> GetCamerasAsync(CancellationToken ct=default)=>SendJsonAsync<List<CameraInfo>>(HttpMethod.Get,"/api/v1/cameras",true,true,ct);
     public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default)=>SendJsonAsync<LiveAccessGrant>(
         HttpMethod.Post,$"/api/v1/live/cameras/{Uri.EscapeDataString(cameraId)}/access?stream_role={Uri.EscapeDataString(role)}",true,true,cancellationToken);
+
+
+    public Task<PtzCapabilities> GetPtzCapabilitiesAsync(string cameraId,CancellationToken cancellationToken=default)=>
+        SendJsonAsync<PtzCapabilities>(HttpMethod.Get,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/capabilities",true,true,cancellationToken);
+    public Task<PtzCommandAck> MovePtzAsync(string cameraId,PtzMoveRequestDto payload,CancellationToken cancellationToken=default)=>
+        SendJsonBodyAsync<PtzCommandAck>(HttpMethod.Post,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/move",payload,true,true,cancellationToken);
+    public Task<PtzCommandAck> StopPtzAsync(string cameraId,PtzStopRequestDto payload,CancellationToken cancellationToken=default)=>
+        SendJsonBodyAsync<PtzCommandAck>(HttpMethod.Post,$"/api/v1/ptz/cameras/{Uri.EscapeDataString(cameraId)}/stop",payload,true,true,cancellationToken);
 
     public Task EnsurePlaybackAuthorizedAsync(CancellationToken cancellationToken=default)=>
         GetSessionAsync(cancellationToken);
@@ -459,6 +467,31 @@ public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IDisp
             if(!response.IsSuccessStatusCode)throw new VmsApiException(response.StatusCode);
             await response.Content.CopyToAsync(destination,cancellationToken);
             return;
+        }
+        throw new SessionExpiredException();
+    }
+
+    private async Task<T> SendJsonBodyAsync<T>(HttpMethod method,string relative,object payload,bool auth,bool allowRefresh,CancellationToken ct)
+    {
+        var body=JsonSerializer.Serialize(payload,_json);
+        for(var attempt=0;attempt<2;attempt++)
+        {
+            using var request=new HttpRequestMessage(method,UriFor(relative));
+            request.Content=new StringContent(body,Encoding.UTF8,"application/json");
+            if(auth)
+            {
+                var token=_tokenProvider(); if(string.IsNullOrWhiteSpace(token)) throw new SessionExpiredException();
+                request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",token);
+            }
+            using var response=await _http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,ct);
+            if(response.StatusCode==HttpStatusCode.Unauthorized && auth)
+            {
+                if(attempt==0 && allowRefresh && _refreshProvider is not null && await _refreshProvider(ct)) continue;
+                throw new SessionExpiredException();
+            }
+            if(!response.IsSuccessStatusCode) throw new VmsApiException(response.StatusCode);
+            await using var stream=await response.Content.ReadAsStreamAsync(ct);
+            return await JsonSerializer.DeserializeAsync<T>(stream,_json,ct) ?? throw new IncompatibleServerException();
         }
         throw new SessionExpiredException();
     }
