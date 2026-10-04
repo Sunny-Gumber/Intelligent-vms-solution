@@ -42,25 +42,28 @@ public sealed class LiveGridSettingsStore
         [JsonPropertyName("profile_id")] public Guid ProfileId{get;set;}
         [JsonPropertyName("snapshot")] public LiveGridSnapshot? Snapshot{get;set;}
     }
-    private readonly string _path;
+    private readonly string? _pathOverride;
     private static readonly JsonSerializerOptions Options=new(){WriteIndented=true};
-    public LiveGridSettingsStore(string? path=null)=>_path=path??ClientPaths.LiveGridFile;
+    public LiveGridSettingsStore(string? path=null)=>_pathOverride=path;
+    private string PathFor(Guid profileId)=>_pathOverride??ClientPaths.LiveGridFile(profileId);
 
     public async Task SaveAsync(Guid profileId,LiveGridSnapshot snapshot,CancellationToken cancellationToken=default)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var tmp=_path+".tmp";
+        var path=PathFor(profileId);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var tmp=path+".tmp";
         await using(var stream=File.Create(tmp))
             await JsonSerializer.SerializeAsync(stream,new Envelope{ProfileId=profileId,Snapshot=snapshot},Options,cancellationToken);
-        File.Move(tmp,_path,true);
+        File.Move(tmp,path,true);
     }
 
     public async Task<LiveGridSnapshot?> LoadAsync(Guid profileId,CancellationToken cancellationToken=default)
     {
-        if(!File.Exists(_path))return null;
+        var path=PathFor(profileId);
+        if(!File.Exists(path))return null;
         try
         {
-            await using var stream=File.OpenRead(_path);
+            await using var stream=File.OpenRead(path);
             var envelope=await JsonSerializer.DeserializeAsync<Envelope>(stream,Options,cancellationToken);
             var snapshot=envelope?.ProfileId==profileId?envelope.Snapshot:null;
             if(snapshot is null||!LiveGridLayout.SupportedCounts.Contains(snapshot.LayoutCount))return null;
