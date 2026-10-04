@@ -130,8 +130,13 @@ function Install-Server {
   if(-not (Test-Path $script)){throw "Server payload is missing."}
   $args=@("-NoProfile","-ExecutionPolicy","Bypass","-File",$script,"-RecordingRoot",$RecordingRoot)
   if($Action -in @("Upgrade","Repair")){$args+="-Upgrade"}
-  & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @args
-  if($LASTEXITCODE -ne 0){throw "Accepted Windows server installer failed with exit $LASTEXITCODE."}
+  $output=& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @args 2>&1
+  $code=$LASTEXITCODE
+  foreach($line in @($output)){
+    $text=[string]$line
+    if($text){Write-SafeLog "server" $text}
+  }
+  if($code -ne 0){throw "Accepted Windows server installer failed with exit $code."}
   & (Join-Path $PayloadRoot "server\deploy\windows\Vms-Windows.ps1") -Action Health
 }
 function Save-State {
