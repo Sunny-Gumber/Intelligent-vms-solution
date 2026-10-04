@@ -44,6 +44,7 @@ def test_server_reuses_accepted_runtime_and_postgres_is_not_owned():
     assert "never automatically removed" in ADR
 
 def test_client_is_machine_binary_but_user_data_remains_separate():
+    assert '[Environment]::GetEnvironmentVariable("ProgramW6432")' in SETUP
     assert '$ClientRoot=Join-Path $ProgramRoot "Client"' in SETUP
     assert "LocalAppData" in ADR
     assert "Credential Manager" in ADR
