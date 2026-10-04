@@ -127,6 +127,7 @@ public interface IPlaybackMediaRenderer
 
 public interface IPlaybackProvider
 {
+    Task EnsurePlaybackAuthorizedAsync(CancellationToken cancellationToken=default);
     Task<IReadOnlyList<RecordingSpanDto>> GetRecordingTimelineAsync(string cameraId,DateTimeOffset start,DateTimeOffset end,CancellationToken cancellationToken=default);
     Uri BuildPlaybackUri(string cameraId,DateTimeOffset start,double durationSeconds);
     Task ExportClipAsync(string cameraId,DateTimeOffset start,double durationSeconds,Stream destination,CancellationToken cancellationToken=default);
@@ -228,6 +229,8 @@ public sealed class PlaybackCoordinator:IAsyncDisposable
         State=transition;ErrorCategory="none";Position=target;Notify();
         try
         {
+            await _provider.EnsurePlaybackAuthorizedAsync(pending.Token);
+            if(generation!=Generation)return false;
             await _renderer.StopAsync(CancellationToken.None);
             if(generation!=Generation)return false;
             var uri=_provider.BuildPlaybackUri(Camera.Id,target,duration);
