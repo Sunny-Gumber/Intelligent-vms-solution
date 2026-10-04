@@ -21,5 +21,6 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="Media\live.html" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Media\playback.html" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
