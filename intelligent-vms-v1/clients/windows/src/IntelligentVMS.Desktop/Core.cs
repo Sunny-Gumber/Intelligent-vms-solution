@@ -85,6 +85,13 @@ public sealed class CameraInfo
     [JsonPropertyName("desired_state")] public string DesiredState { get; set; } = "";
     [JsonPropertyName("available_live_roles")] public string[] AvailableLiveRoles { get; set; } = ["main"];
 }
+public sealed class RecordingSpanDto
+{
+    [JsonPropertyName("start")] public DateTimeOffset Start { get; set; }
+    [JsonPropertyName("duration")] public double Duration { get; set; }
+    [JsonPropertyName("end")] public DateTimeOffset End { get; set; }
+}
+
 public sealed class LiveAccessGrant
 {
     [JsonPropertyName("camera_id")] public string CameraId { get; set; } = "";
@@ -358,7 +365,11 @@ public sealed class DesktopSession
     }
 }
 
-public sealed class VmsApiException(HttpStatusCode statusCode) : Exception($"VMS request failed ({(int)statusCode}).");
+public sealed class VmsApiException : Exception
+{
+    public HttpStatusCode StatusCode { get; }
+    public VmsApiException(HttpStatusCode statusCode) : base($"VMS request failed ({(int)statusCode}).") => StatusCode=statusCode;
+}
 public sealed class SessionExpiredException : Exception { public SessionExpiredException() : base("The VMS session has expired."){} }
 public sealed class IncompatibleServerException : Exception { public IncompatibleServerException() : base("The VMS server is incompatible with this client."){} }
 
@@ -366,7 +377,7 @@ public interface ILiveAccessProvider
 {
     Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default);
 }
-public sealed class VmsApiClient : ILiveAccessProvider, IDisposable
+public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IDisposable
 {
     private readonly HttpClient _http; private readonly Func<string?> _tokenProvider;
     private readonly Func<CancellationToken,Task<bool>>? _refreshProvider;
