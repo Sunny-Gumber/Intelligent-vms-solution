@@ -179,6 +179,7 @@ Section "Install"
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\Invoke-Setup.ps1" -Action "Preflight" -Components "$Mode" -RecordingRoot "$RecordingRoot" -PayloadRoot "$PLUGINSDIR" -Version "${InstallerVersion}" -Commit "${BuildCommit}" -Quiet'
   Pop $0
   ${If} $0 != 0
+    System::Call 'kernel32::SetEnvironmentVariable(t "VMS_POSTGRES_ADMIN_PASSWORD", p 0)i'
     DetailPrint "Preflight failed with exit code $0."
     Abort
   ${EndIf}
@@ -199,6 +200,7 @@ Section "Install"
   DetailPrint "Running bounded preflight and $Action for $Mode..."
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\Setup\Invoke-Setup.ps1" -Action "$Action" -Components "$Mode" -RecordingRoot "$RecordingRoot" -PayloadRoot "$INSTDIR\Setup\payload" -Version "${InstallerVersion}" -Commit "${BuildCommit}" -Quiet'
   Pop $0
+  System::Call 'kernel32::SetEnvironmentVariable(t "VMS_POSTGRES_ADMIN_PASSWORD", p 0)i'
   ${If} $0 != 0
     DetailPrint "Setup orchestration failed with exit code $0."
     IfFileExists "$PROGRAMDATA\IntelligentVMS\installer-state.json" managed_state_present
