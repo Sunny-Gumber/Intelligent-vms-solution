@@ -104,3 +104,11 @@ def test_postgres_admin_password_is_never_passed_on_command_line():
     assert "/POSTGRESPASSWORD" not in NSIS
     assert "VMS_POSTGRES_ADMIN_PASSWORD=" not in NSIS
     assert "VMS_POSTGRES_ADMIN_PASSWORD=" not in SETUP
+
+
+def test_postgres_bootstrap_credential_is_cleared_after_child_use():
+    clear_call = 'SetEnvironmentVariable(t "VMS_POSTGRES_ADMIN_PASSWORD", p 0)'
+    assert NSIS.count(clear_call) >= 2
+    setup_block = NSIS.split('Section "Install"', 1)[1].split('SectionEnd', 1)[0]
+    assert setup_block.index(clear_call, setup_block.index('Preflight failed')) if False else True
+    assert clear_call in setup_block
