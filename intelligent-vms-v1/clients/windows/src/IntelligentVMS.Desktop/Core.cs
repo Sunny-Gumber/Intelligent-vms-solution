@@ -211,10 +211,11 @@ public sealed class WindowsCredentialStore : ICredentialStore
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         if (string.IsNullOrWhiteSpace(token)) throw new ArgumentException("Token is required.", nameof(token));
         var bytes = Encoding.Unicode.GetBytes(token);
-        var blob = Marshal.AllocCoTaskMem(bytes.Length);
+        var blob = Marshal.AllocCoTaskMem(bytes.Length + 2);
         try
         {
             Marshal.Copy(bytes, 0, blob, bytes.Length);
+            Marshal.WriteInt16(blob, bytes.Length, 0);
             var credential = new NativeCredential { Type = CredTypeGeneric, TargetName = Target(profileId), CredentialBlobSize = bytes.Length,
                 CredentialBlob = blob, Persist = CredPersistLocalMachine, UserName = "vms-session" };
             if (!CredWrite(ref credential, 0)) throw new InvalidOperationException($"Credential Manager write failed ({Marshal.GetLastWin32Error()}).");
