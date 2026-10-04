@@ -14,6 +14,7 @@ MIGRATION=(ROOT/"migrations/versions/0018_local_event_history.py").read_text(enc
 WINDOWS=(ROOT/"deploy/windows/generate_windows_env.py").read_text(encoding="utf-8")
 SECURITY=(ROOT/"services/control-api/app/core/security_posture.py").read_text(encoding="utf-8")
 EVENT_SEARCH=(ROOT/"services/control-api/app/services/event_search.py").read_text(encoding="utf-8")
+HEALTH=(ROOT/"services/control-api/app/services/health_monitor.py").read_text(encoding="utf-8")
 
 
 def test_event_window_defaults_are_bounded_and_timezone_aware():
@@ -57,11 +58,18 @@ def test_event_history_reauthorizes_camera_and_scopes_server_side():
     assert 'require_roles("admin", "operator", "viewer")' in ROUTER
 
 
+def test_small_site_health_events_use_local_store_not_dead_outbox():
+    assert "if settings.event_local_store_enabled:" in HEALTH
+    assert "await persist_local_event_once(session, event)" in HEALTH
+    assert "elif settings.event_pipeline_enabled:" in HEALTH
+
+
 def test_event_history_dedupes_by_authoritative_id_and_has_retention():
     assert "event_id: Mapped[str] = mapped_column(String(128), primary_key=True)" in ENTITIES
-    assert "session.get(EventHistoryEntity, event.event_id)" in ROUTER
-    assert "event_local_retention_days" in ROUTER
-    assert "delete(EventHistoryEntity)" in ROUTER
+    store=(ROOT/"services/control-api/app/services/local_event_store.py").read_text(encoding="utf-8")
+    assert "session.get(EventHistoryEntity, event_id)" in store
+    assert "event_local_retention_days" in store
+    assert "delete(EventHistoryEntity)" in store
 
 
 def test_generic_event_acknowledgement_is_not_faked():
