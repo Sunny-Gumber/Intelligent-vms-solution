@@ -822,13 +822,18 @@ public partial class MainWindow:Window
             oidcEnabled?OidcAuthenticationManager.CallbackMechanism:"none",credentialStatus,
             grid is null?"1-view":$"{grid.Layout.Count}-view",grid?.ActiveTileCount??0,grid?.ConnectingTileCount??0,grid?.FailedTileCount??0,tileStates,
             "WebView2-WHEP",playbackCamera,playbackDate,playback?.State.ToString()??"Idle",playback?.Rate??1.0,playbackPosition,
-            playback?.Segments.Count??0,playback?.GapCount??0,"WebView2-MP4",playback?.ErrorCategory??"none");
+            playback?.Segments.Count??0,playback?.GapCount??0,"WebView2-MP4",playback?.ErrorCategory??"none",
+            _ptz?.ActiveCameraId??"none",
+            _ptz?.Capabilities is null?"none":$"pan_tilt={_ptz.Capabilities.PanTilt},zoom={_ptz.Capabilities.Zoom},presets={_ptz.Capabilities.Presets}",
+            _ptz?.State.ToString()??"Unavailable",_ptz?.Generation??0,
+            (PtzSpeedCombo.SelectedItem as ComboBoxItem)?.Content?.ToString()?.ToLowerInvariant()??"medium",
+            _ptz?.ErrorCategory??"none");
     }
 
     private void RefreshDiagnostics()
     {
         var d=BuildDiagnostics();
-        DiagnosticsText.Text=$"Version: {d.ApplicationVersion}\nOS: {d.OsVersion}\nArchitecture: {d.Architecture}\nServer: {d.ServerAddress}\nConnection: {d.ConnectionState}\nServer profile: {d.DeploymentProfile}\nMedia: {d.MediaState}\nAuthentication: {d.AuthenticationMode} / {d.AuthenticationState}\nRemembered: {d.RememberedSession}\nToken expiry: {d.TokenExpiry}\nOIDC issuer host: {d.OidcIssuerHost}\nLast auth error: {d.LastAuthErrorCategory}\nCallback: {d.CallbackMechanism}\nCredential store: {d.CredentialStoreStatus}\nLive layout: {d.LiveLayout}\nActive tiles: {d.ActiveTiles}\nConnecting tiles: {d.ConnectingTiles}\nFailed tiles: {d.FailedTiles}\nTile states: {d.LiveTileStates}\nRenderer: {d.RendererType}\nLogs: {d.LogLocation}";
+        DiagnosticsText.Text=$"Version: {d.ApplicationVersion}\nOS: {d.OsVersion}\nArchitecture: {d.Architecture}\nServer: {d.ServerAddress}\nConnection: {d.ConnectionState}\nServer profile: {d.DeploymentProfile}\nMedia: {d.MediaState}\nAuthentication: {d.AuthenticationMode} / {d.AuthenticationState}\nRemembered: {d.RememberedSession}\nToken expiry: {d.TokenExpiry}\nOIDC issuer host: {d.OidcIssuerHost}\nLast auth error: {d.LastAuthErrorCategory}\nCallback: {d.CallbackMechanism}\nCredential store: {d.CredentialStoreStatus}\nLive layout: {d.LiveLayout}\nActive tiles: {d.ActiveTiles}\nConnecting tiles: {d.ConnectingTiles}\nFailed tiles: {d.FailedTiles}\nTile states: {d.LiveTileStates}\nRenderer: {d.RendererType}\nPTZ camera: {d.PtzCamera}\nPTZ capability: {d.PtzCapability}\nPTZ state: {d.PtzState}\nPTZ generation: {d.PtzGeneration}\nPTZ speed: {d.PtzSpeed}\nPTZ last error: {d.PtzErrorCategory}\nLogs: {d.LogLocation}";
     }
 
     private static string FriendlyConnection(ServerConnectionState s)=>s switch
