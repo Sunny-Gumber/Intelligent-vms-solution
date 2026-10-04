@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -26,7 +27,9 @@ public sealed class LiveTileModel
     public string ActualRole{get;internal set;}="";
     public LiveTileState State{get;internal set;}=LiveTileState.Empty;
     public string ErrorCategory{get;internal set;}="none";
-    public long Generation{get;internal set;}
+    private long _generation;
+    public long Generation=>Volatile.Read(ref _generation);
+    internal long NextGeneration()=>Interlocked.Increment(ref _generation);
     public bool HasAssignment=>!string.IsNullOrWhiteSpace(CameraId);
 }
 
@@ -255,7 +258,7 @@ public sealed class LiveGridCoordinator:IAsyncDisposable
 
     private async Task StartRuntimeAsync(TileRuntime runtime,string role,CancellationToken cancellationToken)
     {
-        var generation=Interlocked.Increment(ref runtime.Model.Generation);
+        var generation=runtime.Model.NextGeneration();
         runtime.Pending?.Cancel();runtime.Pending?.Dispose();
         var pending=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);runtime.Pending=pending;
         runtime.Model.RequestedRole=role;runtime.Model.ActualRole="";runtime.Model.State=LiveTileState.Loading;runtime.Model.ErrorCategory="none";Notify();
@@ -302,7 +305,7 @@ public sealed class LiveGridCoordinator:IAsyncDisposable
 
     private async Task StopRuntimeAsync(TileRuntime runtime,bool clearAssignment,CancellationToken cancellationToken)
     {
-        Interlocked.Increment(ref runtime.Model.Generation);runtime.Pending?.Cancel();
+        runtime.Model.NextGeneration();runtime.Pending?.Cancel();
         runtime.Model.State=LiveTileState.Stopping;Notify();
         try{await runtime.Controller.StopAsync(cancellationToken);}
         catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested){throw;}
@@ -339,7 +342,7 @@ public sealed class LiveGridCoordinator:IAsyncDisposable
         if(_focusedTile is null&&index>=Layout.Count)throw new InvalidOperationException("Tile is outside the current layout.");
     }
     private void Notify()=>Changed?.Invoke(this,EventArgs.Empty);
-    private void ThrowIfDisposed(){if(_disposed)throw new ObjectDisposedException(nameof(LiveGridCoordinator));}
+    private void ThrowIfDisposed()=>ObjectDisposedException.ThrowIf(_disposed,this);
     private static string Safe(string value)=>new(value.Where(ch=>char.IsLetterOrDigit(ch)||ch is '-' or '_' or '.').Take(80).ToArray());
 
     public async ValueTask DisposeAsync()
