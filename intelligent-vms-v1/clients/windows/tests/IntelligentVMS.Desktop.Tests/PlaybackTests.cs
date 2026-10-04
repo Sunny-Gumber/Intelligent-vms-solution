@@ -9,6 +9,7 @@ internal static class PlaybackTests
         await TestLifecycleAndGapSeekAsync();
         await TestRapidSeekFencingAsync();
         await TestAuthAndExportAsync();
+        await TestContextResetAsync();
         TestRendererUrlPolicy();
     }
 
@@ -77,6 +78,18 @@ internal static class PlaybackTests
         provider.Expire=true;
         await ThrowsAsync<SessionExpiredException>(()=>playback.StartAsync(DateTimeOffset.Parse("2026-10-04T10:12:00Z")));
         Assert(playback.ErrorCategory=="session_expired");
+    }
+
+    private static async Task TestContextResetAsync()
+    {
+        var provider=new FakeProvider{Spans=[Span("2026-10-04T10:00:00Z","2026-10-04T10:30:00Z")]};
+        var renderer=new FakeRenderer();
+        await using var playback=new PlaybackCoordinator(provider,renderer,new TestLogger());
+        await playback.LoadDayAsync(Camera("server-a-camera"),new DateOnly(2026,10,4),TimeZoneInfo.Utc);
+        await playback.StartAsync(DateTimeOffset.Parse("2026-10-04T10:05:00Z"));
+        await playback.ClearContextAsync();
+        Assert(playback.State==PlaybackState.Idle&&playback.Camera is null&&playback.Day is null&&playback.Segments.Count==0);
+        Assert(playback.Position is null&&playback.ClipStart is null&&playback.ClipEnd is null&&renderer.State=="IDLE");
     }
 
     private static void TestRendererUrlPolicy()
