@@ -256,7 +256,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
         Func<CancellationToken,Task<SessionInfo>> validateVmsSession, CancellationToken cancellationToken = default)
     {
         OidcCapabilityValidator.Validate(capability);
-        CancelActiveAttempt();
+        SupersedeActiveAttempt();
         var generation = Volatile.Read(ref _generation);
         var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _attempt = attempt;
@@ -442,7 +442,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
 
     public async Task InvalidateAsync(Guid profileId, CancellationToken cancellationToken = default)
     {
-        CancelActiveAttempt();
+        SupersedeActiveAttempt();
         await _refreshStore.DeleteAsync(profileId, cancellationToken);
         ClearRuntime(AuthenticationUxState.Expired);
     }
@@ -452,7 +452,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
 
     public async Task LogoutAsync(Guid profileId, CancellationToken cancellationToken = default)
     {
-        CancelActiveAttempt();
+        SupersedeActiveAttempt();
         State = AuthenticationUxState.SigningOut;
         await _refreshStore.DeleteAsync(profileId, cancellationToken);
         ClearRuntime(AuthenticationUxState.AuthenticationRequired);
@@ -461,11 +461,21 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
 
     public void Deactivate()
     {
-        CancelActiveAttempt();
+        SupersedeActiveAttempt();
         ClearRuntime(AuthenticationUxState.Disconnected);
     }
 
     public void CancelActiveAttempt()
+    {
+        SupersedeActiveAttempt();
+        if (State == AuthenticationUxState.Authenticating)
+        {
+            State = AuthenticationUxState.AuthenticationRequired;
+            LastErrorCategory = "cancelled";
+        }
+    }
+
+    private void SupersedeActiveAttempt()
     {
         Interlocked.Increment(ref _generation);
         _attempt?.Cancel();
@@ -498,7 +508,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        CancelActiveAttempt();
+        SupersedeActiveAttempt();
         _refreshGate.Dispose();
         _attempt?.Dispose();
         return ValueTask.CompletedTask;
