@@ -184,12 +184,15 @@ public partial class MainWindow:Window
         }
     }
 
-    private void CameraTree_SelectedItemChanged(object sender,RoutedPropertyChangedEventArgs<object> e)
+    private async void CameraTree_SelectedItemChanged(object sender,RoutedPropertyChangedEventArgs<object> e)
     {
         if(e.NewValue is not TreeViewItem{Tag:CameraInfo camera})
         {
+            if(_playback?.Camera is not null)await _playback.ClearContextAsync();
             _selectedCamera=null;StreamRoleCombo.ItemsSource=null;PlaybackCameraText.Text="Select one authorized camera.";return;
         }
+        if(_playback?.Camera is not null&&!string.Equals(_playback.Camera.Id,camera.Id,StringComparison.Ordinal))
+            await _playback.ClearContextAsync();
         _selectedCamera=camera;
         LiveSelectionText.Text=$"{camera.Name} · {camera.SiteId}";
         PlaybackCameraText.Text=$"{camera.Name} · {camera.SiteId}";
@@ -381,6 +384,24 @@ public partial class MainWindow:Window
     {
         if(!Dispatcher.CheckAccess()){Dispatcher.BeginInvoke(RenderPlayback);return;}
         RenderPlayback();
+    }
+
+    private async void PlaybackDate_SelectedDateChanged(object sender,SelectionChangedEventArgs e)
+    {
+        if(_playback?.Day is null||PlaybackDatePicker.SelectedDate is not DateTime selected)return;
+        if(_playback.Day.LocalDate!=DateOnly.FromDateTime(selected))await _playback.ClearContextAsync();
+    }
+
+    private async void MainTabs_SelectionChanged(object sender,SelectionChangedEventArgs e)
+    {
+        if(e.Source!=MainTabs)return;
+        try
+        {
+            if(MainTabs.SelectedItem==PlaybackTab)await StopLiveAsync();
+            else if(_playback?.State is PlaybackState.Playing or PlaybackState.Paused or PlaybackState.Starting or PlaybackState.Seeking)
+                await _playback.StopAsync();
+        }
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
     }
 
     private async void PlaybackLoad_Click(object sender,RoutedEventArgs e)
