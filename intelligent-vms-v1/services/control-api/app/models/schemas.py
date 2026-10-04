@@ -1,4 +1,6 @@
 from datetime import datetime
+import math
+from uuid import UUID
 from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -434,6 +436,58 @@ class CameraCapabilityRead(BaseModel):
     sub_profile_token: str | None
     third_profile_token: str | None = None
     probed_at: datetime
+
+
+class PtzCapabilitiesRead(BaseModel):
+    """Serialize server-authoritative ONVIF PTZ capabilities for one camera."""
+
+    camera_id: str
+    ptz: bool
+    pan_tilt: bool
+    zoom: bool
+    presets: bool = False
+    software_supported: bool = True
+    hardware_verified: bool = False
+
+
+class PtzMoveRequest(BaseModel):
+    """Validate a normalized continuous PTZ vector plus monotonic client generation."""
+
+    pan: float = Field(default=0.0, ge=-1.0, le=1.0)
+    tilt: float = Field(default=0.0, ge=-1.0, le=1.0)
+    zoom: float = Field(default=0.0, ge=-1.0, le=1.0)
+    generation: int = Field(ge=1, le=2147483647)
+    context_id: UUID
+
+    @field_validator("pan", "tilt", "zoom")
+    @classmethod
+    def finite_ptz_vector(cls, value: float):
+        """Reject NaN/Infinity before values can reach ONVIF SOAP."""
+        if not math.isfinite(value):
+            raise ValueError("PTZ vector values must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def nonzero_ptz_vector(self):
+        """Require movement in at least one PTZ axis."""
+        if self.pan == 0.0 and self.tilt == 0.0 and self.zoom == 0.0:
+            raise ValueError("PTZ move vector must not be zero")
+        return self
+
+
+class PtzStopRequest(BaseModel):
+    """Carry a PTZ context plus monotonic generation for stop-priority fencing."""
+
+    generation: int = Field(ge=1, le=2147483647)
+    context_id: UUID
+
+
+class PtzCommandRead(BaseModel):
+    """Serialize a safe PTZ command acknowledgement."""
+
+    camera_id: str
+    state: Literal["moving", "stopped"]
+    generation: int
 
 
 class OnvifManagedProfileUpdate(BaseModel):

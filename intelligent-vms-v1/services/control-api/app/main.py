@@ -10,7 +10,7 @@ from app.core.errors import install_error_handlers
 from app.core.security_posture import validate_security_posture
 from app.db.base import Base
 from app.db.session import engine
-from app.routers import ai, alarms, auth_session, cameras, diagnostics, events, health, live_media, manual_recordings, onvif, placement, recordings, system
+from app.routers import ai, alarms, auth_session, cameras, diagnostics, events, health, live_media, manual_recordings, onvif, placement, ptz, recordings, system
 from app.observability import PrometheusMiddleware, router as observability_router
 from app.security_audit import SecurityAuditMiddleware
 from app.services.events import event_publisher
@@ -79,6 +79,7 @@ app.include_router(cameras.group_router)
 app.include_router(live_media.router)
 app.include_router(live_media.internal_router)
 app.include_router(onvif.router)
+app.include_router(ptz.router)
 app.include_router(recordings.router)
 app.include_router(manual_recordings.router)
 app.include_router(recordings.internal_router)

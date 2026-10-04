@@ -30,7 +30,7 @@
    <TabControl x:Name="MainTabs" Grid.Column="1" Background="{StaticResource PanelBackground}" SelectionChanged="MainTabs_SelectionChanged">
     <TabItem x:Name="LiveTab" Header="Live">
      <Grid Margin="8">
-      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <DockPanel Grid.Row="0" LastChildFill="True">
        <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
         <TextBlock Text="Layout" VerticalAlignment="Center" Margin="4"/>
@@ -49,7 +49,33 @@
       <Border Grid.Row="1" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" Margin="4">
        <Grid x:Name="LiveGridHost" Background="Black"/>
       </Border>
-      <TextBlock x:Name="GridStatusText" Grid.Row="2" Margin="4" Foreground="{StaticResource TextMuted}" Text="1-view · 0 live"/>
+      <Border Grid.Row="2" Margin="4" Padding="6" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1">
+       <DockPanel LastChildFill="True">
+        <StackPanel DockPanel.Dock="Left">
+         <TextBlock Text="PTZ · active live tile" FontWeight="SemiBold"/>
+         <UniformGrid Rows="3" Columns="3" Width="132" Margin="0,4,0,0">
+          <Border/><Button x:Name="PtzUpButton" Content="▲" PreviewMouseLeftButtonDown="PtzMove_MouseDown" PreviewMouseLeftButtonUp="PtzMove_MouseUp" LostMouseCapture="PtzMove_LostMouseCapture" Tag="0,1,0"/><Border/>
+          <Button x:Name="PtzLeftButton" Content="◀" PreviewMouseLeftButtonDown="PtzMove_MouseDown" PreviewMouseLeftButtonUp="PtzMove_MouseUp" LostMouseCapture="PtzMove_LostMouseCapture" Tag="-1,0,0"/>
+          <Button x:Name="PtzStopButton" Content="■" Click="PtzStop_Click" ToolTip="Stop PTZ movement"/>
+          <Button x:Name="PtzRightButton" Content="▶" PreviewMouseLeftButtonDown="PtzMove_MouseDown" PreviewMouseLeftButtonUp="PtzMove_MouseUp" LostMouseCapture="PtzMove_LostMouseCapture" Tag="1,0,0"/>
+          <Border/><Button x:Name="PtzDownButton" Content="▼" PreviewMouseLeftButtonDown="PtzMove_MouseDown" PreviewMouseLeftButtonUp="PtzMove_MouseUp" LostMouseCapture="PtzMove_LostMouseCapture" Tag="0,-1,0"/><Border/>
+         </UniformGrid>
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Left" Margin="14,0,0,0">
+         <TextBlock Text="Optical zoom"/>
+         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+          <Button x:Name="PtzZoomOutButton" Content="−" Width="44" PreviewMouseLeftButtonDown="PtzMove_MouseDown" PreviewMouseLeftButtonUp="PtzMove_MouseUp" LostMouseCapture="PtzMove_LostMouseCapture" Tag="0,0,-1"/>
+          <Button x:Name="PtzZoomInButton" Content="+" Width="44" PreviewMouseLeftButtonDown="PtzMove_MouseDown" PreviewMouseLeftButtonUp="PtzMove_MouseUp" LostMouseCapture="PtzMove_LostMouseCapture" Tag="0,0,1"/>
+         </StackPanel>
+         <TextBlock Text="Speed" Margin="0,6,0,0"/>
+         <ComboBox x:Name="PtzSpeedCombo" Width="100">
+          <ComboBoxItem Content="Slow" Tag="0.35"/><ComboBoxItem Content="Medium" Tag="0.65"/><ComboBoxItem Content="Fast" Tag="1.0"/>
+         </ComboBox>
+        </StackPanel>
+        <TextBlock x:Name="PtzStatusText" Text="PTZ unavailable" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="18,0,4,0" TextWrapping="Wrap"/>
+       </DockPanel>
+      </Border>
+      <TextBlock x:Name="GridStatusText" Grid.Row="3" Margin="4" Foreground="{StaticResource TextMuted}" Text="1-view · 0 live"/>
      </Grid>
     </TabItem>
     <TabItem Header="Cameras"><TextBlock Margin="16" TextWrapping="Wrap" Text="Camera inventory remains server-authoritative. Select an authorized camera from the navigation tree."/></TabItem>
