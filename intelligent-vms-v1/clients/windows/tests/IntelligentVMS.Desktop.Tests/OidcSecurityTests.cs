@@ -223,8 +223,10 @@ internal static class OidcSecurityTests
         var source=await File.ReadAllTextAsync(Path.Combine(current.FullName,"clients","windows","src","IntelligentVMS.Desktop","OidcAuthentication.cs"));
         Assert(source.Contains("var attempt = CancellationTokenSource.CreateLinkedTokenSource",StringComparison.Ordinal));
         Assert(source.Contains("ReferenceEquals(_attempt, attempt)",StringComparison.Ordinal));
+        Assert(source.Contains("private void SupersedeActiveAttempt()",StringComparison.Ordinal));
         Assert(source.Contains("generation != Volatile.Read(ref _generation)",StringComparison.Ordinal));
         Assert(source.Contains("_profileId != profileId",StringComparison.Ordinal));
+        Assert(!source.Contains("_refreshGate.Dispose()",StringComparison.Ordinal));
     }
 
     private static string RandomValue()=>OidcAuthorizationRequestValidator.Base64Url(RandomNumberGenerator.GetBytes(32));
