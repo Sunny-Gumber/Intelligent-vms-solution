@@ -1,0 +1,244 @@
+name: Intelligent VMS Windows Installer
+
+on:
+  pull_request:
+    paths:
+      - 'intelligent-vms-v1/deploy/windows/**'
+      - 'intelligent-vms-v1/clients/windows/**'
+      - 'intelligent-vms-v1/release/windows/**'
+      - 'intelligent-vms-v1/tests/test_windows_unified_installer.py'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_UNIFIED_FIELD_TEST_INSTALLER.md'
+      - 'intelligent-vms-v1/docs/operations/WINDOWS_UNIFIED_FIELD_TEST_SETUP.md'
+      - 'intelligent-vms-v1/docs/security/WINDOWS_UNIFIED_INSTALLER_SECURITY_REVIEW.md'
+      - 'intelligent-vms-v1/docs/testing/WINDOWS_UNIFIED_INSTALLER_QA.md'
+      - '.github/workflows/intelligent-vms-windows-installer.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'intelligent-vms-v1/deploy/windows/**'
+      - 'intelligent-vms-v1/clients/windows/**'
+      - 'intelligent-vms-v1/release/windows/**'
+      - 'intelligent-vms-v1/tests/test_windows_unified_installer.py'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_UNIFIED_FIELD_TEST_INSTALLER.md'
+      - 'intelligent-vms-v1/docs/operations/WINDOWS_UNIFIED_FIELD_TEST_SETUP.md'
+      - 'intelligent-vms-v1/docs/security/WINDOWS_UNIFIED_INSTALLER_SECURITY_REVIEW.md'
+      - 'intelligent-vms-v1/docs/testing/WINDOWS_UNIFIED_INSTALLER_QA.md'
+      - '.github/workflows/intelligent-vms-windows-installer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - name: Install pinned NSIS compiler
+        shell: pwsh
+        run: |
+          choco install nsis --version=3.13.0 -y --no-progress
+          if($LASTEXITCODE -ne 0){throw "Pinned NSIS installation failed"}
+          & "$env:ProgramFiles(x86)\NSIS\makensis.exe" /VERSION
+      - name: Static installer contract tests
+        shell: pwsh
+        run: |
+          python -m pip install -r tests/requirements.txt
+          python -m pytest -q tests/test_windows_unified_installer.py tests/test_windows_field_test_release.py
+      - name: Build field-test setup and checksum
+        shell: pwsh
+        run: |
+          .\deploy\windows\installer\Build-Installer.ps1 -OutputRoot "$env:RUNNER_TEMP\installer" -CommitSha "${{ github.sha }}"
+      - name: Validate artifact metadata
+        shell: pwsh
+        run: |
+          $exe=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "IntelligentVMS-FieldTest-Setup-x64-*.exe"|Select-Object -First 1
+          if(-not $exe){throw "Setup artifact missing"}
+          $sum=Get-Content "$($exe.FullName).sha256" -Raw
+          if($sum -notmatch '^[0-9a-f]{64}\s+'){throw "SHA-256 artifact invalid"}
+          $info=(Get-Item $exe.FullName).VersionInfo
+          if($info.ProductName -ne "Intelligent VMS Field-Test Setup"){throw "Setup version metadata invalid"}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IntelligentVMS-FieldTest-Setup-x64
+          path: |
+            ${{ runner.temp }}/installer/IntelligentVMS-FieldTest-Setup-x64-*.exe
+            ${{ runner.temp }}/installer/IntelligentVMS-FieldTest-Setup-x64-*.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  lifecycle:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+        mode: [client, server, both]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: IntelligentVMS-FieldTest-Setup-x64
+          path: ${{ runner.temp }}/installer
+      - name: Install selected mode
+        shell: pwsh
+        run: |
+          $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
+          $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Recordings"
+          New-Item -ItemType Directory -Force -Path $record|Out-Null
+          "recording-sentinel" | Set-Content (Join-Path $record "preserve.me")
+          $mode="${{ matrix.mode }}"
+          $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=$mode","/RECORDINGROOT=$record") -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "Setup failed mode=$mode exit=$($p.ExitCode)"}
+          if($mode -in @("server","both")){
+            $services=Get-Service IntelligentVMSControl,IntelligentVMSMedia
+            if($services.Where({$_.Status -ne "Running"})){throw "Server services unhealthy"}
+            & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Health
+            if($LASTEXITCODE -ne 0){throw "Server health failed"}
+          } else {
+            if(Get-Service IntelligentVMSControl -ErrorAction SilentlyContinue){throw "Client-only install touched server service"}
+          }
+          if($mode -in @("client","both")){
+            $exe="$env:ProgramFiles\Intelligent VMS\Client\IntelligentVMS.Desktop.exe"
+            if(-not (Test-Path $exe)){throw "Client executable missing"}
+            $smoke=Start-Process $exe -ArgumentList "--smoke-test" -Wait -PassThru
+            if($smoke.ExitCode -ne 0){throw "Client smoke failed"}
+          }
+      - name: Repair Both mode
+        if: matrix.mode == 'both'
+        shell: pwsh
+        run: |
+          $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
+          $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Recordings"
+          $config="$env:ProgramData\IntelligentVMS\config\vms.env"
+          $before=(Get-FileHash -Algorithm SHA256 $config).Hash
+          Remove-Item "$env:ProgramFiles\Intelligent VMS\Client\IntelligentVMS.Desktop.exe" -Force
+          $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=both","/ACTION=repair","/RECORDINGROOT=$record") -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "Repair failed"}
+          if(-not (Test-Path "$env:ProgramFiles\Intelligent VMS\Client\IntelligentVMS.Desktop.exe")){throw "Repair did not restore client binary"}
+          $after=(Get-FileHash -Algorithm SHA256 $config).Hash
+          if($before -ne $after){throw "Repair unexpectedly replaced protected server configuration"}
+      - name: Validate secret-safe logs and backup
+        if: matrix.mode == 'server' || matrix.mode == 'both'
+        shell: pwsh
+        run: |
+          & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Backup
+          $envFile=Get-Content "$env:ProgramData\IntelligentVMS\config\vms.env"
+          $log=Get-Content "$env:ProgramData\IntelligentVMS\installer-logs\setup.log" -Raw
+          foreach($key in @("VMS_SECRET_KEY","AUTH_HS256_SECRET","RECORDING_HOOK_TOKEN","WINDOWS_POSTGRES_PASSWORD","LIVE_VIEW_TOKEN_PRIVATE_KEY_B64")){
+            $line=$envFile|Where-Object{$_.StartsWith("$key=")}|Select-Object -First 1
+            if($line){$value=$line.Substring($line.IndexOf("=")+1);if($value -and $log.Contains($value)){throw "Installer log leaked $key"}}
+          }
+      - name: Non-destructive uninstall
+        shell: pwsh
+        run: |
+          $mode="${{ matrix.mode }}"
+          $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Recordings"
+          $clientData=Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "IntelligentVMS\Client"
+          New-Item -ItemType Directory -Force -Path $clientData|Out-Null
+          "client-state" | Set-Content (Join-Path $clientData "preserve.me")
+          $un="$env:ProgramFiles\Intelligent VMS\Uninstall.exe"
+          $p=Start-Process $un -ArgumentList "/S" -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "Uninstall failed"}
+          if(-not (Test-Path (Join-Path $clientData "preserve.me"))){throw "Client LocalAppData was deleted"}
+          if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Recording data was deleted"}
+          if($mode -in @("server","both")){
+            if(Get-Service IntelligentVMSControl -ErrorAction SilentlyContinue){throw "Control service still installed"}
+            if(Get-Service IntelligentVMSMedia -ErrorAction SilentlyContinue){throw "Media service still installed"}
+            if(-not (Test-Path "$env:ProgramData\IntelligentVMS\config\vms.env")){throw "Server configuration was deleted"}
+            if(-not (Test-Path "$env:ProgramData\IntelligentVMS\backups")){throw "Backups were deleted"}
+            $pg=Get-Service -Name "postgresql-x64-*"|Sort-Object Name -Descending|Select-Object -First 1
+            if($pg.Status -ne "Running"){throw "Shared PostgreSQL was stopped/removed"}
+          }
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process IntelligentVMS.Desktop -ErrorAction SilentlyContinue|Stop-Process -Force -ErrorAction SilentlyContinue
+          $ctl="$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1"
+          if(Test-Path $ctl){try{& $ctl -Action Uninstall}catch{}}
+
+  upgrade-and-negative:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: IntelligentVMS-FieldTest-Setup-x64
+          path: ${{ runner.temp }}/installer
+      - name: Accepted-baseline upgrade simulation
+        shell: pwsh
+        run: |
+          $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Upgrade-Recordings"
+          New-Item -ItemType Directory -Force -Path $record|Out-Null
+          "upgrade-sentinel"|Set-Content (Join-Path $record "preserve.me")
+          .\deploy\windows\Install-WindowsFieldTest.ps1 -RecordingRoot $record -CameraCidr "127.0.0.1/32"
+          .\clients\windows\packaging\Publish-Client.ps1 -Version "0.1.0" -OutputRoot "$env:RUNNER_TEMP\old-client"
+          $old=Get-ChildItem "$env:RUNNER_TEMP\old-client\stage" -Directory|Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path "$env:ProgramFiles\Intelligent VMS\Client"|Out-Null
+          Copy-Item "$($old.FullName)\App\*" "$env:ProgramFiles\Intelligent VMS\Client" -Recurse -Force
+          @{version="0.1.0.0";commit="accepted-baseline";components="Both";recording_root=$record}|ConvertTo-Json|Set-Content "$env:ProgramData\IntelligentVMS\installer-state.json"
+          $before=(Get-FileHash "$env:ProgramData\IntelligentVMS\config\vms.env").Hash
+          $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
+          $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=both","/ACTION=upgrade","/RECORDINGROOT=$record") -Wait -PassThru
+          if($p.ExitCode -ne 0){throw "Upgrade simulation failed"}
+          $after=(Get-FileHash "$env:ProgramData\IntelligentVMS\config\vms.env").Hash
+          if($before -ne $after){throw "Upgrade replaced protected configuration"}
+          if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Upgrade lost recording data"}
+          & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Health
+          if($LASTEXITCODE -ne 0){throw "Upgrade server health failed"}
+      - name: Unsafe downgrade is blocked
+        shell: pwsh
+        run: |
+          $state="$env:ProgramData\IntelligentVMS\installer-state.json"
+          $obj=Get-Content $state -Raw|ConvertFrom-Json
+          $obj.version="9.0.0.0";$obj|ConvertTo-Json|Set-Content $state
+          $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
+          $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Upgrade-Recordings"
+          $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=both","/RECORDINGROOT=$record") -Wait -PassThru
+          if($p.ExitCode -eq 0){throw "Unsafe downgrade was not blocked"}
+          if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Downgrade rejection changed recording data"}
+      - name: Invalid UNC fails before install mutation
+        shell: pwsh
+        run: |
+          Remove-Item "$env:ProgramData\IntelligentVMS\installer-state.json" -Force -ErrorAction SilentlyContinue
+          $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
+          $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=server","/RECORDINGROOT=\\server\share") -Wait -PassThru
+          if($p.ExitCode -eq 0){throw "UNC path was not rejected"}
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          $ctl="$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1"
+          if(Test-Path $ctl){try{& $ctl -Action Uninstall}catch{}}
