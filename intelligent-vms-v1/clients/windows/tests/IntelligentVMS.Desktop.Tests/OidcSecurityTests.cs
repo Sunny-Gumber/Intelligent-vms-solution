@@ -24,6 +24,7 @@ internal static class OidcSecurityTests
         await TestCredentialPurposeIsolationAsync();
         await TestCredentialCapacityFailureAsync();
         TestOidcSecretRedaction();
+        await TestAttemptGenerationContractAsync();
     }
 
     private static void TestRfc7636S256Vector()
@@ -212,6 +213,18 @@ internal static class OidcSecurityTests
     {
         var safe=SecretRedactor.Redact("code=secret-auth-code-481 code_verifier=secret-verifier-592 access_token=secret-access-603 refresh_token=secret-refresh-714 id_token=secret-identity-825 Authorization=secret-header-936");
         foreach(var secret in new[]{"secret-auth-code-481","secret-verifier-592","secret-access-603","secret-refresh-714","secret-identity-825","secret-header-936"})Assert(!safe.Contains(secret,StringComparison.Ordinal));
+    }
+
+    private static async Task TestAttemptGenerationContractAsync()
+    {
+        var current=new DirectoryInfo(Directory.GetCurrentDirectory());
+        while(current is not null && !Directory.Exists(Path.Combine(current.FullName,"clients","windows")))current=current.Parent;
+        if(current is null)throw new InvalidOperationException("Repository root not found.");
+        var source=await File.ReadAllTextAsync(Path.Combine(current.FullName,"clients","windows","src","IntelligentVMS.Desktop","OidcAuthentication.cs"));
+        Assert(source.Contains("var attempt = CancellationTokenSource.CreateLinkedTokenSource",StringComparison.Ordinal));
+        Assert(source.Contains("ReferenceEquals(_attempt, attempt)",StringComparison.Ordinal));
+        Assert(source.Contains("generation != Volatile.Read(ref _generation)",StringComparison.Ordinal));
+        Assert(source.Contains("_profileId != profileId",StringComparison.Ordinal));
     }
 
     private static string RandomValue()=>OidcAuthorizationRequestValidator.Base64Url(RandomNumberGenerator.GetBytes(32));
