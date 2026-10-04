@@ -11,6 +11,10 @@ on:
       - 'intelligent-vms-v1/docs/operations/WINDOWS_UNIFIED_FIELD_TEST_SETUP.md'
       - 'intelligent-vms-v1/docs/security/WINDOWS_UNIFIED_INSTALLER_SECURITY_REVIEW.md'
       - 'intelligent-vms-v1/docs/testing/WINDOWS_UNIFIED_INSTALLER_QA.md'
+      - 'intelligent-vms-v1/docs/product/FEATURE_CATALOG.csv'
+      - 'intelligent-vms-v1/docs/program/PROJECT_HANDOFF.md'
+      - 'intelligent-vms-v1/docs/program/VMS_BOSS_STATE.md'
+      - 'intelligent-vms-v1/docs/program/IMPLEMENTATION_HISTORY.md'
       - '.github/workflows/intelligent-vms-windows-installer.yml'
   push:
     branches: [main]
@@ -23,6 +27,10 @@ on:
       - 'intelligent-vms-v1/docs/operations/WINDOWS_UNIFIED_FIELD_TEST_SETUP.md'
       - 'intelligent-vms-v1/docs/security/WINDOWS_UNIFIED_INSTALLER_SECURITY_REVIEW.md'
       - 'intelligent-vms-v1/docs/testing/WINDOWS_UNIFIED_INSTALLER_QA.md'
+      - 'intelligent-vms-v1/docs/product/FEATURE_CATALOG.csv'
+      - 'intelligent-vms-v1/docs/program/PROJECT_HANDOFF.md'
+      - 'intelligent-vms-v1/docs/program/VMS_BOSS_STATE.md'
+      - 'intelligent-vms-v1/docs/program/IMPLEMENTATION_HISTORY.md'
       - '.github/workflows/intelligent-vms-windows-installer.yml'
 
 permissions:
