@@ -6,6 +6,8 @@ using Microsoft.Web.WebView2.Core;
 
 namespace IntelligentVMS.Desktop;
 
+// SemaphoreSlim is used only as an async serialization primitive; AvailableWaitHandle is never requested.
+#pragma warning disable CA1001
 public partial class LiveMediaView : UserControl, ILiveMediaRenderer
 {
     private bool _initialized;
@@ -79,3 +81,4 @@ public partial class LiveMediaView : UserControl, ILiveMediaRenderer
         StateOverlay.Visibility=state=="LIVE"?Visibility.Collapsed:Visibility.Visible;
     }
 }
+#pragma warning restore CA1001
