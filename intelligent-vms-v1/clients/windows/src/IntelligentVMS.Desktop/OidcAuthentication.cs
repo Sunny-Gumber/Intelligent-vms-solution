@@ -348,6 +348,11 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
         {
             State = AuthenticationUxState.OfflineWithRestorableSession; LastErrorCategory = "identity_unreachable"; return false;
         }
+        catch (Exception ex)
+        {
+            State = AuthenticationUxState.OfflineWithRestorableSession; LastErrorCategory = "refresh_unavailable";
+            _logger.LogError("auth","remembered session restore failed",ex); return false;
+        }
     }
 
     public async Task<bool> TryRefreshAsync(CancellationToken cancellationToken = default)
@@ -377,6 +382,11 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
         catch (HttpRequestException)
         {
             State = AuthenticationUxState.OfflineWithRestorableSession; LastErrorCategory = "identity_unreachable"; return false;
+        }
+        catch (Exception ex)
+        {
+            State = AuthenticationUxState.Failed; LastErrorCategory = "refresh_unavailable";
+            _logger.LogError("auth","session refresh failed",ex); return false;
         }
         finally { _refreshGate.Release(); }
     }
