@@ -404,7 +404,7 @@ public partial class MainWindow:Window
             if(_playback.State==PlaybackState.Paused){await _playback.ResumeAsync();return;}
             var target=_playback.Position;
             if(target is null||PlaybackTimelineNormalizer.Find(_playback.Segments,target.Value) is null)
-                target=_playback.Segments.FirstOrDefault()?.Start;
+                target=_playback.Segments.Count>0?_playback.Segments[0].Start:null;
             if(target is null){PlaybackStatusText.Text="No recording available.";return;}
             await _playback.StartAsync(target.Value);
         }
