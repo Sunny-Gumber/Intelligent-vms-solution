@@ -55,7 +55,8 @@ public partial class PlaybackMediaView:UserControl,IPlaybackMediaRenderer,IAsync
         try
         {
             if(!_initialized){if(action=="stop")SetState(_sessionId,"IDLE");return;}
-            var payload=extra is null?new{action,sessionId=_sessionId}:new{action,sessionId=_sessionId,rate=extra.GetType().GetProperty("rate")?.GetValue(extra)};
+            var payload=new Dictionary<string,object?>{{"action",action},{"sessionId",_sessionId}};
+            if(extra is not null)payload["rate"]=extra.GetType().GetProperty("rate")?.GetValue(extra);
             WebView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(payload));
             if(action=="stop")SetState(_sessionId,"IDLE");
         }
