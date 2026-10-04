@@ -62,16 +62,16 @@ public partial class MainWindow : Window
     }
     private void PopulateCameraTree(IEnumerable<CameraInfo> cameras)
     {
-        CameraTree.Items.Clear();foreach(var site in CameraTreeBuilder.Build(cameras)){var root=new TreeViewItem{Header=site.SiteId,IsExpanded=true};foreach(var camera in site.Cameras)root.Items.Add(new TreeViewItem{Header=$"${camera.Name} · ${(camera.Enabled?camera.DesiredState:"disabled")}",Tag=camera});CameraTree.Items.Add(root);}
+        CameraTree.Items.Clear();foreach(var site in CameraTreeBuilder.Build(cameras)){var root=new TreeViewItem{Header=site.SiteId,IsExpanded=true};foreach(var camera in site.Cameras)root.Items.Add(new TreeViewItem{Header=$"{camera.Name} · {(camera.Enabled?camera.DesiredState:"disabled")}",Tag=camera});CameraTree.Items.Add(root);}
     }
     private void CameraTree_SelectedItemChanged(object sender,RoutedPropertyChangedEventArgs<object> e)
     {
-        if(e.NewValue is not TreeViewItem{Tag:CameraInfo camera})return;_selectedCamera=camera;LiveSelectionText.Text=$"${camera.Name} · ${camera.SiteId}";StreamRoleCombo.ItemsSource=camera.AvailableLiveRoles;StreamRoleCombo.SelectedItem=camera.AvailableLiveRoles.Contains("sub")?"sub":camera.AvailableLiveRoles.FirstOrDefault()??"main";
+        if(e.NewValue is not TreeViewItem{Tag:CameraInfo camera})return;_selectedCamera=camera;LiveSelectionText.Text=$"{camera.Name} · {camera.SiteId}";StreamRoleCombo.ItemsSource=camera.AvailableLiveRoles;StreamRoleCombo.SelectedItem=camera.AvailableLiveRoles.Contains("sub")?"sub":camera.AvailableLiveRoles.FirstOrDefault()??"main";
     }
     private async void StartLive_Click(object sender,RoutedEventArgs e)
     {
         if(_selectedCamera is null||_activeProfile is null||StreamRoleCombo.SelectedItem is not string role){LiveSelectionText.Text="Select an authorized camera and stream role.";return;}
-        try{_live??=new LiveSessionController(_api,LiveMedia,_activeProfile,_logger);await _live.StartAsync(_selectedCamera.Id,role);LiveSelectionText.Text=$"${_selectedCamera.Name} · ${role.ToUpperInvariant()}";RefreshDiagnostics();}
+        try{_live??=new LiveSessionController(_api,LiveMedia,_activeProfile,_logger);await _live.StartAsync(_selectedCamera.Id,role);LiveSelectionText.Text=$"{_selectedCamera.Name} · {role.ToUpperInvariant()}";RefreshDiagnostics();}
         catch(SessionExpiredException){await _session.MarkExpiredAsync();LiveSelectionText.Text="Your session has expired. Sign in again.";}
         catch(Exception ex){_logger.Error("live","live view start failed",ex);LiveSelectionText.Text="Live view is unavailable for the selected camera.";}
     }
@@ -79,7 +79,7 @@ public partial class MainWindow : Window
     private async Task StopLiveAsync(){if(_live is not null)await _live.StopAsync();RefreshDiagnostics();}
     private async void ExportDiagnostics_Click(object sender,RoutedEventArgs e)
     {
-        var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IntelligentVMS-Diagnostics");var path=await _diagnostics.ExportAsync(_diagnostics.Build(_activeProfile,_connectionState,_capabilities,_live?.State??"IDLE"),folder);DiagnosticsText.Text=$"Redacted diagnostics exported to:${Environment.NewLine}${path}";
+        var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IntelligentVMS-Diagnostics");var path=await _diagnostics.ExportAsync(_diagnostics.Build(_activeProfile,_connectionState,_capabilities,_live?.State??"IDLE"),folder);DiagnosticsText.Text=$"Redacted diagnostics exported to:{Environment.NewLine}{path}";
     }
     private void MainWindow_Closing(object? sender,System.ComponentModel.CancelEventArgs e){try{_live?.StopAsync().GetAwaiter().GetResult();}catch{} _api.Dispose();}
     private bool TryBuildProfile(out ServerProfile p,out string error)
@@ -87,7 +87,7 @@ public partial class MainWindow : Window
         var scheme=(SchemeCombo.SelectedItem as ComboBoxItem)?.Content?.ToString()??"https";if(!int.TryParse(PortBox.Text,out var port))port=0;p=new ServerProfile(_activeProfile?.Id??Guid.NewGuid(),DisplayNameBox.Text.Trim(),scheme,HostBox.Text.Trim(),port);var result=ServerProfileValidator.Validate(p);error=result.Message;return result.IsValid;
     }
     private void SelectScheme(string scheme)=>SchemeCombo.SelectedIndex=scheme=="http"?1:0;
-    private void UpdateServerState(){ServerStateText.Text=$"${_activeProfile?.DisplayName??"No server"} · ${_connectionState}";RefreshDiagnostics();}
-    private void RefreshDiagnostics(){var d=_diagnostics.Build(_activeProfile,_connectionState,_capabilities,_live?.State??"IDLE");DiagnosticsText.Text=$"Version: ${d.ApplicationVersion}\nOS: ${d.OsVersion}\nArchitecture: ${d.Architecture}\nServer: ${d.ServerAddress}\nConnection: ${d.ConnectionState}\nServer profile: ${d.DeploymentProfile}\nMedia: ${d.MediaState}\nLogs: ${d.LogLocation}";}
+    private void UpdateServerState(){ServerStateText.Text=$"{_activeProfile?.DisplayName??"No server"} · {_connectionState}";RefreshDiagnostics();}
+    private void RefreshDiagnostics(){var d=_diagnostics.Build(_activeProfile,_connectionState,_capabilities,_live?.State??"IDLE");DiagnosticsText.Text=$"Version: {d.ApplicationVersion}\nOS: {d.OsVersion}\nArchitecture: {d.Architecture}\nServer: {d.ServerAddress}\nConnection: {d.ConnectionState}\nServer profile: {d.DeploymentProfile}\nMedia: {d.MediaState}\nLogs: {d.LogLocation}";}
     private static string FriendlyConnection(ServerConnectionState s)=>s switch{ServerConnectionState.Connected=>"VMS server is reachable.",ServerConnectionState.AuthenticationRequired=>"VMS server is reachable; authentication is required.",ServerConnectionState.TlsError=>"TLS/certificate validation failed. Trust must be fixed; validation is not bypassed.",ServerConnectionState.Incompatible=>"Server capability contract is incompatible.",_=>"Unable to reach VMS server."};
 }
