@@ -170,6 +170,28 @@ jobs:
             $pg=Get-Service -Name "postgresql-x64-*"|Sort-Object Name -Descending|Select-Object -First 1
             if($pg.Status -ne "Running"){throw "Shared PostgreSQL was stopped/removed"}
           }
+      - name: Capture redacted installer failure evidence
+        if: failure()
+        shell: pwsh
+        run: |
+          $root=Join-Path $env:ProgramData "IntelligentVMS"
+          $setupLog=Join-Path $root "installer-logs\setup.log"
+          if(Test-Path $setupLog){Get-Content $setupLog -Tail 80}
+          $collector=Join-Path $root "app\deploy\windows\Collect-WindowsDiagnostics.ps1"
+          if(Test-Path $collector){
+            try{
+              & $collector | Out-Null
+              $diag=Get-ChildItem "$root\diagnostics-*.zip" -ErrorAction SilentlyContinue|Sort-Object LastWriteTime -Descending|Select-Object -First 1
+              if($diag){
+                $dest=Join-Path $env:RUNNER_TEMP "installer-failure-diag"
+                Expand-Archive $diag.FullName $dest -Force
+                foreach($name in @("control-api.log","mediamtx.log")){
+                  $path=Join-Path $dest $name
+                  if(Test-Path $path){Write-Host "=== $name ===";Get-Content $path -Tail 80}
+                }
+              }
+            }catch{Write-Host "Redacted diagnostics unavailable: $($_.Exception.GetType().Name)"}
+          }
       - name: Cleanup
         if: always()
         shell: pwsh
