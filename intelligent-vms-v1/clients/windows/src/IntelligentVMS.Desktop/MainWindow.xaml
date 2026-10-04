@@ -25,10 +25,33 @@
   <Grid Grid.Row="1">
    <Grid.ColumnDefinitions><ColumnDefinition Width="270"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
    <Border Grid.Column="0" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" Padding="8" Margin="0,0,8,0">
-    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="Authorized cameras" FontWeight="SemiBold" Margin="4"/><TreeView x:Name="CameraTree" Grid.Row="1" SelectedItemChanged="CameraTree_SelectedItemChanged" Background="#121922" Foreground="{StaticResource TextPrimary}"/></Grid>
+    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="Authorized cameras" FontWeight="SemiBold" Margin="4"/><TreeView x:Name="CameraTree" Grid.Row="1" SelectedItemChanged="CameraTree_SelectedItemChanged" MouseDoubleClick="CameraTree_MouseDoubleClick" Background="#121922" Foreground="{StaticResource TextPrimary}"/></Grid>
    </Border>
    <TabControl Grid.Column="1" Background="{StaticResource PanelBackground}">
-    <TabItem Header="Live"><Grid Margin="8"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><DockPanel><TextBlock x:Name="LiveSelectionText" Text="Select an authorized camera." VerticalAlignment="Center" Margin="4"/><ComboBox x:Name="StreamRoleCombo" Width="110" DockPanel.Dock="Right"/><Button Content="Start live" DockPanel.Dock="Right" Click="StartLive_Click"/><Button Content="Stop" DockPanel.Dock="Right" Click="StopLive_Click"/></DockPanel><Border Grid.Row="1" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" Margin="4"><local:LiveMediaView x:Name="LiveMedia"/></Border></Grid></TabItem>
+    <TabItem Header="Live">
+     <Grid Margin="8">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <DockPanel Grid.Row="0" LastChildFill="True">
+       <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+        <TextBlock Text="Layout" VerticalAlignment="Center" Margin="4"/>
+        <Button Content="1" Tag="1" Click="Layout_Click" ToolTip="1-view"/>
+        <Button Content="4" Tag="4" Click="Layout_Click" ToolTip="2×2"/>
+        <Button Content="9" Tag="9" Click="Layout_Click" ToolTip="3×3"/>
+        <Button Content="16" Tag="16" Click="Layout_Click" ToolTip="4×4 architecture"/>
+       </StackPanel>
+       <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+        <ComboBox x:Name="StreamRoleCombo" Width="105" ToolTip="Active-tile stream role"/>
+        <Button Content="Apply role" Click="ApplyRole_Click"/>
+        <Button Content="Assign selected camera" Click="AssignSelectedCamera_Click"/>
+       </StackPanel>
+       <TextBlock x:Name="LiveSelectionText" Text="Select a tile, then assign an authorized camera." VerticalAlignment="Center" Margin="12,4" TextTrimming="CharacterEllipsis"/>
+      </DockPanel>
+      <Border Grid.Row="1" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" Margin="4">
+       <Grid x:Name="LiveGridHost" Background="Black"/>
+      </Border>
+      <TextBlock x:Name="GridStatusText" Grid.Row="2" Margin="4" Foreground="{StaticResource TextMuted}" Text="1-view · 0 live"/>
+     </Grid>
+    </TabItem>
     <TabItem Header="Cameras"><TextBlock Margin="16" TextWrapping="Wrap" Text="Camera inventory remains server-authoritative. Select an authorized camera from the navigation tree."/></TabItem>
     <TabItem Header="Playback"><TextBlock Margin="16" TextWrapping="Wrap" Text="Native playback workstation controls are not implemented in this foundation."/></TabItem>
     <TabItem x:Name="EventsTab" Header="Events" Visibility="Collapsed"><TextBlock Margin="16" TextWrapping="Wrap" Text="Event history is visible only when advertised by the connected server. Native event workstation controls are a later milestone."/></TabItem>
