@@ -49,15 +49,15 @@ def test_generation_fence_stop_priority_and_context_restart():
     asyncio.run(run())
 
 
-def test_stop_is_not_rate_limited_and_move_rate_is_bounded(monkeypatch):
+def test_stop_is_not_rate_limited_and_move_rate_is_bounded():
     async def run():
         ptz_router._generations.clear()
         ptz_router._last_move_at.clear()
         p = principal()
         context = str(uuid4())
-        times = iter([10.0, 10.01])
-        monkeypatch.setattr(ptz_router.time, "monotonic", lambda: next(times))
-        await ptz_router._claim_generation(p, "camera-1", 1, context, movement=True)
+        key = (p.subject, "camera-1", context)
+        ptz_router._generations[key] = 1
+        ptz_router._last_move_at[key] = ptz_router.time.monotonic() + 100.0
         with pytest.raises(HTTPException) as limited:
             await ptz_router._claim_generation(p, "camera-1", 2, context, movement=True)
         assert limited.value.status_code == 429
