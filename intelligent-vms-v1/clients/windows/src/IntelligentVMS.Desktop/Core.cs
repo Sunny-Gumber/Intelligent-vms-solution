@@ -38,6 +38,7 @@ public sealed record ValidationResult(bool IsValid, string Message)
     public static ValidationResult Fail(string message) => new(false, message);
 }
 public enum DesktopSessionState { SignedOut, Authenticating, Authenticated, Expired }
+public enum AuthenticationUxState { Disconnected, Connecting, AuthenticationRequired, Authenticating, Authenticated, Refreshing, Expired, SigningOut, OfflineWithRestorableSession, Failed }
 public enum ServerConnectionState { Disconnected, Connecting, Connected, AuthenticationRequired, Unreachable, TlsError, Incompatible }
 
 public sealed class SessionInfo
@@ -46,6 +47,23 @@ public sealed class SessionInfo
     [JsonPropertyName("roles")] public string[] Roles { get; set; } = [];
     [JsonPropertyName("tenant_id")] public string TenantId { get; set; } = "";
     [JsonPropertyName("site_ids")] public string[] SiteIds { get; set; } = [];
+}
+public sealed class AuthenticationCapabilities
+{
+    [JsonPropertyName("authentication_required")] public bool AuthenticationRequired { get; set; }
+    [JsonPropertyName("manual_token_login")] public bool ManualTokenLogin { get; set; }
+    [JsonPropertyName("remember_session")] public bool RememberSession { get; set; }
+    [JsonPropertyName("oidc")] public OidcCapability Oidc { get; set; } = new();
+}
+public sealed class OidcCapability
+{
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; }
+    [JsonPropertyName("required")] public bool Required { get; set; }
+    [JsonPropertyName("authority")] public string Authority { get; set; } = "";
+    [JsonPropertyName("client_id")] public string ClientId { get; set; } = "";
+    [JsonPropertyName("scopes")] public string[] Scopes { get; set; } = [];
+    [JsonPropertyName("callback")] public string Callback { get; set; } = "";
+    [JsonPropertyName("pkce_methods")] public string[] PkceMethods { get; set; } = [];
 }
 public sealed class ServerCapabilities
 {
@@ -77,7 +95,10 @@ public sealed class LiveAccessGrant
 }
 public sealed record CameraSiteGroup(string SiteId, IReadOnlyList<CameraInfo> Cameras);
 public sealed record ClientDiagnostics(string ApplicationVersion, string OsVersion, string Architecture, string ServerAddress,
-    string ConnectionState, string DeploymentProfile, string LogLocation, string MediaState);
+    string ConnectionState, string DeploymentProfile, string LogLocation, string MediaState,
+    string AuthenticationMode = "none", string AuthenticationState = "SignedOut", bool RememberedSession = false,
+    string TokenExpiry = "unknown", string OidcIssuerHost = "not configured", string LastAuthErrorCategory = "none",
+    string CallbackMechanism = "none", string CredentialStoreStatus = "not used");
 
 public static class ServerProfileValidator
 {
@@ -204,7 +225,16 @@ public interface ICredentialStore
 public sealed class WindowsCredentialStore : ICredentialStore
 {
     private const int CredTypeGeneric = 1, CredPersistLocalMachine = 2;
-    private static string Target(Guid id) => $"IntelligentVMS.Desktop/{id:D}";
+    private readonly string _purpose;
+    public WindowsCredentialStore(string purpose = "session")
+    {
+        if (string.IsNullOrWhiteSpace(purpose) || purpose.Any(ch => !(char.IsLetterOrDigit(ch) || ch is '-' or '_')))
+            throw new ArgumentException("Credential purpose is invalid.", nameof(purpose));
+        _purpose = purpose;
+    }
+    private string Target(Guid id) => _purpose == "session"
+        ? $"IntelligentVMS.Desktop/{id:D}"
+        : $"IntelligentVMS.Desktop/{id:D}/{_purpose}";
     public Task SaveAsync(Guid profileId, string token, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -294,10 +324,20 @@ public sealed class DesktopSession
         if(ProfileId is Guid id) await _credentials.DeleteAsync(id,cancellationToken);
         AccessToken=null; ProfileId=null; State=DesktopSessionState.SignedOut; _logger.Info("auth","desktop session signed out");
     }
+    public void ReplaceAccessToken(Guid profileId, string token)
+    {
+        if(State!=DesktopSessionState.Authenticated || ProfileId!=profileId || string.IsNullOrWhiteSpace(token))
+            throw new InvalidOperationException("Cannot replace token outside the active authenticated profile.");
+        AccessToken=token.Trim();
+    }
+    public void DisconnectRuntime()
+    {
+        AccessToken=null; ProfileId=null; State=DesktopSessionState.SignedOut;
+    }
     public async Task MarkExpiredAsync(CancellationToken cancellationToken=default)
     {
         if(ProfileId is Guid id) await _credentials.DeleteAsync(id,cancellationToken);
-        AccessToken=null; State=DesktopSessionState.Expired; _logger.Warning("auth","desktop session expired");
+        AccessToken=null; ProfileId=null; State=DesktopSessionState.Expired; _logger.Warning("auth","desktop session expired");
     }
 }
 
@@ -312,10 +352,11 @@ public interface ILiveAccessProvider
 public sealed class VmsApiClient : ILiveAccessProvider, IDisposable
 {
     private readonly HttpClient _http; private readonly Func<string?> _tokenProvider;
+    private readonly Func<CancellationToken,Task<bool>>? _refreshProvider;
     private readonly JsonSerializerOptions _json=new(){PropertyNameCaseInsensitive=true}; private ServerProfile? _profile;
-    public VmsApiClient(Func<string?> tokenProvider,HttpMessageHandler? handler=null)
+    public VmsApiClient(Func<string?> tokenProvider,HttpMessageHandler? handler=null,Func<CancellationToken,Task<bool>>? refreshProvider=null)
     {
-        _tokenProvider=tokenProvider;
+        _tokenProvider=tokenProvider; _refreshProvider=refreshProvider;
         handler ??= new HttpClientHandler { CheckCertificateRevocationList=true };
         _http=new HttpClient(handler){Timeout=TimeSpan.FromSeconds(12)};
     }
@@ -335,25 +376,39 @@ public sealed class VmsApiClient : ILiveAccessProvider, IDisposable
         catch(HttpRequestException){return ServerConnectionState.Unreachable;}
         catch(TaskCanceledException) when(!cancellationToken.IsCancellationRequested){return ServerConnectionState.Unreachable;}
     }
-    public Task<SessionInfo> GetSessionAsync(CancellationToken ct=default)=>SendJsonAsync<SessionInfo>(HttpMethod.Get,"/api/v1/auth/session",ct);
+    public Task<AuthenticationCapabilities> GetAuthenticationCapabilitiesAsync(CancellationToken ct=default)=>
+        SendJsonAsync<AuthenticationCapabilities>(HttpMethod.Get,"/api/v1/auth/capabilities",ct,false,false);
+    public Task<SessionInfo> GetSessionAsync(CancellationToken ct=default)=>SendJsonAsync<SessionInfo>(HttpMethod.Get,"/api/v1/auth/session",ct,true,true);
+    public Task<SessionInfo> GetSessionWithoutRefreshAsync(CancellationToken ct=default)=>SendJsonAsync<SessionInfo>(HttpMethod.Get,"/api/v1/auth/session",ct,true,false);
     public async Task<ServerCapabilities> GetCapabilitiesAsync(CancellationToken ct=default)
     {
-        var v=await SendJsonAsync<ServerCapabilities>(HttpMethod.Get,"/api/v1/system/capabilities",ct);
+        var v=await SendJsonAsync<ServerCapabilities>(HttpMethod.Get,"/api/v1/system/capabilities",ct,true,true);
         if(string.IsNullOrWhiteSpace(v.DeploymentProfile)) throw new IncompatibleServerException(); return v;
     }
-    public Task<List<CameraInfo>> GetCamerasAsync(CancellationToken ct=default)=>SendJsonAsync<List<CameraInfo>>(HttpMethod.Get,"/api/v1/cameras",ct);
+    public Task<List<CameraInfo>> GetCamerasAsync(CancellationToken ct=default)=>SendJsonAsync<List<CameraInfo>>(HttpMethod.Get,"/api/v1/cameras",ct,true,true);
     public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default)=>SendJsonAsync<LiveAccessGrant>(
-        HttpMethod.Post,$"/api/v1/live/cameras/{Uri.EscapeDataString(cameraId)}/access?stream_role={Uri.EscapeDataString(role)}",cancellationToken);
-    private async Task<T> SendJsonAsync<T>(HttpMethod method,string relative,CancellationToken ct)
+        HttpMethod.Post,$"/api/v1/live/cameras/{Uri.EscapeDataString(cameraId)}/access?stream_role={Uri.EscapeDataString(role)}",cancellationToken,true,true);
+    private async Task<T> SendJsonAsync<T>(HttpMethod method,string relative,CancellationToken ct,bool auth,bool allowRefresh)
     {
-        using var request=new HttpRequestMessage(method,UriFor(relative));
-        var token=_tokenProvider(); if(string.IsNullOrWhiteSpace(token)) throw new SessionExpiredException();
-        request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",token);
-        using var response=await _http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,ct);
-        if(response.StatusCode==HttpStatusCode.Unauthorized) throw new SessionExpiredException();
-        if(!response.IsSuccessStatusCode) throw new VmsApiException(response.StatusCode);
-        await using var stream=await response.Content.ReadAsStreamAsync(ct);
-        return await JsonSerializer.DeserializeAsync<T>(stream,_json,ct) ?? throw new IncompatibleServerException();
+        for(var attempt=0;attempt<2;attempt++)
+        {
+            using var request=new HttpRequestMessage(method,UriFor(relative));
+            if(auth)
+            {
+                var token=_tokenProvider(); if(string.IsNullOrWhiteSpace(token)) throw new SessionExpiredException();
+                request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",token);
+            }
+            using var response=await _http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,ct);
+            if(response.StatusCode==HttpStatusCode.Unauthorized && auth)
+            {
+                if(attempt==0 && allowRefresh && _refreshProvider is not null && await _refreshProvider(ct)) continue;
+                throw new SessionExpiredException();
+            }
+            if(!response.IsSuccessStatusCode) throw new VmsApiException(response.StatusCode);
+            await using var stream=await response.Content.ReadAsStreamAsync(ct);
+            return await JsonSerializer.DeserializeAsync<T>(stream,_json,ct) ?? throw new IncompatibleServerException();
+        }
+        throw new SessionExpiredException();
     }
     private Uri UriFor(string relative){if(_profile is null) throw new InvalidOperationException("No VMS server profile is configured."); return new Uri(_profile.ApiBaseAddress,relative);}
     public void Dispose()=>_http.Dispose();
@@ -400,9 +455,12 @@ public sealed class LiveSessionController : IAsyncDisposable
 public static class DiagnosticsService
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
-    public static ClientDiagnostics Build(ServerProfile? profile,ServerConnectionState state,ServerCapabilities? caps,string mediaState)=>new(
+    public static ClientDiagnostics Build(ServerProfile? profile,ServerConnectionState state,ServerCapabilities? caps,string mediaState,
+        string authenticationMode="none",string authenticationState="SignedOut",bool rememberedSession=false,DateTimeOffset? tokenExpiry=null,
+        string oidcIssuerHost="not configured",string lastAuthErrorCategory="none",string callbackMechanism="none",string credentialStoreStatus="not used")=>new(
         typeof(DiagnosticsService).Assembly.GetName().Version?.ToString()??"unknown",RuntimeInformation.OSDescription,RuntimeInformation.ProcessArchitecture.ToString(),
-        profile?.SafeAddress??"not configured",state.ToString(),caps?.DeploymentProfile??"unknown",ClientPaths.LogDirectory,mediaState);
+        profile?.SafeAddress??"not configured",state.ToString(),caps?.DeploymentProfile??"unknown",ClientPaths.LogDirectory,mediaState,
+        authenticationMode,authenticationState,rememberedSession,tokenExpiry?.ToString("O")??"unknown",oidcIssuerHost,lastAuthErrorCategory,callbackMechanism,credentialStoreStatus);
     public static async Task<string> ExportAsync(ClientDiagnostics diagnostics,string directory,CancellationToken ct=default)
     {
         Directory.CreateDirectory(directory); var path=Path.Combine(directory,$"intelligent-vms-client-diagnostics-{DateTime.UtcNow:yyyyMMddTHHmmssZ}.json");
