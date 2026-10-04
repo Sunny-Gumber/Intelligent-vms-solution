@@ -236,6 +236,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
     public DateTimeOffset? TokenExpiry { get; private set; }
     public string LastErrorCategory { get; private set; } = "none";
     public static string CallbackMechanism => "loopback-127.0.0.1";
+    public bool HasActiveSession => _profileId is not null;
 
     public OidcAuthenticationManager(DesktopSession session, ICredentialStore refreshStore, IClientLogger logger, ISystemBrowserLauncher? browser = null)
     {
@@ -424,14 +425,20 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
         _client = null; _profileId = null; _refreshToken = null; TokenExpiry = null; RememberedSession = false; State = state;
     }
 
-    private static OidcClient CreateClient(OidcCapability capability, string redirectUri) => new(new OidcClientOptions
+    private static OidcClient CreateClient(OidcCapability capability, string redirectUri)
     {
-        Authority = capability.Authority,
-        ClientId = capability.ClientId,
-        Scope = string.Join(' ', capability.Scopes),
-        RedirectUri = redirectUri,
-        BrowserTimeout = TimeSpan.FromMinutes(3),
-    });
+        var options = new OidcClientOptions
+        {
+            Authority = capability.Authority,
+            ClientId = capability.ClientId,
+            Scope = string.Join(' ', capability.Scopes),
+            RedirectUri = redirectUri,
+            BrowserTimeout = TimeSpan.FromMinutes(3),
+            DisablePushedAuthorization = true,
+        };
+        options.FilteredClaims.Remove("nonce");
+        return new OidcClient(options);
+    }
 
     private static string RandomToken(int bytes) => OidcAuthorizationRequestValidator.Base64Url(RandomNumberGenerator.GetBytes(bytes));
     private static bool FixedEquals(string left, string right) => left.Length == right.Length &&
