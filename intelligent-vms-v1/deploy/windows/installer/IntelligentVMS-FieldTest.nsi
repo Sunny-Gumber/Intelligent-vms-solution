@@ -43,6 +43,8 @@ Var RadioServer
 Var RadioClient
 Var RadioBoth
 Var RecordingEdit
+Var PgPassword
+Var PgPasswordEdit
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
@@ -138,21 +140,37 @@ Function RecordingPage
   Pop $0
   ${NSD_CreateText} 0 34u 100% 14u "$RecordingRoot"
   Pop $RecordingEdit
-  ${NSD_CreateLabel} 0 62u 100% 48u "Preflight validates x64 Windows, elevation, path safety, PostgreSQL 14+, Python 3.12 x64, required ports and service state before server changes."
+  ${NSD_CreateLabel} 0 62u 100% 12u "PostgreSQL administrator password (used only in-memory for first-time DB bootstrap):"
+  Pop $0
+  ${NSD_CreatePassword} 0 78u 100% 14u "$PgPassword"
+  Pop $PgPasswordEdit
+  ${NSD_CreateLabel} 0 102u 100% 44u "Preflight validates x64 Windows, elevation, path safety, PostgreSQL 14+, Python 3.12 x64, required ports and service state before server changes."
   Pop $0
   nsDialogs::Show
 FunctionEnd
 
 Function RecordingPageLeave
   ${NSD_GetText} $RecordingEdit $RecordingRoot
+  ${NSD_GetText} $PgPasswordEdit $PgPassword
   ${If} $RecordingRoot == ""
     MessageBox MB_ICONSTOP "Choose a recording path."
+    Abort
+  ${EndIf}
+  ${If} $PgPassword == ""
+    MessageBox MB_ICONSTOP "Enter the PostgreSQL administrator password for first-time Server/Both setup."
     Abort
   ${EndIf}
 FunctionEnd
 
 Section "Install"
   SetShellVarContext all
+
+  ; Pass PostgreSQL bootstrap credential only in the child-process environment, never on a command line.
+  ${If} $Mode != "Client"
+    ${If} $PgPassword != ""
+      System::Call 'kernel32::SetEnvironmentVariable(t "VMS_POSTGRES_ADMIN_PASSWORD", t rPgPassword)i'
+    ${EndIf}
+  ${EndIf}
 
   ; Preflight from NSIS private extraction before Program Files/registry mutation.
   InitPluginsDir
