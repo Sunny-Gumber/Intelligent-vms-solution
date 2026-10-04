@@ -314,7 +314,7 @@ public partial class MainWindow:Window
 
     private async void Grid_Changed(object? sender,EventArgs e)
     {
-        if(!Dispatcher.CheckAccess()){Dispatcher.BeginInvoke(RenderLiveGrid);return;}
+        if(!Dispatcher.CheckAccess()){Dispatcher.BeginInvoke(new Action(()=>Grid_Changed(sender,e)));return;}
         RenderLiveGrid();
         try{await SyncPtzForGridAsync();}
         catch(SessionExpiredException){await HandleSessionExpiredAsync();}
