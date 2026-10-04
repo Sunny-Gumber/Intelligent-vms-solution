@@ -542,7 +542,7 @@ public partial class MainWindow:Window
 
     private async void ExportDiagnostics_Click(object sender,RoutedEventArgs e)
     {
-        var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IntelligentVMS-Diagnostics");
+        var folder=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IntelligentVMS-Diagnostics");
         var path=await DiagnosticsService.ExportAsync(BuildDiagnostics(),folder);
         DiagnosticsText.Text=$"Redacted diagnostics exported to:{Environment.NewLine}{path}";
     }
