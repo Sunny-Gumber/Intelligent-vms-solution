@@ -58,9 +58,10 @@ function Assert-RecordingPath([string]$Path){
   if($drive.AvailableFreeSpace -lt 2GB){Write-SafeLog "preflight" "warning=recording_drive_low_free_space"}
 }
 function Assert-WebView2 {
+  $pf86=[Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
   $roots=@(
-    "$env:ProgramFiles(x86)\Microsoft\EdgeWebView\Application",
-    "$env:ProgramFiles\Microsoft\EdgeWebView\Application"
+    (Join-Path $pf86 "Microsoft\EdgeWebView\Application"),
+    (Join-Path $env:ProgramFiles "Microsoft\EdgeWebView\Application")
   )
   $found=$false
   foreach($r in $roots){if(Test-Path $r){if(Get-ChildItem $r -Recurse -Filter msedgewebview2.exe -ErrorAction SilentlyContinue|Select-Object -First 1){$found=$true;break}}}
@@ -99,7 +100,7 @@ function Invoke-Preflight {
   }
   if($Components -in @("Client","Both")){Assert-WebView2}
   $state=Get-InstalledState
-  if($state -and $state.corrupt){throw "Existing Intelligent VMS installer state is corrupt; do not overwrite it blindly."}
+  if($state -and ($state.PSObject.Properties.Name -contains "corrupt") -and $state.corrupt){throw "Existing Intelligent VMS installer state is corrupt; do not overwrite it blindly."}
   if($state){
     $cmp=Compare-Version ([string]$state.version) $Version
     if($cmp -gt 0){throw "Downgrade blocked: installed version $($state.version) is newer than setup $Version."}
@@ -160,7 +161,7 @@ function Uninstall-Managed {
 
 try{
   $created=$false
-  $mutex=New-Object Threading.Mutex($true,"Global\IntelligentVMSUnifiedFieldTestSetup",[ref]$created)
+  $mutex=[Threading.Mutex]::new($true,"Global\IntelligentVMSUnifiedFieldTestSetup",[ref]$created)
   if(-not $created){throw "Another Intelligent VMS setup operation is already running."}
   if($Action -eq "Uninstall"){Uninstall-Managed;exit 0}
   Invoke-Preflight
