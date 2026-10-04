@@ -6,8 +6,11 @@ on:
       - 'intelligent-vms-v1/clients/windows/**'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_CLIENT_FOUNDATION.md'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_LIVE_GRID.md'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_PLAYBACK_FOUNDATION.md'
       - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_LIVE_GRID_SECURITY_REVIEW.md'
+      - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_PLAYBACK_SECURITY_REVIEW.md'
       - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_CLIENT_QA.md'
+      - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_PLAYBACK_QA.md'
       - 'intelligent-vms-v1/docs/operations/WINDOWS_DESKTOP_CLIENT.md'
       - '.github/workflows/intelligent-vms-windows-client.yml'
   push:
@@ -16,8 +19,11 @@ on:
       - 'intelligent-vms-v1/clients/windows/**'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_CLIENT_FOUNDATION.md'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_LIVE_GRID.md'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_PLAYBACK_FOUNDATION.md'
       - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_LIVE_GRID_SECURITY_REVIEW.md'
+      - 'intelligent-vms-v1/docs/security/WINDOWS_DESKTOP_PLAYBACK_SECURITY_REVIEW.md'
       - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_CLIENT_QA.md'
+      - 'intelligent-vms-v1/docs/testing/WINDOWS_DESKTOP_PLAYBACK_QA.md'
       - 'intelligent-vms-v1/docs/operations/WINDOWS_DESKTOP_CLIENT.md'
       - '.github/workflows/intelligent-vms-windows-client.yml'
 
@@ -73,6 +79,18 @@ jobs:
           }
           if($grid -notmatch 'SupportedCounts=\[1,4,9,16\]'){throw "Native live-grid layout contract missing"}
           if($grid -match 'setInterval|while\s*\(\s*true\s*\)'){throw "Live-grid must not introduce automatic retry storms"}
+          $playback=Get-Content clients/windows/src/IntelligentVMS.Desktop/Playback.cs -Raw
+          foreach($forbidden in @("rtsp://","record_stream_key","segment_path","ProgramData")){
+            if($playback -match [regex]::Escape($forbidden)){throw "Playback coordinator contains forbidden server/media coupling: $forbidden"}
+          }
+          $playbackRenderer=Get-Content clients/windows/src/IntelligentVMS.Desktop/Views/PlaybackMediaView.xaml.cs -Raw
+          if($playbackRenderer -notmatch 'SetHeader\("Authorization"'){throw "Playback media requests must inject Authorization natively"}
+          if($playbackRenderer -notmatch 'SameOrigin'){throw "Playback media must remain bound to the active VMS origin"}
+          $playbackPage=Get-Content clients/windows/src/IntelligentVMS.Desktop/Media/playback.html -Raw
+          foreach($secret in @("Authorization","access_token","refresh_token","code_verifier")){
+            if($playbackPage -match [regex]::Escape($secret)){throw "Packaged playback page contains forbidden auth material: $secret"}
+          }
+          if($playbackPage -notmatch 'video\.currentTime'){throw "Playback position must originate from the media renderer"}
       - name: Publish deterministic win-x64 package
         shell: pwsh
         run: .\clients\windows\packaging\Publish-Client.ps1 -Version "0.1.${{ github.run_number }}" -OutputRoot "$env:RUNNER_TEMP\client-artifacts"

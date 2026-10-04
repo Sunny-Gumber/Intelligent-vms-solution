@@ -86,3 +86,20 @@ Covered software scenarios include:
 The 16-session test is a state/lifecycle test only. It does not decode sixteen real streams and is not evidence for real workstation capacity.
 
 Independent QA must still review the exact candidate head and the existing live API/WHEP contract. Real WebView2 media rendering against representative cameras/codecs remains External Qualification Pending.
+
+## Windows Desktop Playback Foundation — issue #12 / PR #13 — 2026-10-04
+
+- Verified starting main: `8ca6f0a2ba6a4fa2a8da1c27750bffc64811e60a`.
+- Dedicated branch: `feature/windows-desktop-playback-foundation`.
+- Reuses existing authorized recording timeline, MP4 playback and bounded clip-export endpoints; no server/schema/recorder/playback-backend change was required.
+- Native WPF playback workspace supports one authorized camera, selected-date availability, gap-aware timeline, play/pause/resume/seek/stop, renderer-derived position and same-span clip selection/export.
+- Internally uses offset-aware UTC query/media timestamps; operator display uses the Windows local timezone because a site-timezone contract is not currently exposed. DST-forward/back day-length tests are deterministic.
+- Seek into a true recording gap does not fabricate content or silently jump; it reports no recording at the requested time.
+- Only 1× playback is advertised. F04-005 fast/slow remains TARGET/NV.
+- F03-007 recording calendar remains TARGET/NV because the foundation has selected-date availability rather than month/day calendar marking.
+- F04-001 remains TARGET/NV as a whole because synchronized/multi-camera playback is not implemented; the single-camera subset is evidenced by existing focused playback rows.
+- Playback media uses a restricted replaceable WebView2 renderer. The media URL contains no bearer credential; native request interception injects Authorization only for the active VMS origin/playback path.
+- Live sessions stop before playback use; playback stops when leaving the workspace. Logout, auth expiry, profile/server switch and app shutdown tear down playback context.
+- Existing server export remains authoritative for authorization, continuous coverage, node boundary and limits; desktop never browses recording folders.
+- Product remains **Release Candidate / External Qualification Pending**. Windows 10/11, codec, 4K, high-speed, GPU, storage and long-duration playback qualification remain external.
+

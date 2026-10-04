@@ -2,6 +2,9 @@ using System.IO;
 using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Shapes;
+using Microsoft.Win32;
 
 namespace IntelligentVMS.Desktop;
 
@@ -22,6 +25,7 @@ public partial class MainWindow:Window
     private ServerCapabilities? _capabilities;
     private CameraInfo? _selectedCamera;
     private LiveGridCoordinator? _grid;
+    private PlaybackCoordinator? _playback;
     private ServerConnectionState _connectionState=ServerConnectionState.Disconnected;
 
     public MainWindow(IClientLogger logger)
@@ -35,7 +39,10 @@ public partial class MainWindow:Window
         Loaded+=MainWindow_Loaded;
         Closing+=MainWindow_Closing;
         SchemeCombo.SelectedIndex=0;
+        PlaybackDatePicker.SelectedDate=DateTime.Today;
+        PlaybackRateCombo.SelectedIndex=0;
         RenderLiveGrid();
+        RenderPlayback();
     }
 
     private void InitializeLiveTiles()
@@ -139,6 +146,7 @@ public partial class MainWindow:Window
 
     private async void Logout_Click(object sender,RoutedEventArgs e)
     {
+        await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);
         if(_activeProfile is not null)await _oidc.LogoutAsync(_activeProfile.Id);
         await _session.LogoutAsync();ClearAuthorizedState();_connectionState=ServerConnectionState.AuthenticationRequired;
@@ -155,6 +163,7 @@ public partial class MainWindow:Window
             _authorizedCameras=cameras.ToDictionary(x=>x.Id,StringComparer.Ordinal);
             PopulateCameraTree(cameras);
             await InitializeGridCoordinatorAsync();
+            await InitializePlaybackCoordinatorAsync();
             EventsTab.Visibility=_capabilities.EventHistory?Visibility.Visible:Visibility.Collapsed;
             LogoutButton.IsEnabled=true;UpdateServerState();
         }
@@ -175,14 +184,18 @@ public partial class MainWindow:Window
         }
     }
 
-    private void CameraTree_SelectedItemChanged(object sender,RoutedPropertyChangedEventArgs<object> e)
+    private async void CameraTree_SelectedItemChanged(object sender,RoutedPropertyChangedEventArgs<object> e)
     {
         if(e.NewValue is not TreeViewItem{Tag:CameraInfo camera})
         {
-            _selectedCamera=null;StreamRoleCombo.ItemsSource=null;return;
+            if(_playback?.Camera is not null)await _playback.ClearContextAsync();
+            _selectedCamera=null;StreamRoleCombo.ItemsSource=null;PlaybackCameraText.Text="Select one authorized camera.";return;
         }
+        if(_playback?.Camera is not null&&!string.Equals(_playback.Camera.Id,camera.Id,StringComparison.Ordinal))
+            await _playback.ClearContextAsync();
         _selectedCamera=camera;
         LiveSelectionText.Text=$"{camera.Name} · {camera.SiteId}";
+        PlaybackCameraText.Text=$"{camera.Name} · {camera.SiteId}";
         try{UpdateRoleOptions(camera.AvailableLiveRoles,LiveStreamRolePolicy.Preferred(camera,_grid?.FocusedTile is not null||_grid?.Layout.Count==1));}
         catch(InvalidOperationException){StreamRoleCombo.ItemsSource=null;LiveSelectionText.Text=$"{camera.Name} has no advertised live stream role.";}
     }
@@ -346,8 +359,201 @@ public partial class MainWindow:Window
         catch(Exception ex){_logger.LogError("live-grid","layout persistence failed",ex);}
     }
 
+    private async Task InitializePlaybackCoordinatorAsync()
+    {
+        if(_activeProfile is null)return;
+        await DeactivatePlaybackAsync();
+        PlaybackMedia.Configure(_activeProfile,()=>_session.AccessToken);
+        var playback=new PlaybackCoordinator(_api,PlaybackMedia,_logger);
+        playback.Changed+=Playback_Changed;
+        _playback=playback;
+        RenderPlayback();
+    }
+
+    private async Task DeactivatePlaybackAsync()
+    {
+        var playback=_playback;
+        if(playback is null){RenderPlayback();return;}
+        playback.Changed-=Playback_Changed;
+        _playback=null;
+        await playback.DisposeAsync();
+        RenderPlayback();
+    }
+
+    private void Playback_Changed(object? sender,EventArgs e)
+    {
+        if(!Dispatcher.CheckAccess()){Dispatcher.BeginInvoke(RenderPlayback);return;}
+        RenderPlayback();
+    }
+
+    private async void PlaybackDate_SelectedDateChanged(object sender,SelectionChangedEventArgs e)
+    {
+        if(_playback?.Day is null||PlaybackDatePicker.SelectedDate is not DateTime selected)return;
+        if(_playback.Day.LocalDate!=DateOnly.FromDateTime(selected))await _playback.ClearContextAsync();
+    }
+
+    private async void MainTabs_SelectionChanged(object sender,SelectionChangedEventArgs e)
+    {
+        if(e.Source!=MainTabs)return;
+        try
+        {
+            if(MainTabs.SelectedItem==PlaybackTab)await StopLiveAsync();
+            else if(_playback?.State is PlaybackState.Playing or PlaybackState.Paused or PlaybackState.Starting or PlaybackState.Seeking)
+                await _playback.StopAsync();
+        }
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+    }
+
+    private async void PlaybackLoad_Click(object sender,RoutedEventArgs e)
+    {
+        if(_playback is null||_selectedCamera is null){PlaybackStatusText.Text="Authenticate and select one authorized camera first.";return;}
+        if(PlaybackDatePicker.SelectedDate is not DateTime selected){PlaybackStatusText.Text="Select a recording date.";return;}
+        try
+        {
+            await StopLiveAsync();
+            await _playback.LoadDayAsync(_selectedCamera,DateOnly.FromDateTime(selected),TimeZoneInfo.Local);
+        }
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+        catch(Exception ex){_logger.LogError("playback","recording day load failed",ex);PlaybackStatusText.Text="Unable to load recording availability.";}
+    }
+
+    private async void PlaybackPlay_Click(object sender,RoutedEventArgs e)
+    {
+        if(_playback is null)return;
+        try
+        {
+            if(_playback.State==PlaybackState.Paused){await _playback.ResumeAsync();return;}
+            var target=_playback.Position;
+            if(target is null||PlaybackTimelineNormalizer.Find(_playback.Segments,target.Value) is null)
+                target=_playback.Segments.Count>0?_playback.Segments[0].Start:null;
+            if(target is null){PlaybackStatusText.Text="No recording available.";return;}
+            await _playback.StartAsync(target.Value);
+        }
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+    }
+
+    private async void PlaybackPause_Click(object sender,RoutedEventArgs e)
+    {
+        if(_playback is null)return;
+        try{await _playback.PauseAsync();}
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+    }
+
+    private async void PlaybackStop_Click(object sender,RoutedEventArgs e)
+    {
+        if(_playback is null)return;
+        try{await _playback.StopAsync();}
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+    }
+
+    private async void PlaybackRate_SelectionChanged(object sender,SelectionChangedEventArgs e)
+    {
+        if(_playback is null||PlaybackRateCombo.SelectedItem is not ComboBoxItem{Tag:string tag}||!double.TryParse(tag,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var rate))return;
+        try{await _playback.SetRateAsync(rate);}
+        catch(InvalidOperationException){PlaybackStatusText.Text="That playback speed is not supported.";}
+    }
+
+    private async void PlaybackTimeline_MouseLeftButtonDown(object sender,System.Windows.Input.MouseButtonEventArgs e)
+    {
+        var playback=_playback;
+        if(playback?.Day is null||PlaybackTimelineCanvas.ActualWidth<=0)return;
+        var fraction=Math.Clamp(e.GetPosition(PlaybackTimelineCanvas).X/PlaybackTimelineCanvas.ActualWidth,0,1);
+        var target=playback.Day.StartUtc+TimeSpan.FromTicks((long)(playback.Day.Duration.Ticks*fraction));
+        try
+        {
+            var recorded=await playback.SeekAsync(target);
+            if(!recorded)PlaybackStatusText.Text="No recording at selected time.";
+        }
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+    }
+
+    private void PlaybackMarkStart_Click(object sender,RoutedEventArgs e)
+    {
+        if(_playback is null)return;
+        try{_playback.MarkClipStart();}
+        catch(InvalidOperationException){PlaybackStatusText.Text="Move playback to recorded media before marking clip start.";}
+    }
+
+    private void PlaybackMarkEnd_Click(object sender,RoutedEventArgs e)
+    {
+        if(_playback is null)return;
+        try{_playback.MarkClipEnd();}
+        catch(InvalidOperationException){PlaybackStatusText.Text="Clip end must be later and remain inside the same continuous recording span.";}
+    }
+
+    private async void PlaybackExport_Click(object sender,RoutedEventArgs e)
+    {
+        var playback=_playback;
+        if(playback?.Camera is null||playback.ClipStart is null||playback.ClipEnd is null)return;
+        var dialog=new SaveFileDialog{Filter="MP4 video (*.mp4)|*.mp4",DefaultExt=".mp4",AddExtension=true,
+            FileName=$"clip-{SafeFilePart(playback.Camera.Name)}-{playback.ClipStart.Value.UtcDateTime:yyyyMMddTHHmmssZ}.mp4"};
+        if(dialog.ShowDialog(this)!=true)return;
+        try
+        {
+            await using var stream=new FileStream(dialog.FileName,FileMode.Create,FileAccess.Write,FileShare.None,81920,true);
+            await playback.ExportClipAsync(stream);
+            PlaybackStatusText.Text="Clip export completed.";
+        }
+        catch(SessionExpiredException){try{File.Delete(dialog.FileName);}catch{}await HandleSessionExpiredAsync();}
+        catch(Exception ex){try{File.Delete(dialog.FileName);}catch{} _logger.LogError("playback","clip export failed",ex);PlaybackStatusText.Text="Clip export failed.";}
+    }
+
+    private void RenderPlayback()
+    {
+        var playback=_playback;
+        PlaybackTimelineCanvas.Children.Clear();
+        if(playback?.Day is not null)
+        {
+            var width=Math.Max(1,PlaybackTimelineCanvas.ActualWidth);
+            var total=playback.Day.Duration.TotalSeconds;
+            foreach(var span in playback.Segments)
+            {
+                var left=(span.Start-playback.Day.StartUtc).TotalSeconds/total*width;
+                var spanWidth=Math.Max(2,span.Duration.TotalSeconds/total*width);
+                var rect=new Rectangle{Height=34,Width=spanWidth,Fill=Brushes.SteelBlue,ToolTip=$"{playback.Day.ToDisplay(span.Start):HH:mm:ss} – {playback.Day.ToDisplay(span.End):HH:mm:ss}"};
+                Canvas.SetLeft(rect,left);Canvas.SetTop(rect,7);PlaybackTimelineCanvas.Children.Add(rect);
+            }
+            if(playback.Position is DateTimeOffset position)
+            {
+                var left=(position-playback.Day.StartUtc).TotalSeconds/total*width;
+                var line=new Line{X1=left,X2=left,Y1=2,Y2=46,Stroke=Brushes.OrangeRed,StrokeThickness=2};
+                PlaybackTimelineCanvas.Children.Add(line);
+            }
+        }
+        PlaybackDayStateText.Text=playback is null?"No day loaded":playback.State switch{
+            PlaybackState.LoadingAvailability=>"Loading recording availability…",
+            PlaybackState.Unavailable=>"No recording available",
+            PlaybackState.Failed=>"Playback unavailable",
+            _=>$"{playback.Segments.Count} recorded span(s) · {playback.GapCount} gap(s)"};
+        PlaybackPositionText.Text=playback?.Position is DateTimeOffset pos&&playback.Day is not null
+            ?$"Position: {playback.Day.ToDisplay(pos):yyyy-MM-dd HH:mm:ss}"
+            :"Position: —";
+        PlaybackStatusText.Text=playback is null?"Ready":FriendlyPlaybackState(playback);
+        PlaybackPlayButton.IsEnabled=playback?.Segments.Count>0;
+        PlaybackPauseButton.IsEnabled=playback?.State==PlaybackState.Playing;
+        PlaybackStopButton.IsEnabled=playback?.State is PlaybackState.Playing or PlaybackState.Paused or PlaybackState.Starting or PlaybackState.Seeking;
+        PlaybackExportButton.IsEnabled=playback?.ClipStart is not null&&playback.ClipEnd is not null;
+        PlaybackClipText.Text=playback?.ClipStart is null?"Clip: not selected":
+            playback.ClipEnd is null?$"Clip start: {playback.Day?.ToDisplay(playback.ClipStart.Value):HH:mm:ss}":
+            $"Clip: {playback.Day?.ToDisplay(playback.ClipStart.Value):HH:mm:ss} – {playback.Day?.ToDisplay(playback.ClipEnd.Value):HH:mm:ss}";
+        RefreshDiagnostics();
+    }
+
+    private static string FriendlyPlaybackState(PlaybackCoordinator playback)=>playback.ErrorCategory switch
+    {
+        "gap"=>"No recording at selected time.",
+        "recording_removed"=>"Recording is no longer available.",
+        "session_expired"=>"Session expired. Sign in again.",
+        "availability_failed"=>"Unable to load recording availability.",
+        "playback_failed" or "renderer_failed"=>"Playback unavailable.",
+        _=>playback.State.ToString()
+    };
+
+    private static string SafeFilePart(string value)=>new(value.Where(ch=>char.IsLetterOrDigit(ch)||ch is '-' or '_').Take(60).ToArray());
+
     private async Task HandleSessionExpiredAsync()
     {
+        await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);
         if(_activeProfile is not null)await _oidc.InvalidateAsync(_activeProfile.Id);
         await _session.MarkExpiredAsync();
@@ -357,7 +563,7 @@ public partial class MainWindow:Window
 
     private async void ExportDiagnostics_Click(object sender,RoutedEventArgs e)
     {
-        var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IntelligentVMS-Diagnostics");
+        var folder=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"IntelligentVMS-Diagnostics");
         var path=await DiagnosticsService.ExportAsync(BuildDiagnostics(),folder);
         DiagnosticsText.Text=$"Redacted diagnostics exported to:{Environment.NewLine}{path}";
     }
@@ -365,7 +571,9 @@ public partial class MainWindow:Window
     private void MainWindow_Closing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
         _oidc.CancelActiveAttempt();
+        try{DeactivatePlaybackAsync().GetAwaiter().GetResult();}catch{}
         try{DeactivateGridAsync(true).GetAwaiter().GetResult();}catch{}
+        try{PlaybackMedia.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}
         foreach(var tile in _tileViews){try{tile.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}}
         try{_oidc.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}
         _api.Dispose();
@@ -373,6 +581,7 @@ public partial class MainWindow:Window
 
     private async Task EndSessionForServerChangeAsync()
     {
+        await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);_oidc.Deactivate();
         if(_session.State!=DesktopSessionState.SignedOut)await _session.LogoutAsync();
         _authCapabilities=null;ClearAuthorizedState();_connectionState=ServerConnectionState.Disconnected;
@@ -442,6 +651,7 @@ public partial class MainWindow:Window
     private void ClearAuthorizedState()
     {
         _selectedCamera=null;_authorizedCameras=new Dictionary<string,CameraInfo>(StringComparer.Ordinal);
+        PlaybackCameraText.Text="Select one authorized camera.";PlaybackDayStateText.Text="No day loaded";PlaybackStatusText.Text="Ready";
         CameraTree.Items.Clear();StreamRoleCombo.ItemsSource=null;_capabilities=null;
         EventsTab.Visibility=Visibility.Collapsed;LogoutButton.IsEnabled=false;RenderLiveGrid();
     }
@@ -469,10 +679,16 @@ public partial class MainWindow:Window
         var grid=_grid;
         var tileStates=grid is null?"none":string.Join(",",grid.Tiles.Where(x=>x.HasAssignment)
             .Select(x=>$"{x.TileId}:{x.State}:{(string.IsNullOrWhiteSpace(x.ActualRole)?x.RequestedRole:x.ActualRole)}"));
+        var playback=_playback;
+        var playbackCamera=playback?.Camera is null?"none":$"{playback.Camera.Id}:{playback.Camera.Name}";
+        var playbackDate=playback?.Day?.LocalDate.ToString("yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture)??"none";
+        var playbackPosition=playback?.Position?.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture)??"none";
         return DiagnosticsService.Build(_activeProfile,_connectionState,_capabilities,grid is null?"IDLE":"GRID",
             authMode,authState,remembered,_oidc.TokenExpiry,issuerHost,_oidc.LastErrorCategory,
             oidcEnabled?OidcAuthenticationManager.CallbackMechanism:"none",credentialStatus,
-            grid is null?"1-view":$"{grid.Layout.Count}-view",grid?.ActiveTileCount??0,grid?.ConnectingTileCount??0,grid?.FailedTileCount??0,tileStates);
+            grid is null?"1-view":$"{grid.Layout.Count}-view",grid?.ActiveTileCount??0,grid?.ConnectingTileCount??0,grid?.FailedTileCount??0,tileStates,
+            "WebView2-WHEP",playbackCamera,playbackDate,playback?.State.ToString()??"Idle",playback?.Rate??1.0,playbackPosition,
+            playback?.Segments.Count??0,playback?.GapCount??0,"WebView2-MP4",playback?.ErrorCategory??"none");
     }
 
     private void RefreshDiagnostics()

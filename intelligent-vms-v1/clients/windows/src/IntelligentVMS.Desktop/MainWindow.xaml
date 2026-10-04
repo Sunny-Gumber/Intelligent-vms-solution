@@ -27,8 +27,8 @@
    <Border Grid.Column="0" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" Padding="8" Margin="0,0,8,0">
     <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><TextBlock Text="Authorized cameras" FontWeight="SemiBold" Margin="4"/><TreeView x:Name="CameraTree" Grid.Row="1" SelectedItemChanged="CameraTree_SelectedItemChanged" MouseDoubleClick="CameraTree_MouseDoubleClick" Background="#121922" Foreground="{StaticResource TextPrimary}"/></Grid>
    </Border>
-   <TabControl Grid.Column="1" Background="{StaticResource PanelBackground}">
-    <TabItem Header="Live">
+   <TabControl x:Name="MainTabs" Grid.Column="1" Background="{StaticResource PanelBackground}" SelectionChanged="MainTabs_SelectionChanged">
+    <TabItem x:Name="LiveTab" Header="Live">
      <Grid Margin="8">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <DockPanel Grid.Row="0" LastChildFill="True">
@@ -53,7 +53,40 @@
      </Grid>
     </TabItem>
     <TabItem Header="Cameras"><TextBlock Margin="16" TextWrapping="Wrap" Text="Camera inventory remains server-authoritative. Select an authorized camera from the navigation tree."/></TabItem>
-    <TabItem Header="Playback"><TextBlock Margin="16" TextWrapping="Wrap" Text="Native playback workstation controls are not implemented in this foundation."/></TabItem>
+    <TabItem x:Name="PlaybackTab" Header="Playback">
+     <Grid Margin="8">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <DockPanel Grid.Row="0" LastChildFill="True">
+       <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+        <TextBlock x:Name="PlaybackCameraText" Text="Select one authorized camera." VerticalAlignment="Center" Margin="4"/>
+        <DatePicker x:Name="PlaybackDatePicker" Width="150" Margin="8,2" SelectedDateChanged="PlaybackDate_SelectedDateChanged"/>
+        <Button Content="Load recording day" Click="PlaybackLoad_Click"/>
+       </StackPanel>
+       <TextBlock x:Name="PlaybackDayStateText" Text="No day loaded" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="12,4"/>
+      </DockPanel>
+      <local:PlaybackMediaView x:Name="PlaybackMedia" Grid.Row="1" Margin="4" MinHeight="280"/>
+      <Grid Grid.Row="2" Margin="4">
+       <Canvas x:Name="PlaybackTimelineCanvas" Height="48" Background="#080B10" MouseLeftButtonDown="PlaybackTimeline_MouseLeftButtonDown"/>
+      </Grid>
+      <DockPanel Grid.Row="3" Margin="4">
+       <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+        <Button x:Name="PlaybackPlayButton" Content="Play" Click="PlaybackPlay_Click"/>
+        <Button x:Name="PlaybackPauseButton" Content="Pause" Click="PlaybackPause_Click"/>
+        <Button x:Name="PlaybackStopButton" Content="Stop" Click="PlaybackStop_Click"/>
+        <TextBlock Text="Speed" VerticalAlignment="Center" Margin="10,0,4,0"/>
+        <ComboBox x:Name="PlaybackRateCombo" Width="70" SelectionChanged="PlaybackRate_SelectionChanged"><ComboBoxItem Content="1×" Tag="1"/></ComboBox>
+       </StackPanel>
+       <TextBlock x:Name="PlaybackPositionText" Text="Position: —" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+       <TextBlock x:Name="PlaybackStatusText" Text="Ready" Foreground="{StaticResource TextMuted}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
+      </DockPanel>
+      <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="4">
+       <Button Content="Mark clip start" Click="PlaybackMarkStart_Click"/>
+       <Button Content="Mark clip end" Click="PlaybackMarkEnd_Click"/>
+       <TextBlock x:Name="PlaybackClipText" Text="Clip: not selected" VerticalAlignment="Center" Margin="8,0"/>
+       <Button x:Name="PlaybackExportButton" Content="Export MP4" Click="PlaybackExport_Click" IsEnabled="False"/>
+      </StackPanel>
+     </Grid>
+    </TabItem>
     <TabItem x:Name="EventsTab" Header="Events" Visibility="Collapsed"><TextBlock Margin="16" TextWrapping="Wrap" Text="Event history is visible only when advertised by the connected server. Native event workstation controls are a later milestone."/></TabItem>
     <TabItem Header="Settings"><ScrollViewer><StackPanel Margin="16" MaxWidth="620" HorizontalAlignment="Left">
      <TextBlock Text="Client-local server profiles" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="These settings do not modify VMS server configuration." Foreground="{StaticResource TextMuted}"/>

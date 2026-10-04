@@ -85,6 +85,13 @@ public sealed class CameraInfo
     [JsonPropertyName("desired_state")] public string DesiredState { get; set; } = "";
     [JsonPropertyName("available_live_roles")] public string[] AvailableLiveRoles { get; set; } = ["main"];
 }
+public sealed class RecordingSpanDto
+{
+    [JsonPropertyName("start")] public DateTimeOffset Start { get; set; }
+    [JsonPropertyName("duration")] public double Duration { get; set; }
+    [JsonPropertyName("end")] public DateTimeOffset End { get; set; }
+}
+
 public sealed class LiveAccessGrant
 {
     [JsonPropertyName("camera_id")] public string CameraId { get; set; } = "";
@@ -101,7 +108,10 @@ public sealed record ClientDiagnostics(string ApplicationVersion, string OsVersi
     string TokenExpiry = "unknown", string OidcIssuerHost = "not configured", string LastAuthErrorCategory = "none",
     string CallbackMechanism = "none", string CredentialStoreStatus = "not used",
     string LiveLayout = "1-view", int ActiveTiles = 0, int ConnectingTiles = 0, int FailedTiles = 0,
-    string LiveTileStates = "none", string RendererType = "WebView2-WHEP");
+    string LiveTileStates = "none", string RendererType = "WebView2-WHEP",
+    string PlaybackCamera = "none", string PlaybackDate = "none", string PlaybackState = "Idle", double PlaybackRate = 1.0,
+    string PlaybackPosition = "none", int PlaybackSegments = 0, int PlaybackGaps = 0,
+    string PlaybackRenderer = "WebView2-MP4", string PlaybackErrorCategory = "none");
 
 public static class ServerProfileIdentity
 {
@@ -358,7 +368,11 @@ public sealed class DesktopSession
     }
 }
 
-public sealed class VmsApiException(HttpStatusCode statusCode) : Exception($"VMS request failed ({(int)statusCode}).");
+public sealed class VmsApiException : Exception
+{
+    public HttpStatusCode StatusCode { get; }
+    public VmsApiException(HttpStatusCode statusCode) : base($"VMS request failed ({(int)statusCode}).") => StatusCode=statusCode;
+}
 public sealed class SessionExpiredException : Exception { public SessionExpiredException() : base("The VMS session has expired."){} }
 public sealed class IncompatibleServerException : Exception { public IncompatibleServerException() : base("The VMS server is incompatible with this client."){} }
 
@@ -366,7 +380,7 @@ public interface ILiveAccessProvider
 {
     Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default);
 }
-public sealed class VmsApiClient : ILiveAccessProvider, IDisposable
+public sealed class VmsApiClient : ILiveAccessProvider, IPlaybackProvider, IDisposable
 {
     private readonly HttpClient _http; private readonly Func<string?> _tokenProvider;
     private readonly Func<CancellationToken,Task<bool>>? _refreshProvider;
@@ -405,6 +419,50 @@ public sealed class VmsApiClient : ILiveAccessProvider, IDisposable
     public Task<List<CameraInfo>> GetCamerasAsync(CancellationToken ct=default)=>SendJsonAsync<List<CameraInfo>>(HttpMethod.Get,"/api/v1/cameras",true,true,ct);
     public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default)=>SendJsonAsync<LiveAccessGrant>(
         HttpMethod.Post,$"/api/v1/live/cameras/{Uri.EscapeDataString(cameraId)}/access?stream_role={Uri.EscapeDataString(role)}",true,true,cancellationToken);
+
+    public Task EnsurePlaybackAuthorizedAsync(CancellationToken cancellationToken=default)=>
+        GetSessionAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<RecordingSpanDto>> GetRecordingTimelineAsync(string cameraId,DateTimeOffset start,DateTimeOffset endTime,CancellationToken cancellationToken=default)
+    {
+        var startText=start.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
+        var endText=endTime.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
+        var relative=$"/api/v1/recordings/cameras/{Uri.EscapeDataString(cameraId)}/timeline?start={Uri.EscapeDataString(startText)}&end={Uri.EscapeDataString(endText)}";
+        return await SendJsonAsync<List<RecordingSpanDto>>(HttpMethod.Get,relative,true,true,cancellationToken);
+    }
+
+    public Uri BuildPlaybackUri(string cameraId,DateTimeOffset start,double durationSeconds)
+    {
+        if(durationSeconds<=0||durationSeconds>14400)throw new ArgumentOutOfRangeException(nameof(durationSeconds));
+        var startText=start.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
+        var durationText=durationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return UriFor($"/api/v1/recordings/cameras/{Uri.EscapeDataString(cameraId)}/play?start={Uri.EscapeDataString(startText)}&duration={durationText}&format=mp4");
+    }
+    public async Task ExportClipAsync(string cameraId,DateTimeOffset start,double durationSeconds,Stream destination,CancellationToken cancellationToken=default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(durationSeconds);
+        var startText=start.UtcDateTime.ToString("O",System.Globalization.CultureInfo.InvariantCulture);
+        var durationText=durationSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var relative=$"/api/v1/recordings/cameras/{Uri.EscapeDataString(cameraId)}/export?start={Uri.EscapeDataString(startText)}&duration={durationText}";
+        for(var attempt=0;attempt<2;attempt++)
+        {
+            using var request=new HttpRequestMessage(HttpMethod.Get,UriFor(relative));
+            var credential=_tokenProvider();
+            if(string.IsNullOrWhiteSpace(credential))throw new SessionExpiredException();
+            request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",credential);
+            using var response=await _http.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,cancellationToken);
+            if(response.StatusCode==HttpStatusCode.Unauthorized)
+            {
+                if(attempt==0&&_refreshProvider is not null&&await _refreshProvider(cancellationToken))continue;
+                throw new SessionExpiredException();
+            }
+            if(!response.IsSuccessStatusCode)throw new VmsApiException(response.StatusCode);
+            await response.Content.CopyToAsync(destination,cancellationToken);
+            return;
+        }
+        throw new SessionExpiredException();
+    }
+
     private async Task<T> SendJsonAsync<T>(HttpMethod method,string relative,bool auth,bool allowRefresh,CancellationToken ct)
     {
         for(var attempt=0;attempt<2;attempt++)
@@ -480,11 +538,14 @@ public static class DiagnosticsService
     public static ClientDiagnostics Build(ServerProfile? profile,ServerConnectionState state,ServerCapabilities? caps,string mediaState,
         string authenticationMode="none",string authenticationState="SignedOut",bool rememberedSession=false,DateTimeOffset? tokenExpiry=null,
         string oidcIssuerHost="not configured",string lastAuthErrorCategory="none",string callbackMechanism="none",string credentialStoreStatus="not used",
-        string liveLayout="1-view",int activeTiles=0,int connectingTiles=0,int failedTiles=0,string liveTileStates="none",string rendererType="WebView2-WHEP")=>new(
+        string liveLayout="1-view",int activeTiles=0,int connectingTiles=0,int failedTiles=0,string liveTileStates="none",string rendererType="WebView2-WHEP",
+        string playbackCamera="none",string playbackDate="none",string playbackState="Idle",double playbackRate=1.0,string playbackPosition="none",
+        int playbackSegments=0,int playbackGaps=0,string playbackRenderer="WebView2-MP4",string playbackErrorCategory="none")=>new(
         typeof(DiagnosticsService).Assembly.GetName().Version?.ToString()??"unknown",RuntimeInformation.OSDescription,RuntimeInformation.ProcessArchitecture.ToString(),
         profile?.SafeAddress??"not configured",state.ToString(),caps?.DeploymentProfile??"unknown",ClientPaths.LogDirectory,mediaState,
         authenticationMode,authenticationState,rememberedSession,tokenExpiry?.ToString("O")??"unknown",oidcIssuerHost,lastAuthErrorCategory,callbackMechanism,credentialStoreStatus,
-        liveLayout,activeTiles,connectingTiles,failedTiles,liveTileStates,rendererType);
+        liveLayout,activeTiles,connectingTiles,failedTiles,liveTileStates,rendererType,
+        playbackCamera,playbackDate,playbackState,playbackRate,playbackPosition,playbackSegments,playbackGaps,playbackRenderer,playbackErrorCategory);
     public static async Task<string> ExportAsync(ClientDiagnostics diagnostics,string directory,CancellationToken ct=default)
     {
         Directory.CreateDirectory(directory); var path=Path.Combine(directory,$"intelligent-vms-client-diagnostics-{DateTime.UtcNow:yyyyMMddTHHmmssZ}.json");
