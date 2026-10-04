@@ -27,6 +27,7 @@ public partial class MainWindow:Window
     private LiveGridCoordinator? _grid;
     private PlaybackCoordinator? _playback;
     private PtzCoordinator? _ptz;
+    private bool _ptzPointerHeld;
     private ServerConnectionState _connectionState=ServerConnectionState.Disconnected;
 
     public MainWindow(IClientLogger logger)
@@ -220,9 +221,11 @@ public partial class MainWindow:Window
         if(_grid is null||_selectedCamera is null){LiveSelectionText.Text="Authenticate and select an authorized camera first.";return;}
         try
         {
+            await StopPtzBestEffortAsync();
             await _grid.AssignCameraAsync(_grid.SelectedTile,_selectedCamera);
             await SaveGridSnapshotAsync();
             LiveSelectionText.Text=$"{_selectedCamera.Name} assigned to tile {_grid.SelectedTile+1}.";
+            await SyncPtzForGridAsync();
         }
         catch(SessionExpiredException){await HandleSessionExpiredAsync();}
         catch(InvalidOperationException ex)
@@ -246,9 +249,11 @@ public partial class MainWindow:Window
         {LiveSelectionText.Text="Authenticate before changing the live layout.";return;}
         try
         {
+            await StopPtzBestEffortAsync();
             await _grid.SetLayoutAsync(count);
             await SaveGridSnapshotAsync();
             LiveSelectionText.Text=$"{count}-view layout selected. Grid streams prefer SUB where available.";
+            await SyncPtzForGridAsync();
         }
         catch(SessionExpiredException){await HandleSessionExpiredAsync();}
     }
@@ -352,6 +357,7 @@ public partial class MainWindow:Window
 
     private async Task StopLiveAsync()
     {
+        await StopPtzBestEffortAsync();
         if(_grid is not null){await _grid.StopAllAsync();await SaveGridSnapshotAsync();}
         RefreshDiagnostics();
     }
@@ -372,6 +378,115 @@ public partial class MainWindow:Window
         if(_grid is null||_activeProfile is null)return;
         try{await _gridSettings.SaveAsync(_activeProfile.Id,_grid.Snapshot());}
         catch(Exception ex){_logger.LogError("live-grid","layout persistence failed",ex);}
+    }
+
+    private async Task InitializePtzCoordinatorAsync()
+    {
+        await DeactivatePtzAsync();
+        var ptz=new PtzCoordinator(_api,_logger);
+        ptz.Changed+=Ptz_Changed;
+        _ptz=ptz;
+        await SyncPtzForGridAsync();
+        RenderPtz();
+    }
+
+    private async Task DeactivatePtzAsync()
+    {
+        var ptz=_ptz;
+        _ptz=null;_ptzPointerHeld=false;
+        if(ptz is null){RenderPtz();return;}
+        ptz.Changed-=Ptz_Changed;
+        try{await ptz.DisposeAsync();}catch(Exception ex){_logger.LogError("ptz","ptz cleanup failed",ex);}
+        RenderPtz();
+    }
+
+    private async Task StopPtzBestEffortAsync()
+    {
+        var ptz=_ptz;
+        if(ptz is null)return;
+        _ptzPointerHeld=false;
+        try{await ptz.StopAsync();}catch(SessionExpiredException){}catch(Exception ex){_logger.LogError("ptz","best-effort PTZ stop failed",ex);}
+        RenderPtz();
+    }
+
+    private async Task SyncPtzForGridAsync()
+    {
+        var ptz=_ptz;var grid=_grid;
+        if(ptz is null)return;
+        if(grid is null||MainTabs.SelectedItem!=LiveTab){await ptz.ClearAsync();RenderPtz();return;}
+        var model=grid.Tiles.FirstOrDefault(x=>x.Index==grid.SelectedTile);
+        var cameraId=model is {State:LiveTileState.Live,CameraId:not null}?model.CameraId:null;
+        await ptz.BindAsync(grid.SelectedTile,cameraId);
+        RenderPtz();
+    }
+
+    private void Ptz_Changed(object? sender,EventArgs e)
+    {
+        if(!Dispatcher.CheckAccess()){Dispatcher.BeginInvoke(RenderPtz);return;}
+        RenderPtz();
+    }
+
+    private async void PtzMove_MouseDown(object sender,System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if(sender is not Button button||button.Tag is not string tag||_ptz is null)return;
+        var vector=tag switch{
+            "0,1,0"=>(0d,1d,0d), "0,-1,0"=>(0d,-1d,0d), "-1,0,0"=>(-1d,0d,0d),
+            "1,0,0"=>(1d,0d,0d), "0,0,-1"=>(0d,0d,-1d), "0,0,1"=>(0d,0d,1d),
+            _=>(0d,0d,0d)};
+        if(vector==(0d,0d,0d))return;
+        var speed=0.65;
+        if(PtzSpeedCombo.SelectedItem is ComboBoxItem{Tag:string speedTag})
+            double.TryParse(speedTag,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out speed);
+        _ptzPointerHeld=true;button.CaptureMouse();e.Handled=true;
+        try{await _ptz.MoveAsync(vector.Item1,vector.Item2,vector.Item3,speed);}
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+        catch(InvalidOperationException ex){PtzStatusText.Text=ex.Message;}
+        catch(VmsApiException){PtzStatusText.Text="PTZ command was rejected by the server.";}
+        catch(Exception ex){_logger.LogError("ptz","ptz move failed",ex);PtzStatusText.Text="PTZ command failed.";}
+    }
+
+    private async void PtzMove_MouseUp(object sender,System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if(!_ptzPointerHeld)return;
+        _ptzPointerHeld=false;
+        if(sender is Button button&&button.IsMouseCaptured)button.ReleaseMouseCapture();
+        e.Handled=true;
+        try{if(_ptz is not null)await _ptz.StopAsync();}
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+        catch(Exception ex){_logger.LogError("ptz","dead-man PTZ stop failed",ex);PtzStatusText.Text="Unable to confirm PTZ stop.";}
+    }
+
+    private async void PtzMove_LostMouseCapture(object sender,System.Windows.Input.MouseEventArgs e)
+    {
+        if(!_ptzPointerHeld)return;
+        _ptzPointerHeld=false;
+        try{if(_ptz is not null)await _ptz.StopAsync();}
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
+        catch(Exception ex){_logger.LogError("ptz","lost-capture PTZ stop failed",ex);}
+    }
+
+    private async void PtzStop_Click(object sender,RoutedEventArgs e)=>await StopPtzBestEffortAsync();
+
+    private async void MainWindow_Deactivated(object? sender,EventArgs e)
+    {
+        if(_ptz?.State==PtzState.Moving)await StopPtzBestEffortAsync();
+    }
+
+    private void RenderPtz()
+    {
+        var ptz=_ptz;var caps=ptz?.Capabilities;
+        var activeLive=_grid?.Tiles.FirstOrDefault(x=>x.Index==_grid.SelectedTile)?.State==LiveTileState.Live&&MainTabs.SelectedItem==LiveTab;
+        var ready=activeLive&&ptz?.State is PtzState.Ready or PtzState.Moving;
+        PtzUpButton.IsEnabled=PtzDownButton.IsEnabled=PtzLeftButton.IsEnabled=PtzRightButton.IsEnabled=ready&&caps?.PanTilt==true;
+        PtzZoomInButton.IsEnabled=PtzZoomOutButton.IsEnabled=ready&&caps?.Zoom==true;
+        PtzStopButton.IsEnabled=activeLive&&ptz?.State is PtzState.Moving or PtzState.Stopping;
+        PtzSpeedCombo.IsEnabled=ready&&(caps?.PanTilt==true||caps?.Zoom==true);
+        PtzStatusText.Text=ptz is null?"PTZ unavailable":ptz.State switch{
+            PtzState.Ready=>$"Ready · pan/tilt {(caps?.PanTilt==true?"yes":"no")} · optical zoom {(caps?.Zoom==true?"yes":"no")}",
+            PtzState.Moving=>"Moving · release to STOP",
+            PtzState.Stopping=>"Stopping…",
+            PtzState.Failed=>$"PTZ unavailable · {ptz.ErrorCategory}",
+            _=>"PTZ unavailable for active live tile"};
     }
 
     private async Task InitializePlaybackCoordinatorAsync()
@@ -412,6 +527,7 @@ public partial class MainWindow:Window
         if(e.Source!=MainTabs)return;
         try
         {
+            if(MainTabs.SelectedItem!=LiveTab)await StopPtzBestEffortAsync();
             if(MainTabs.SelectedItem==PlaybackTab)await StopLiveAsync();
             else if(_playback?.State is PlaybackState.Playing or PlaybackState.Paused or PlaybackState.Starting or PlaybackState.Seeking)
                 await _playback.StopAsync();
