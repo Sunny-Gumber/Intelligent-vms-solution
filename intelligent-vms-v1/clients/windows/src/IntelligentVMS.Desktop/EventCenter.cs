@@ -104,6 +104,7 @@ public sealed class EventCenterCoordinator:IAsyncDisposable
     public IReadOnlyList<EventRecord> Events=>_rows.Values
         .OrderByDescending(x=>x.OccurredAt).ThenByDescending(x=>x.EventId,StringComparer.Ordinal).ToArray();
     public event EventHandler? Changed;
+    public event EventHandler? AuthenticationExpired;
     public EventCenterCoordinator(IEventProvider provider,IClientLogger logger){_provider=provider;_logger=logger;}
 
     public async Task LoadAsync(EventQuery query,CancellationToken cancellationToken=default)
@@ -143,7 +144,7 @@ public sealed class EventCenterCoordinator:IAsyncDisposable
             if(generation!=_generation)return;
             Add(page.Items);if(page.Items.Count>0)LastReceivedAt=DateTimeOffset.UtcNow;
             State=EventCenterState.Ready;ErrorCategory="none";
-        }catch(SessionExpiredException){State=EventCenterState.Disconnected;ErrorCategory="authentication";throw;}
+        }catch(SessionExpiredException){State=EventCenterState.Disconnected;ErrorCategory="authentication";AuthenticationExpired?.Invoke(this,EventArgs.Empty);throw;}
         catch(Exception ex){ErrorCategory="feed";_logger.LogError("event-center","recent event refresh failed",ex);throw;}
         finally{Notify();}
     }
