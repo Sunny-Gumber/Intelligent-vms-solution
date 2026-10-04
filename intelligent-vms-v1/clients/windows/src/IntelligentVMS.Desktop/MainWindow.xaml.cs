@@ -5,6 +5,7 @@ using System.Windows.Controls;
 
 namespace IntelligentVMS.Desktop;
 
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "WPF window lifetime disposes the owned API client in the Closing handler.")]
 public partial class MainWindow : Window
 {
     private readonly IClientLogger _logger;
