@@ -124,9 +124,10 @@ public sealed class EventCenterCoordinator:IAsyncDisposable
     public async Task LoadNextAsync(CancellationToken cancellationToken=default)
     {
         if(Query is null||NextBefore is null||string.IsNullOrWhiteSpace(NextBeforeId))return;
-        State=EventCenterState.Refreshing;Notify();
+        var generation=_generation;State=EventCenterState.Refreshing;Notify();
         try{
             var page=await _provider.GetEventHistoryAsync(Query with{Before=NextBefore,BeforeId=NextBeforeId},cancellationToken);
+            if(generation!=_generation)return;
             Add(page.Items);NextBefore=page.NextBefore;NextBeforeId=page.NextBeforeId;State=EventCenterState.Ready;ErrorCategory="none";
         }catch(SessionExpiredException){State=EventCenterState.Disconnected;ErrorCategory="authentication";throw;}
         catch(Exception ex){State=EventCenterState.Failed;ErrorCategory="pagination";_logger.LogError("event-center","event history page failed",ex);}
@@ -135,10 +136,11 @@ public sealed class EventCenterCoordinator:IAsyncDisposable
 
     public async Task RefreshRecentAsync(CancellationToken cancellationToken=default)
     {
-        if(Query is null)return; var end=DateTimeOffset.UtcNow;
+        if(Query is null)return; var generation=_generation;var end=DateTimeOffset.UtcNow;
         var start=end-TimeSpan.FromMinutes(5); if(start<Query.Start)start=Query.Start;
         try{
             var page=await _provider.GetEventHistoryAsync(Query with{Start=start,End=end,Before=null,BeforeId=null,Limit=100},cancellationToken);
+            if(generation!=_generation)return;
             Add(page.Items);if(page.Items.Count>0)LastReceivedAt=DateTimeOffset.UtcNow;
             State=EventCenterState.Ready;ErrorCategory="none";
         }catch(SessionExpiredException){State=EventCenterState.Disconnected;ErrorCategory="authentication";throw;}
