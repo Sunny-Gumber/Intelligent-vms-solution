@@ -24,7 +24,7 @@ public partial class App : Application
         if (e.Args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))
         {
             try { ClientSmokeVerifier.Verify(); _logger.Info("startup", "desktop smoke startup completed"); Shutdown(0); }
-            catch (Exception ex) { _logger.Error("startup", "desktop smoke startup failed", ex); Shutdown(2); }
+            catch (Exception ex) { _logger.LogError("startup", "desktop smoke startup failed", ex); Shutdown(2); }
             return;
         }
         _logger.Info("startup", "desktop client starting");
@@ -44,7 +44,7 @@ public partial class App : Application
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
-        _logger?.Error("ui", "unhandled desktop error", e.Exception);
+        _logger?.LogError("ui", "unhandled desktop error", e.Exception);
         MessageBox.Show("Intelligent VMS encountered an unexpected error. Safe diagnostic details were written to the client log.",
             "Intelligent VMS", MessageBoxButton.OK, MessageBoxImage.Error);
         e.Handled = true;
