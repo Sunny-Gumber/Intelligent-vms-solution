@@ -74,9 +74,21 @@ jobs:
           $token = & "$root\runtime\venv\Scripts\python.exe" "$root\app\deploy\field-test\mint_access_token.py" --env-file "$root\config\vms.env" 2>$null
           $headers = @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" }
           $caps = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/system/capabilities" -Headers @{Authorization="Bearer $token"}
-          if($caps.deployment_profile -ne "windows-small-site" -or $caps.event_history -ne $false -or $caps.distributed_placement -ne $false){ throw "Wrong capability profile" }
+          if($caps.deployment_profile -ne "windows-small-site" -or $caps.event_history -ne $true -or $caps.distributed_placement -ne $false){ throw "Wrong capability profile" }
           $cameraBody = @{tenant_id="field-test";site_id="site-01";name="Windows CI Loopback";host="127.0.0.1";rtsp_port=8554;main_path="/ci-main"} | ConvertTo-Json
           $camera = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/cameras" -Method Post -Headers $headers -Body $cameraBody
+          $eventTime = [DateTimeOffset]::UtcNow
+          $eventBody = @{
+            event_id="windows-ci-event-001";tenant_id="field-test";site_id="site-01";camera_id=$camera.id;
+            timestamp=$eventTime.ToString("O");event_type="motion";source="vms";severity="info";
+            attributes=@{origin="windows-field-test"}
+          } | ConvertTo-Json -Depth 5
+          $accepted = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/events" -Method Post -Headers $headers -Body $eventBody
+          if(-not $accepted.accepted -or $accepted.event_id -ne "windows-ci-event-001"){ throw "Event ingest failed" }
+          $start = [uri]::EscapeDataString($eventTime.AddMinutes(-1).ToString("O"))
+          $end = [uri]::EscapeDataString($eventTime.AddMinutes(1).ToString("O"))
+          $history = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/events/history?start=$start&end=$end&camera_id=$($camera.id)&limit=10" -Headers @{Authorization="Bearer $token"}
+          if(-not ($history.items | Where-Object {$_.event_id -eq "windows-ci-event-001"})){ throw "Event history did not return persisted event" }
           $policyBody = @{mode="continuous";enabled=$true;retention_days=3;part_duration_ms=1000;segment_duration_seconds=900;max_part_size_mb=50} | ConvertTo-Json
           $policy = Invoke-RestMethod "http://127.0.0.1:8000/api/v1/recordings/cameras/$($camera.id)/policy" -Method Put -Headers $headers -Body $policyBody
           if(-not $policy.enabled -or $policy.retention_days -ne 3){ throw "Recording policy did not persist" }

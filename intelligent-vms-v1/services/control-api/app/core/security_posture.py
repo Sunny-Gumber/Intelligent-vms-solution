@@ -28,8 +28,10 @@ def _validate_deployment_profile() -> None:
         invalid.append("OUTBOX_ENABLED")
     if settings.event_pipeline_enabled:
         invalid.append("EVENT_PIPELINE_ENABLED")
-    if settings.event_history_enabled:
+    if settings.event_history_enabled and not settings.event_local_store_enabled:
         invalid.append("EVENT_HISTORY_ENABLED")
+    if not settings.event_history_enabled and settings.event_local_store_enabled:
+        invalid.append("EVENT_LOCAL_STORE_ENABLED")
     if settings.alarm_processing_enabled:
         invalid.append("ALARM_PROCESSING_ENABLED")
     if settings.ai_ui_enabled:
