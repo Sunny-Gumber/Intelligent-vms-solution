@@ -25,3 +25,9 @@ The Windows Client workflow additionally validates analyzers, dependency vulnera
 Real qualification must cover representative H.264/H.265 recordings, MediaMTX/browser codec behavior, long-duration play/seek, retention during playback, corrupted media, real export interoperability, private/proxy environments, Windows 10/11, 4K/hardware decoding and storage/network behavior.
 
 No synchronized multi-camera playback evidence is claimed.
+
+
+## Exact-head review additions
+
+- WebView2 playback state events are now session/generation scoped; old handlers are detached before stop so delayed pause/end/error events cannot revive stale playback state.
+- Playback timeline and export deterministic tests assert one bounded 401 refresh + one retry with the renewed bearer token, while 403 remains an authorization failure without refresh.
