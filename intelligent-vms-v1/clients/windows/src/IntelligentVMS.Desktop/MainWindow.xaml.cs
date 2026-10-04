@@ -175,10 +175,14 @@ public partial class MainWindow:Window
 
     private void CameraTree_SelectedItemChanged(object sender,RoutedPropertyChangedEventArgs<object> e)
     {
-        if(e.NewValue is not TreeViewItem{Tag:CameraInfo camera})return;
+        if(e.NewValue is not TreeViewItem{Tag:CameraInfo camera})
+        {
+            _selectedCamera=null;StreamRoleCombo.ItemsSource=null;return;
+        }
         _selectedCamera=camera;
         LiveSelectionText.Text=$"{camera.Name} · {camera.SiteId}";
-        UpdateRoleOptions(camera.AvailableLiveRoles,LiveStreamRolePolicy.Preferred(camera,_grid?.FocusedTile is not null||_grid?.Layout.Count==1));
+        try{UpdateRoleOptions(camera.AvailableLiveRoles,LiveStreamRolePolicy.Preferred(camera,_grid?.FocusedTile is not null||_grid?.Layout.Count==1));}
+        catch(InvalidOperationException){StreamRoleCombo.ItemsSource=null;LiveSelectionText.Text=$"{camera.Name} has no advertised live stream role.";}
     }
 
     private async void CameraTree_MouseDoubleClick(object sender,System.Windows.Input.MouseButtonEventArgs e)
