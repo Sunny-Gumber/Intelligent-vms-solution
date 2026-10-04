@@ -135,8 +135,9 @@ public partial class PlaybackMediaView:UserControl,IPlaybackMediaRenderer,IAsync
         if(!uri.AbsolutePath.StartsWith("/api/v1/recordings/cameras/",StringComparison.Ordinal)||!uri.AbsolutePath.EndsWith("/play",StringComparison.Ordinal))
             throw new InvalidOperationException("Playback resource path is invalid.");
         if(profile.Scheme=="https"&&uri.Scheme!="https")throw new InvalidOperationException("Playback resource attempted a TLS downgrade.");
-        var query=System.Web.HttpUtility.ParseQueryString(uri.Query);
-        if(query.AllKeys.Any(k=>k is not null&&k.Contains("token",StringComparison.OrdinalIgnoreCase)))
+        if(uri.Query.Contains("token=",StringComparison.OrdinalIgnoreCase)||
+           uri.Query.Contains("access_token",StringComparison.OrdinalIgnoreCase)||
+           uri.Query.Contains("refresh_token",StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Playback resource URL must not carry tokens.");
     }
 
