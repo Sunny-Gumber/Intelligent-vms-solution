@@ -41,7 +41,8 @@ $effective|ConvertTo-Json|Set-Content (Join-Path $stage "product-version.json") 
 Copy-Item (Join-Path $PSScriptRoot "Invoke-Setup.ps1") $stage
 
 if(-not $Makensis){
-  $candidates=@("$env:ProgramFiles(x86)\NSIS\makensis.exe","$env:ProgramFiles\NSIS\makensis.exe")
+  $pf86=[Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+  $candidates=@((Join-Path $pf86 "NSIS\makensis.exe"),(Join-Path $env:ProgramFiles "NSIS\makensis.exe"))
   $Makensis=$candidates|Where-Object{Test-Path $_}|Select-Object -First 1
 }
 if(-not $Makensis){throw "NSIS 3.13 compiler not found. CI installs pinned nsis 3.13.0."}
