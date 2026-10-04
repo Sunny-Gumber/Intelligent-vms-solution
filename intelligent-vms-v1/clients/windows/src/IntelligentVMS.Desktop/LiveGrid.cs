@@ -265,36 +265,36 @@ public sealed class LiveGridCoordinator:IAsyncDisposable
         try
         {
             await runtime.Controller.StopAsync(CancellationToken.None);
-            if(generation!=Volatile.Read(ref runtime.Model.Generation))return;
+            if(generation!=runtime.Model.Generation)return;
             await _connectGate.WaitAsync(pending.Token);
             try
             {
-                if(generation!=Volatile.Read(ref runtime.Model.Generation))return;
+                if(generation!=runtime.Model.Generation)return;
                 runtime.Model.State=LiveTileState.Connecting;Notify();
                 await runtime.Controller.StartAsync(runtime.Camera!.Id,role,pending.Token);
             }
             finally{_connectGate.Release();}
-            if(generation!=Volatile.Read(ref runtime.Model.Generation)){await runtime.Controller.StopAsync(CancellationToken.None);return;}
+            if(generation!=runtime.Model.Generation){await runtime.Controller.StopAsync(CancellationToken.None);return;}
             runtime.Model.ActualRole=runtime.Controller.Role??role;
             if(runtime.Renderer.State=="LIVE")runtime.Model.State=LiveTileState.Live;
             _logger.Info("live-grid",$"tile_live_start tile={runtime.Model.Index+1} camera_id={Safe(runtime.Camera!.Id)} role={role}");Notify();
         }
         catch(OperationCanceledException) when(pending.IsCancellationRequested)
         {
-            if(generation==Volatile.Read(ref runtime.Model.Generation)){runtime.Model.State=LiveTileState.Empty;runtime.Model.ErrorCategory="cancelled";Notify();}
+            if(generation==runtime.Model.Generation){runtime.Model.State=LiveTileState.Empty;runtime.Model.ErrorCategory="cancelled";Notify();}
         }
         catch(SessionExpiredException)
         {
-            if(generation==Volatile.Read(ref runtime.Model.Generation)){runtime.Model.State=LiveTileState.Unauthorized;runtime.Model.ErrorCategory="session_expired";Notify();}
+            if(generation==runtime.Model.Generation){runtime.Model.State=LiveTileState.Unauthorized;runtime.Model.ErrorCategory="session_expired";Notify();}
             throw;
         }
         catch(VmsApiException)
         {
-            if(generation==Volatile.Read(ref runtime.Model.Generation)){runtime.Model.State=LiveTileState.Failed;runtime.Model.ErrorCategory="live_grant_rejected";Notify();}
+            if(generation==runtime.Model.Generation){runtime.Model.State=LiveTileState.Failed;runtime.Model.ErrorCategory="live_grant_rejected";Notify();}
         }
         catch(Exception)
         {
-            if(generation==Volatile.Read(ref runtime.Model.Generation)){runtime.Model.State=LiveTileState.Failed;runtime.Model.ErrorCategory="media_unavailable";Notify();}
+            if(generation==runtime.Model.Generation){runtime.Model.State=LiveTileState.Failed;runtime.Model.ErrorCategory="media_unavailable";Notify();}
         }
         finally
         {
