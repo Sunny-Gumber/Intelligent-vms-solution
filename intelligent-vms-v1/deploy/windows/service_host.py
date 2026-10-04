@@ -18,6 +18,16 @@ import win32service
 import win32serviceutil
 
 
+def _safe_event_log(message: str) -> None:
+    """Best-effort Windows Event Log reporting; service health must not depend on it."""
+    try:
+        servicemanager.LogInfoMsg(message)
+    except Exception:
+        # Windows Server hosts can transiently deny RegisterEventSource/ReportEvent
+        # even while the SCM service itself is valid. File logs remain authoritative.
+        pass
+
+
 def _root() -> Path:
     """Return the protected Windows product-data root."""
     return Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "IntelligentVMS"
@@ -116,13 +126,13 @@ class ControlService(win32serviceutil.ServiceFramework):
                 access_log=False,
             )
         )
-        servicemanager.LogInfoMsg("Intelligent VMS control API starting")
+        _safe_event_log("Intelligent VMS control API starting")
         # pywin32 invokes SvcDoRun on a service worker thread. On Windows,
         # ProactorEventLoop construction calls signal.set_wakeup_fd(), which is
         # restricted to the main interpreter thread. The control plane is
         # socket-based, so use the selector loop explicitly for SCM hosting.
         asyncio.run(self.server.serve(), loop_factory=asyncio.SelectorEventLoop)
-        servicemanager.LogInfoMsg("Intelligent VMS control API stopped")
+        _safe_event_log("Intelligent VMS control API stopped")
 
 
 class MediaService(win32serviceutil.ServiceFramework):
@@ -183,7 +193,7 @@ class MediaService(win32serviceutil.ServiceFramework):
             stderr=subprocess.STDOUT,
             creationflags=flags,
         )
-        servicemanager.LogInfoMsg("Intelligent VMS MediaMTX starting")
+        _safe_event_log("Intelligent VMS MediaMTX starting")
         try:
             while not self.stop_event.wait(1.0):
                 code = self.process.poll()
@@ -192,4 +202,4 @@ class MediaService(win32serviceutil.ServiceFramework):
         finally:
             self._stop_process()
             self.log_handle.close()
-        servicemanager.LogInfoMsg("Intelligent VMS MediaMTX stopped")
+        _safe_event_log("Intelligent VMS MediaMTX stopped")
