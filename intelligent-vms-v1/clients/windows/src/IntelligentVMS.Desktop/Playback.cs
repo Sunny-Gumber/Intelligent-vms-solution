@@ -276,6 +276,15 @@ public sealed class PlaybackCoordinator:IAsyncDisposable
         await _renderer.SetRateAsync(rate,cancellationToken);Rate=rate;Notify();
     }
 
+    public async Task ClearContextAsync(CancellationToken cancellationToken=default)
+    {
+        ThrowIfDisposed();
+        NextGeneration();CancelPending();
+        await _renderer.StopAsync(cancellationToken);
+        _activeSession=null;Camera=null;Day=null;Segments=[];Position=null;ClipStart=null;ClipEnd=null;Rate=1.0;
+        State=PlaybackState.Idle;ErrorCategory="none";Notify();
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken=default)
     {
         ThrowIfDisposed();
