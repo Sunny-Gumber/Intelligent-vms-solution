@@ -97,7 +97,7 @@ internal static class LiveGridTests
         var first=grid.AssignCameraAsync(0,Camera("slow-a",["main","sub"]));
         await provider.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
         var second=grid.AssignCameraAsync(0,Camera("fast-b",["main","sub"]));
-        provider.ReleaseFirst.TrySetResult();
+        provider.ReleaseFirst.TrySetResult(true);
         await Task.WhenAll(first,second);
         Assert(grid.Tiles[0].CameraId=="fast-b");
         Assert(grid.Tiles[0].ActualRole=="main");
@@ -164,7 +164,7 @@ internal static class LiveGridTests
     private static void Throws<T>(Action action) where T:Exception{try{action();}catch(T){return;}throw new InvalidOperationException($"Expected {typeof(T).Name}.");}
     private static async Task ThrowsAsync<T>(Func<Task> action) where T:Exception{try{await action();}catch(T){return;}throw new InvalidOperationException($"Expected {typeof(T).Name}.");}
 
-    private sealed class GridProvider:ILiveAccessProvider
+    private class GridProvider:ILiveAccessProvider
     {
         public string? FailCamera{get;init;}
         public virtual Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default)
@@ -182,13 +182,13 @@ internal static class LiveGridTests
 
     private sealed class DelayedProvider:GridProvider
     {
-        public TaskCompletionSource FirstStarted{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource ReleaseFirst{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> FirstStarted{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> ReleaseFirst{get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public override async Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken cancellationToken=default)
         {
             if(cameraId=="slow-a")
             {
-                FirstStarted.TrySetResult();
+                FirstStarted.TrySetResult(true);
                 await ReleaseFirst.Task.WaitAsync(cancellationToken);
             }
             return Grant(cameraId,role);
