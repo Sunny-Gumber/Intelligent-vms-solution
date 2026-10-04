@@ -1,0 +1,77 @@
+name: Agent Orchestrator TEST-001
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test-001:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out current branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install agent dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r agent-system/requirements.txt
+
+      - name: Run agent orchestrator
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python agent-system/orchestrator.py
+
+      - name: Validate final state
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          state = json.loads(Path("agent-state.json").read_text(encoding="utf-8"))
+          assert state["task_id"] == "TEST-001"
+          assert state["stage"] == "ACCEPTED"
+          assert state["status"] == "ACCEPTED"
+          assert state["review_result"] == "ACCEPTED"
+          assert state["changed_files"] == ["docs/agents/AUTOMATION_TEST.md"]
+          assert Path("docs/agents/AUTOMATION_TEST.md").exists()
+          print("Agent orchestrator TEST-001 accepted")
+          PY
+
+      - name: Upload generated TEST-001 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: automation-test-md
+          path: docs/agents/AUTOMATION_TEST.md
+          if-no-files-found: error
+
+      - name: Write job summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          path = Path("agent-state.json")
+          if path.exists():
+              state = json.loads(path.read_text(encoding="utf-8"))
+              status = state.get("status", "UNKNOWN")
+              stage = state.get("stage", "UNKNOWN")
+              review = state.get("review_result", "UNKNOWN")
+          else:
+              status = stage = review = "MISSING_STATE"
+
+          print("## Agent Orchestrator TEST-001")
+          print()
+          print(f"- Final status: `{status}`")
+          print(f"- Stage: `{stage}`")
+          print(f"- Review result: `{review}`")
+          print("- Generated file: `docs/agents/AUTOMATION_TEST.md`")
+          PY

@@ -1,0 +1,10 @@
+{
+  "task_id": "TEST-001",
+  "stage": "INITIALIZED",
+  "current_agent": null,
+  "status": "INITIALIZED",
+  "attempt": 0,
+  "review_result": null,
+  "changed_files": [],
+  "last_error": null
+}
