@@ -9,6 +9,7 @@ internal static class EventCenterTests
         await TestProfileClearAndMetadataSafety();
         await TestReloadStopsOldPollingGeneration();
         await TestStaleRefreshCannotCrossProfileClear();
+        await TestRecentRefreshSignalsAuthenticationExpiry();
     }
 
     private static async Task TestOrderingDedupeAndBounds()
@@ -82,6 +83,22 @@ internal static class EventCenterTests
         if(center.Events.Count!=0||center.Query is not null)throw new InvalidOperationException("Stale event crossed profile boundary.");
     }
 
+    private static async Task TestRecentRefreshSignalsAuthenticationExpiry()
+    {
+        var now=DateTimeOffset.UtcNow;var provider=new AuthExpiryEvents();
+        await using var center=new EventCenterCoordinator(provider,new TestLogger());
+        await center.LoadAsync(new EventQuery(now.AddHours(-1),now.AddMinutes(1)));
+        var signalled=0;center.AuthenticationExpired+=(_,_)=>signalled++;
+        await ThrowsAsync<SessionExpiredException>(()=>center.RefreshRecentAsync());
+        if(signalled!=1||center.State!=EventCenterState.Disconnected||center.ErrorCategory!="authentication")
+            throw new InvalidOperationException("Polling auth expiry was not surfaced.");
+    }
+
+    private static async Task ThrowsAsync<T>(Func<Task> action) where T:Exception
+    {
+        try{await action();}catch(T){return;}throw new InvalidOperationException($"Expected {typeof(T).Name}.");
+    }
+
     private static EventRecord Row(string id,DateTimeOffset time,string type)=>new(){EventId=id,TenantId="t",SiteId="s",CameraId="c",OccurredAt=time,EventType=type,Source="camera",Severity="info"};
 
     private sealed class DelayedEvents:IEventProvider
@@ -93,6 +110,15 @@ internal static class EventCenterTests
         {
             if(Immediate is not null){var value=Immediate;Immediate=null;return Task.FromResult(value);}
             Started.TrySetResult();return Release.Task;
+        }
+    }
+    private sealed class AuthExpiryEvents:IEventProvider
+    {
+        private int _calls;
+        public Task<EventHistoryPageDto> GetEventHistoryAsync(EventQuery query,CancellationToken cancellationToken=default)
+        {
+            if(Interlocked.Increment(ref _calls)==1)return Task.FromResult(new EventHistoryPageDto());
+            throw new SessionExpiredException();
         }
     }
     private sealed class FakeEvents:IEventProvider
