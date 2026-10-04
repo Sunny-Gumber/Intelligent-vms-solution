@@ -154,8 +154,8 @@ internal static class OidcSecurityTests
 
     private static void TestOidcSecretRedaction()
     {
-        var safe=SecretRedactor.Redact("code=auth-code code_verifier=verifier access_token=access refresh_token=refresh id_token=id Authorization=Bearer-token");
-        foreach(var secret in new[]{"auth-code","verifier","access","refresh","id"})Assert(!safe.Contains(secret,StringComparison.Ordinal));
+        var safe=SecretRedactor.Redact("code=secret-auth-code-481 code_verifier=secret-verifier-592 access_token=secret-access-603 refresh_token=secret-refresh-714 id_token=secret-identity-825 Authorization=secret-header-936");
+        foreach(var secret in new[]{"secret-auth-code-481","secret-verifier-592","secret-access-603","secret-refresh-714","secret-identity-825","secret-header-936"})Assert(!safe.Contains(secret,StringComparison.Ordinal));
     }
 
     private static string RandomValue()=>OidcAuthorizationRequestValidator.Base64Url(RandomNumberGenerator.GetBytes(32));
