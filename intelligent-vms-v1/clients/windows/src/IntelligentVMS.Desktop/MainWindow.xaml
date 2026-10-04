@@ -2,7 +2,6 @@
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:local="clr-namespace:IntelligentVMS.Desktop"
- xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
  Title="Intelligent VMS Desktop" Width="1360" Height="820" MinWidth="1024" MinHeight="640" WindowStartupLocation="CenterScreen">
  <Grid Margin="10">
   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
@@ -48,7 +47,7 @@
        <TextBlock x:Name="LiveSelectionText" Text="Select a tile, then assign an authorized camera." VerticalAlignment="Center" Margin="12,4" TextTrimming="CharacterEllipsis"/>
       </DockPanel>
       <Border Grid.Row="1" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" Margin="4">
-       <primitives:UniformGrid x:Name="LiveGridHost" Rows="1" Columns="1" Background="Black"/>
+       <Grid x:Name="LiveGridHost" Background="Black"/>
       </Border>
       <TextBlock x:Name="GridStatusText" Grid.Row="2" Margin="4" Foreground="{StaticResource TextMuted}" Text="1-view · 0 live"/>
      </Grid>
