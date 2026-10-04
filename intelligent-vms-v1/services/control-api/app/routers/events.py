@@ -10,7 +10,7 @@ from app.core.auth import Principal, require_roles, require_scope
 from app.core.config import settings
 from app.db.session import get_session
 from app.models.entities import EventHistoryEntity
-from app.models.schemas import EventHistoryPage, EventIn, EventRead
+from app.models.schemas import EventCenterRead, EventHistoryPage, EventIn, EventRead
 from app.routers.cameras import authorized_camera
 from app.services.event_search import EventSearchError, event_search
 from app.services.outbox import OutboxPayloadTooLarge, enqueue_event_once
@@ -303,12 +303,18 @@ async def event_history_page(
     )
     has_more = len(rows) > limit
     items = rows[:limit]
+    safe_items = [
+        EventCenterRead.model_validate(
+            item.model_dump(exclude={"snapshot_uri"})
+        )
+        for item in items
+    ]
     if has_more and items:
         last = items[-1]
         return EventHistoryPage(
-            items=items, next_before=last.timestamp, next_before_id=last.event_id
+            items=safe_items, next_before=last.timestamp, next_before_id=last.event_id
         )
-    return EventHistoryPage(items=items)
+    return EventHistoryPage(items=safe_items)
 
 
 @internal_router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
