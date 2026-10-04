@@ -332,6 +332,31 @@ class CameraAIPolicyEntity(TimestampMixin, Base):
 
 
 
+
+class EventHistoryEntity(Base):
+    """Persist bounded normalized event history for reduced/local deployment profiles."""
+
+    __tablename__ = "event_history"
+
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    site_id: Mapped[str] = mapped_column(String(128), index=True)
+    camera_id: Mapped[str] = mapped_column(String(128), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    event_type: Mapped[str] = mapped_column(String(128), index=True)
+    object_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source: Mapped[str] = mapped_column(String(32))
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    zone_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    severity: Mapped[str] = mapped_column(String(16), default="info", index=True)
+    snapshot_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recording_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recording_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attributes_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
+
 class EventOutboxEntity(TimestampMixin, Base):
     """Persist one reliable outbox message and its delivery/claim state.
 
