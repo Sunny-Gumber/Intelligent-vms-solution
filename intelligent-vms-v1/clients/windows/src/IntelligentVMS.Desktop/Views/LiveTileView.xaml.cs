@@ -1,3 +1,4 @@
+using System.Windows.Automation;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -57,5 +58,9 @@ public partial class LiveTileView : UserControl, IAsyncDisposable
     private void Select(){Focus();Selected?.Invoke(this,TileIndex);}
     private void Clear_Click(object sender,RoutedEventArgs e){Select();ClearRequested?.Invoke(this,TileIndex);}
     private void Focus_Click(object sender,RoutedEventArgs e){Select();FocusRequested?.Invoke(this,TileIndex);}
-    public ValueTask DisposeAsync()=>Media.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await Media.DisposeAsync();
+        GC.SuppressFinalize(this);
+    }
 }
