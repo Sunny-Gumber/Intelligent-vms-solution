@@ -7,6 +7,7 @@ internal static class EventCenterTests
         await TestOrderingDedupeAndBounds();
         await TestPaginationAndUnknownType();
         await TestProfileClearAndMetadataSafety();
+        await TestReloadStopsOldPollingGeneration();
     }
 
     private static async Task TestOrderingDedupeAndBounds()
@@ -46,6 +47,22 @@ internal static class EventCenterTests
         var text=EventMetadataFormatter.Format(center.Events[0]);
         if(!text.Contains("<script>"))throw new InvalidOperationException("Metadata text missing.");
         center.Clear();if(center.Events.Count!=0||center.Query is not null||center.FeedState!=EventFeedState.Stopped)throw new InvalidOperationException("Profile cleanup failed.");
+    }
+
+
+    private static async Task TestReloadStopsOldPollingGeneration()
+    {
+        var provider=new FakeEvents();var now=DateTimeOffset.UtcNow;
+        provider.Pages.Enqueue(new EventHistoryPageDto());
+        provider.Pages.Enqueue(new EventHistoryPageDto());
+        await using var center=new EventCenterCoordinator(provider,new TestLogger());
+        await center.LoadAsync(new EventQuery(now.AddHours(-1),now.AddMinutes(1)));
+        center.StartPolling();
+        if(center.FeedState!=EventFeedState.Connected)throw new InvalidOperationException("Polling did not start.");
+        await center.LoadAsync(new EventQuery(now.AddHours(-2),now.AddMinutes(1)));
+        if(center.FeedState!=EventFeedState.Stopped)throw new InvalidOperationException("Reload did not retire old polling generation.");
+        center.StartPolling();
+        if(center.FeedState!=EventFeedState.Connected)throw new InvalidOperationException("Polling did not restart after reload.");
     }
 
     private static EventRecord Row(string id,DateTimeOffset time,string type)=>new(){EventId=id,TenantId="t",SiteId="s",CameraId="c",OccurredAt=time,EventType=type,Source="camera",Severity="info"};
