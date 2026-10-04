@@ -16,7 +16,7 @@ public partial class MainWindow:Window
     private readonly VmsApiClient _api;
     private readonly ObservableCollection<ServerProfile> _profileItems=[];
     private readonly List<LiveTileView> _tileViews=[];
-    private IReadOnlyDictionary<string,CameraInfo> _authorizedCameras=new Dictionary<string,CameraInfo>(StringComparer.Ordinal);
+    private Dictionary<string,CameraInfo> _authorizedCameras=new(StringComparer.Ordinal);
     private ServerProfile? _activeProfile;
     private AuthenticationCapabilities? _authCapabilities;
     private ServerCapabilities? _capabilities;
