@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     outbox_max_payload_bytes: int = 262144
     event_pipeline_enabled: bool = True
     event_history_enabled: bool = True
+    event_local_store_enabled: bool = False
+    event_local_retention_days: int = Field(default=7, ge=1, le=365)
     alarm_processing_enabled: bool = True
     ai_ui_enabled: bool = True
     recording_metadata_events_enabled: bool = True
