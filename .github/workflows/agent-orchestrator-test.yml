@@ -2,6 +2,9 @@ name: Agent Orchestrator TEST-001
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -75,3 +78,4 @@ jobs:
           print(f"- Review result: `{review}`")
           print("- Generated file: `docs/agents/AUTOMATION_TEST.md`")
           PY
+
