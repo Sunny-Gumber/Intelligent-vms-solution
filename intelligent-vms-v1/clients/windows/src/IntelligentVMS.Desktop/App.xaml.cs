@@ -4,6 +4,7 @@ using System.Windows.Threading;
 
 namespace IntelligentVMS.Desktop;
 
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "WPF application lifetime disposes the owned mutex in OnExit.")]
 public partial class App : Application
 {
     private Mutex? _singleInstance;
