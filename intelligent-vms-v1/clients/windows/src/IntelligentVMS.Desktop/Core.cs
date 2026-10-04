@@ -279,13 +279,15 @@ public sealed class DesktopSession
             if(remember) await _credentials.SaveAsync(profileId,AccessToken,cancellationToken); else await _credentials.DeleteAsync(profileId,cancellationToken);
             State=DesktopSessionState.Authenticated; _logger.Info("auth","desktop session authenticated"); return info;
         }
-        catch { AccessToken=null; State=DesktopSessionState.SignedOut; throw; }
+        catch { AccessToken=null; ProfileId=null; State=DesktopSessionState.SignedOut; throw; }
     }
     public async Task<bool> TryRestoreAsync(Guid profileId, Func<CancellationToken,Task<SessionInfo>> validate, CancellationToken cancellationToken=default)
     {
         var token=await _credentials.LoadAsync(profileId,cancellationToken); if(string.IsNullOrWhiteSpace(token)) return false;
         try { await AuthenticateAsync(profileId,token,true,validate,cancellationToken); return true; }
-        catch { await _credentials.DeleteAsync(profileId,cancellationToken); return false; }
+        catch (SessionExpiredException) { await _credentials.DeleteAsync(profileId,cancellationToken); return false; }
+        catch (UnauthorizedAccessException) { await _credentials.DeleteAsync(profileId,cancellationToken); return false; }
+        catch { AccessToken=null; ProfileId=null; State=DesktopSessionState.SignedOut; _logger.Warning("auth","remembered session restore unavailable"); return false; }
     }
     public async Task LogoutAsync(CancellationToken cancellationToken=default)
     {
