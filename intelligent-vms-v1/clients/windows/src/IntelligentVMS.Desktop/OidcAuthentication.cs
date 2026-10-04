@@ -508,9 +508,10 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
+        // Fence/cancel only. Sign-in owns and disposes its local CTS; disposing
+        // the shared semaphore here could race an in-flight refresh finally block.
         SupersedeActiveAttempt();
-        _refreshGate.Dispose();
-        _attempt?.Dispose();
+        ClearRuntime(AuthenticationUxState.Disconnected);
         return ValueTask.CompletedTask;
     }
 }
