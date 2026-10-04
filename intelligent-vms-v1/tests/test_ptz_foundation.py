@@ -35,6 +35,7 @@ def test_generation_fence_stop_priority_and_context_restart():
     async def run():
         ptz_router._generations.clear()
         ptz_router._last_move_at.clear()
+        ptz_router._context_seen_at.clear()
         p = principal()
         first = str(uuid4())
         second = str(uuid4())
@@ -53,6 +54,7 @@ def test_stop_is_not_rate_limited_and_move_rate_is_bounded():
     async def run():
         ptz_router._generations.clear()
         ptz_router._last_move_at.clear()
+        ptz_router._context_seen_at.clear()
         p = principal()
         context = str(uuid4())
         key = (p.subject, "camera-1", context)
@@ -63,6 +65,27 @@ def test_stop_is_not_rate_limited_and_move_rate_is_bounded():
         assert limited.value.status_code == 429
         # STOP has priority and remains accepted immediately.
         await ptz_router._claim_generation(p, "camera-1", 3, context, movement=False)
+
+    asyncio.run(run())
+
+
+def test_ptz_context_state_is_bounded_per_principal_camera(monkeypatch):
+    async def run():
+        ptz_router._generations.clear()
+        ptz_router._last_move_at.clear()
+        ptz_router._context_seen_at.clear()
+        monkeypatch.setattr(ptz_router, "_MAX_CONTEXTS_PER_PRINCIPAL_CAMERA", 2)
+        p = principal()
+        await ptz_router._claim_generation(p, "camera-1", 1, str(uuid4()), movement=False)
+        await ptz_router._claim_generation(p, "camera-1", 1, str(uuid4()), movement=False)
+        with pytest.raises(HTTPException) as limited:
+            await ptz_router._claim_generation(
+                p, "camera-1", 1, str(uuid4()), movement=False
+            )
+        assert limited.value.status_code == 429
+        assert limited.value.detail["code"] == "PTZ_CONTEXT_LIMIT"
+        assert len(ptz_router._generations) == 2
+        assert len(ptz_router._context_seen_at) == 2
 
     asyncio.run(run())
 
