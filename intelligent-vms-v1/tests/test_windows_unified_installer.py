@@ -110,5 +110,7 @@ def test_postgres_bootstrap_credential_is_cleared_after_child_use():
     clear_call = 'SetEnvironmentVariable(t "VMS_POSTGRES_ADMIN_PASSWORD", p 0)'
     assert NSIS.count(clear_call) >= 2
     setup_block = NSIS.split('Section "Install"', 1)[1].split('SectionEnd', 1)[0]
-    assert setup_block.index(clear_call, setup_block.index('Preflight failed')) if False else True
-    assert clear_call in setup_block
+    preflight = setup_block.index('-Action "Preflight"')
+    actual_setup = setup_block.index('-Action "$Action"')
+    assert setup_block.index(clear_call, preflight) > preflight
+    assert setup_block.index(clear_call, actual_setup) > actual_setup
