@@ -226,7 +226,6 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _attempt;
     private OidcClient? _client;
-    private OidcCapability? _capability;
     private Guid? _profileId;
     private string? _refreshToken;
     private int _generation;
@@ -281,7 +280,6 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
 
             var session = await _session.AuthenticateAsync(profile.Id, result.AccessToken, false, validateVmsSession, _attempt.Token);
             _client = client;
-            _capability = capability;
             _profileId = profile.Id;
             _refreshToken = string.IsNullOrWhiteSpace(result.RefreshToken) ? null : result.RefreshToken;
             TokenExpiry = result.AccessTokenExpiration;
@@ -338,9 +336,8 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
                 LastErrorCategory = IsPermanentRefreshError(result.Error) ? "refresh_rejected" : "refresh_unavailable";
                 return false;
             }
-            var session = await _session.AuthenticateAsync(profile.Id, result.AccessToken, false, validateVmsSession, cancellationToken);
-            delSession(session);
-            _client = client; _capability = capability; _profileId = profile.Id;
+            await _session.AuthenticateAsync(profile.Id, result.AccessToken, false, validateVmsSession, cancellationToken);
+            _client = client; _profileId = profile.Id;
             _refreshToken = string.IsNullOrWhiteSpace(result.RefreshToken) ? refresh : result.RefreshToken;
             TokenExpiry = result.AccessTokenExpiration; RememberedSession = true; State = AuthenticationUxState.Authenticated; LastErrorCategory = "none";
             await _refreshStore.SaveAsync(profile.Id, _refreshToken, cancellationToken);
@@ -413,7 +410,7 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
 
     private void ClearRuntime(AuthenticationUxState state)
     {
-        _client = null; _capability = null; _profileId = null; _refreshToken = null; TokenExpiry = null; RememberedSession = false; State = state;
+        _client = null; _profileId = null; _refreshToken = null; TokenExpiry = null; RememberedSession = false; State = state;
     }
 
     private static OidcClient CreateClient(OidcCapability capability, string redirectUri) => new(new OidcClientOptions
@@ -429,7 +426,6 @@ public sealed class OidcAuthenticationManager : IAsyncDisposable
     private static bool FixedEquals(string left, string right) => left.Length == right.Length &&
         CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(left), Encoding.UTF8.GetBytes(right));
     private static bool IsPermanentRefreshError(string? error) => error is "invalid_grant" or "invalid_client" or "unauthorized_client";
-    private static void delSession(SessionInfo _) { }
 
     public ValueTask DisposeAsync()
     {
