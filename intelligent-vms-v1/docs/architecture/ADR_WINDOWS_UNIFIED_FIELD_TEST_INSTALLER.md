@@ -47,6 +47,6 @@ PostgreSQL is explicitly **reused**, not silently hijacked or automatically unin
 
 Default uninstall removes installer-owned binaries, services and shortcuts but preserves recordings, server config/secrets/backups/database, client LocalAppData and Credential Manager state. No recording purge is implemented.
 
-No executable runs from TEMP or another user-writable install location. Existing service path quoting, ProgramData ACLs and service recovery remain authoritative. No broad firewall rules are created and PostgreSQL is not exposed publicly. The artifact is unsigned field-test software and does not claim trusted-publisher status.
+NSIS uses its private per-run `$PLUGINSDIR` only for the bounded preflight script before machine mutation; installed/runtime executables never run from a user-writable install location. The CI baseline pins NSIS 3.13 and treats private extraction ownership as part of the installer security boundary. Existing service path quoting, ProgramData ACLs and service recovery remain authoritative. No broad firewall rules are created and PostgreSQL is not exposed publicly. The artifact is unsigned field-test software and does not claim trusted-publisher status.
 
 Windows 10/11, OEM, endpoint-security, GPO and real-camera qualification remain external.
