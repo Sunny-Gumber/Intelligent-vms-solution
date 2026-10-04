@@ -108,7 +108,7 @@ public sealed class EventCenterCoordinator:IAsyncDisposable
 
     public async Task LoadAsync(EventQuery query,CancellationToken cancellationToken=default)
     {
-        ThrowIfDisposed(); Validate(query); var generation=Interlocked.Increment(ref _generation);
+        ThrowIfDisposed(); Validate(query); StopPolling(); var generation=Interlocked.Increment(ref _generation);
         State=EventCenterState.Loading;ErrorCategory="none";Notify();
         try{
             var page=await _provider.GetEventHistoryAsync(query,cancellationToken);
