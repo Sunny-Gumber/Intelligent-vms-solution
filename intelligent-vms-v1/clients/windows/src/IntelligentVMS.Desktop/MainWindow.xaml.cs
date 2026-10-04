@@ -26,6 +26,7 @@ public partial class MainWindow:Window
     private CameraInfo? _selectedCamera;
     private LiveGridCoordinator? _grid;
     private PlaybackCoordinator? _playback;
+    private PtzCoordinator? _ptz;
     private ServerConnectionState _connectionState=ServerConnectionState.Disconnected;
 
     public MainWindow(IClientLogger logger)
@@ -38,11 +39,14 @@ public partial class MainWindow:Window
         InitializeLiveTiles();
         Loaded+=MainWindow_Loaded;
         Closing+=MainWindow_Closing;
+        Deactivated+=MainWindow_Deactivated;
         SchemeCombo.SelectedIndex=0;
         PlaybackDatePicker.SelectedDate=DateTime.Today;
         PlaybackRateCombo.SelectedIndex=0;
+        PtzSpeedCombo.SelectedIndex=1;
         RenderLiveGrid();
         RenderPlayback();
+        RenderPtz();
     }
 
     private void InitializeLiveTiles()
@@ -146,6 +150,7 @@ public partial class MainWindow:Window
 
     private async void Logout_Click(object sender,RoutedEventArgs e)
     {
+        await DeactivatePtzAsync();
         await DeactivatePlaybackAsync();
         await DeactivateGridAsync(true);
         if(_activeProfile is not null)await _oidc.LogoutAsync(_activeProfile.Id);
@@ -163,6 +168,7 @@ public partial class MainWindow:Window
             _authorizedCameras=cameras.ToDictionary(x=>x.Id,StringComparer.Ordinal);
             PopulateCameraTree(cameras);
             await InitializeGridCoordinatorAsync();
+            await InitializePtzCoordinatorAsync();
             await InitializePlaybackCoordinatorAsync();
             EventsTab.Visibility=_capabilities.EventHistory?Visibility.Visible:Visibility.Collapsed;
             LogoutButton.IsEnabled=true;UpdateServerState();
@@ -247,7 +253,7 @@ public partial class MainWindow:Window
         catch(SessionExpiredException){await HandleSessionExpiredAsync();}
     }
 
-    private void SelectLiveTile(int index)
+    private async void SelectLiveTile(int index)
     {
         if(_grid is null)return;
         try
@@ -258,15 +264,19 @@ public partial class MainWindow:Window
                 UpdateRoleOptions(camera.AvailableLiveRoles,string.IsNullOrWhiteSpace(model.ActualRole)?model.RequestedRole:model.ActualRole);
             LiveSelectionText.Text=model?.HasAssignment==true?$"{model.CameraName} · tile {index+1}":$"Tile {index+1} selected.";
             RenderLiveGrid();
+            await SyncPtzForGridAsync();
         }
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
         catch(InvalidOperationException){}
     }
 
     private async Task ClearLiveTileAsync(int index)
     {
         if(_grid is null)return;
+        if(_grid.SelectedTile==index)await StopPtzBestEffortAsync();
         await _grid.ClearTileAsync(index);
         await SaveGridSnapshotAsync();
+        await SyncPtzForGridAsync();
     }
 
     private async Task ToggleFocusAsync(int index)
@@ -274,9 +284,11 @@ public partial class MainWindow:Window
         if(_grid is null)return;
         try
         {
+            await StopPtzBestEffortAsync();
             if(_grid.FocusedTile==index)await _grid.ExitFocusAsync();
             else await _grid.EnterFocusAsync(index);
             await SaveGridSnapshotAsync();
+            await SyncPtzForGridAsync();
         }
         catch(SessionExpiredException){await HandleSessionExpiredAsync();}
         catch(InvalidOperationException){LiveSelectionText.Text="Assign a camera before entering focus view.";}
@@ -295,10 +307,12 @@ public partial class MainWindow:Window
         RenderLiveGrid();
     }
 
-    private void Grid_Changed(object? sender,EventArgs e)
+    private async void Grid_Changed(object? sender,EventArgs e)
     {
         if(!Dispatcher.CheckAccess()){Dispatcher.BeginInvoke(RenderLiveGrid);return;}
         RenderLiveGrid();
+        try{await SyncPtzForGridAsync();}
+        catch(SessionExpiredException){await HandleSessionExpiredAsync();}
     }
 
     private void RenderLiveGrid()
@@ -325,6 +339,7 @@ public partial class MainWindow:Window
         }
         var active=grid?.ActiveTileCount??0;var connecting=grid?.ConnectingTileCount??0;var failed=grid?.FailedTileCount??0;
         GridStatusText.Text=$"{(focused is null?$"{layout.Count}-view":$"Focus tile {focused.Value+1}")} · {active} live · {connecting} connecting · {failed} failed";
+        RenderPtz();
         RefreshDiagnostics();
     }
 
