@@ -6,7 +6,7 @@ using IntelligentVMS.Desktop;
 var tests=new List<(string,Func<Task>)>{
 ("server URL validation",TestServerProfiles),("profile persistence/corruption",TestProfiles),("credential storage",TestCredentials),
 ("token redaction",TestRedaction),("OIDC PKCE security contracts",OidcSecurityTests.RunAllAsync),("multi-camera live grid",LiveGridTests.RunAllAsync),("desktop PTZ foundation",PtzTests.RunAllAsync),("desktop playback foundation",PlaybackTests.RunAllAsync),("authentication transitions",TestSession),("remembered-session failure policy",TestRememberedSessionFailures),("401 expiry",TestUnauthorized),
-("capability/camera parsing",TestApiParsing),("playback API refresh contract",TestPlaybackApiRefresh),("camera tree",TestCameraTree),("live API auth contract",TestLiveApiContract),("live grant/session cleanup",TestLive),("WHEP renderer contract",TestRendererContract),
+("capability/camera parsing",TestApiParsing),("playback API refresh contract",TestPlaybackApiRefresh),("PTZ API refresh contract",TestPtzApiRefresh),("camera tree",TestCameraTree),("live API auth contract",TestLiveApiContract),("live grant/session cleanup",TestLive),("WHEP renderer contract",TestRendererContract),
 ("TLS/media policy",TestTls),("diagnostics",TestDiagnostics),("package isolation",TestPackaging),("interpolation guard",TestInterpolationGuard)};
 var failures=0;
 foreach(var (name,test) in tests){try{await test();Console.WriteLine($"PASS {name}");}catch(Exception ex){failures++;Console.Error.WriteLine($"FAIL {name}: {ex.GetType().Name}: {ex.Message}");}}
@@ -85,6 +85,34 @@ static async Task TestPlaybackApiRefresh(){
  using(var api=new VmsApiClient(()=>"valid",new StubHandler(_=>new HttpResponseMessage(HttpStatusCode.Forbidden)),refreshProvider:_=>{refreshes++;return Task.FromResult(true);})){
   api.Configure(profile);
   await Throws<VmsApiException>(()=>api.GetRecordingTimelineAsync("camera-1",DateTimeOffset.Parse("2026-10-04T00:00:00Z"),DateTimeOffset.Parse("2026-10-05T00:00:00Z")));
+  Assert(refreshes==0);
+ }
+}
+static async Task TestPtzApiRefresh(){
+ var profile=new ServerProfile(Guid.NewGuid(),"Remote","https","vms.example.com",443);
+ var token="expired";var refreshes=0;var calls=0;var auth=new List<string?>();
+ using(var api=new VmsApiClient(()=>token,new StubHandler(request=>{
+  calls++;auth.Add(request.Headers.Authorization?.Parameter);
+  return calls==1?new HttpResponseMessage(HttpStatusCode.Unauthorized):Json(HttpStatusCode.OK,"{\"camera_id\":\"camera-1\",\"state\":\"moving\",\"generation\":7}");
+ }),refreshProvider:_=>{refreshes++;token="renewed";return Task.FromResult(true);})){
+  api.Configure(profile);
+  var ack=await api.MovePtzAsync("camera-1",new PtzMoveRequestDto{Pan=0.65,Tilt=0,Zoom=0,Generation=7,ContextId=Guid.NewGuid()});
+  Assert(ack.State=="moving"&&ack.Generation==7&&calls==2&&refreshes==1&&auth.SequenceEqual(new[]{"expired","renewed"}));
+ }
+
+ refreshes=0;calls=0;
+ using(var api=new VmsApiClient(()=>"expired",new StubHandler(_=>{calls++;return new HttpResponseMessage(HttpStatusCode.Unauthorized);}),
+  refreshProvider:_=>{refreshes++;return Task.FromResult(false);})){
+  api.Configure(profile);
+  await Throws<SessionExpiredException>(()=>api.StopPtzAsync("camera-1",new PtzStopRequestDto{Generation=8,ContextId=Guid.NewGuid()}));
+  Assert(calls==1&&refreshes==1);
+ }
+
+ refreshes=0;
+ using(var api=new VmsApiClient(()=>"valid",new StubHandler(_=>new HttpResponseMessage(HttpStatusCode.Forbidden)),
+  refreshProvider:_=>{refreshes++;return Task.FromResult(true);})){
+  api.Configure(profile);
+  await Throws<VmsApiException>(()=>api.GetPtzCapabilitiesAsync("camera-1"));
   Assert(refreshes==0);
  }
 }
