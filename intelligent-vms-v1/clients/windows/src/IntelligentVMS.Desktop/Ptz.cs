@@ -73,11 +73,15 @@ public sealed class PtzCoordinator:IAsyncDisposable
         string? priorCamera;
         lock(_sync)
         {
-            if(_cameraId==cameraId&&_tileIndex==tileIndex&&Capabilities is not null)return;
+            if(_cameraId==cameraId&&_tileIndex==tileIndex&&(Capabilities is not null||_pending is not null))return;
             priorCamera=_cameraId;
         }
         if(priorCamera is not null&&(priorCamera!=cameraId||ActiveTileIndex!=tileIndex))
-            await StopAsync(CancellationToken.None);
+        {
+            try{await StopAsync(CancellationToken.None);}
+            catch(SessionExpiredException){throw;}
+            catch(Exception ex){_logger.LogError("ptz","old PTZ context stop failed during rebind",ex);}
+        }
 
         CancellationTokenSource linked;
         int generation;
@@ -108,7 +112,10 @@ public sealed class PtzCoordinator:IAsyncDisposable
             }
         }
         catch(OperationCanceledException) when(linked.IsCancellationRequested){}
-        catch(SessionExpiredException){SetFailureIfCurrent(generation,cameraId!,"authentication");throw;}
+        catch(SessionExpiredException)
+        {
+            if(SetFailureIfCurrent(generation,cameraId!,"authentication"))throw;
+        }
         catch(VmsApiException ex) when(ex.StatusCode is System.Net.HttpStatusCode.UnprocessableEntity or System.Net.HttpStatusCode.NotFound)
         {SetUnavailableIfCurrent(generation,cameraId!);}
         catch(Exception ex){SetFailureIfCurrent(generation,cameraId!,"capability");_logger.LogError("ptz","ptz capability load failed",ex);}
@@ -144,12 +151,16 @@ public sealed class PtzCoordinator:IAsyncDisposable
             }
         }
         catch(OperationCanceledException) when(linked.IsCancellationRequested){}
-        catch(SessionExpiredException){SetFailureIfCurrent(generation,cameraId,"authentication");throw;}
+        catch(SessionExpiredException)
+        {
+            if(SetFailureIfCurrent(generation,cameraId,"authentication"))throw;
+        }
         catch(Exception ex)
         {
             var current=SetFailureIfCurrent(generation,cameraId,"command");
+            if(!current)return;
             _logger.LogError("ptz","ptz move failed",ex);
-            if(current)await StopAfterFailedMoveAsync(cameraId);
+            await StopAfterFailedMoveAsync(cameraId);
             throw;
         }
         finally{CompletePending(linked);Notify();}
