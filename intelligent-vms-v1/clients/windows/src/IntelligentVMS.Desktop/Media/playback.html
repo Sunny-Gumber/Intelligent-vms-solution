@@ -2,11 +2,21 @@
 <html><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><style>html,body,video{margin:0;width:100%;height:100%;background:#000}video{object-fit:contain}</style></head>
 <body><video id="video" playsinline controls></video><script>
 'use strict';
-const video=document.getElementById('video');let sessionId='',baseMs=0,generation=0;
-const send=o=>chrome.webview.postMessage(Object.assign({sessionId},o));
-function stop(){generation++;video.pause();video.removeAttribute('src');video.load();sessionId='';baseMs=0}
-async function openMedia(m){stop();const mine=++generation;sessionId=String(m.sessionId||'');baseMs=Date.parse(m.startUtc);if(!sessionId||!Number.isFinite(baseMs))return send({state:'FAILED'});try{const u=new URL(m.mediaUrl);if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.hash)throw new Error('unsafe');video.src=u.toString();video.playbackRate=Number(m.rate)||1;video.load();await video.play();if(mine===generation)send({state:'PLAYING'})}catch{if(mine===generation)send({state:'FAILED'})}}
-video.addEventListener('play',()=>send({state:'PLAYING'}));video.addEventListener('pause',()=>{if(video.src)send({state:'PAUSED'})});video.addEventListener('ended',()=>send({state:'ENDED'}));video.addEventListener('error',()=>send({state:'FAILED'}));video.addEventListener('timeupdate',()=>{if(Number.isFinite(baseMs))send({positionUtc:new Date(baseMs+video.currentTime*1000).toISOString()})});
-chrome.webview.addEventListener('message',e=>{const m=e.data||{};if(m.action==='open')openMedia(m);else if(m.action==='play')video.play().catch(()=>send({state:'FAILED'}));else if(m.action==='pause')video.pause();else if(m.action==='rate')video.playbackRate=Number(m.rate)||1;else if(m.action==='stop')stop()});
-window.addEventListener('pagehide',stop);
+const video=document.getElementById('video');let sessionId='',baseMs=0,generation=0,handlers=null;
+const sendFor=(id,o)=>chrome.webview.postMessage(Object.assign({sessionId:id},o));
+function detachHandlers(){if(!handlers)return;for(const [name,handler] of Object.entries(handlers))video.removeEventListener(name,handler);handlers=null}
+function attachHandlers(mine,id){
+  handlers={
+    play:()=>{if(mine===generation&&id===sessionId)sendFor(id,{state:'PLAYING'})},
+    pause:()=>{if(mine===generation&&id===sessionId&&video.src)sendFor(id,{state:'PAUSED'})},
+    ended:()=>{if(mine===generation&&id===sessionId)sendFor(id,{state:'ENDED'})},
+    error:()=>{if(mine===generation&&id===sessionId)sendFor(id,{state:'FAILED'})},
+    timeupdate:()=>{if(mine===generation&&id===sessionId&&Number.isFinite(baseMs))sendFor(id,{positionUtc:new Date(baseMs+video.currentTime*1000).toISOString()})}
+  };
+  for(const [name,handler] of Object.entries(handlers))video.addEventListener(name,handler);
+}
+function stop(expected){if(expected!==undefined&&expected!==generation)return;generation++;detachHandlers();sessionId='';baseMs=0;video.pause();video.removeAttribute('src');video.load()}
+async function openMedia(m){stop();const mine=++generation;const id=String(m.sessionId||'');sessionId=id;baseMs=Date.parse(m.startUtc);if(!id||!Number.isFinite(baseMs))return sendFor(id,{state:'FAILED'});attachHandlers(mine,id);try{const u=new URL(m.mediaUrl);if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.hash)throw new Error('unsafe');video.src=u.toString();video.playbackRate=Number(m.rate)||1;video.load();await video.play();if(mine===generation&&id===sessionId)sendFor(id,{state:'PLAYING'})}catch{if(mine===generation&&id===sessionId){sendFor(id,{state:'FAILED'});stop(mine)}}}
+chrome.webview.addEventListener('message',e=>{const m=e.data||{};if(m.action==='open')openMedia(m);else{const id=String(m.sessionId||'');if(!id||id!==sessionId)return;if(m.action==='play')video.play().catch(()=>sendFor(id,{state:'FAILED'}));else if(m.action==='pause')video.pause();else if(m.action==='rate')video.playbackRate=Number(m.rate)||1;else if(m.action==='stop')stop()}});
+window.addEventListener('pagehide',()=>stop());
 </script></body></html>
