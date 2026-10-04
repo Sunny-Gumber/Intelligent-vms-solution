@@ -41,6 +41,7 @@ public partial class MainWindow:Window
         Loaded+=MainWindow_Loaded;
         Closing+=MainWindow_Closing;
         Deactivated+=MainWindow_Deactivated;
+        StateChanged+=MainWindow_StateChanged;
         SchemeCombo.SelectedIndex=0;
         PlaybackDatePicker.SelectedDate=DateTime.Today;
         PlaybackRateCombo.SelectedIndex=0;
@@ -469,7 +470,32 @@ public partial class MainWindow:Window
 
     private async void MainWindow_Deactivated(object? sender,EventArgs e)
     {
-        if(_ptz?.State==PtzState.Moving)await StopPtzBestEffortAsync();
+        if(_ptzPointerHeld||_ptz?.State==PtzState.Moving)await StopPtzBestEffortAsync();
+    }
+
+    private async void MainWindow_StateChanged(object? sender,EventArgs e)
+    {
+        if(WindowState==WindowState.Minimized&&(_ptzPointerHeld||_ptz?.State==PtzState.Moving))
+            await StopPtzBestEffortAsync();
+    }
+
+    private void ShutdownPtzForClose()
+    {
+        var ptz=_ptz;
+        _ptz=null;_ptzPointerHeld=false;
+        if(ptz is null)return;
+        ptz.Changed-=Ptz_Changed;
+        try
+        {
+            // Run outside the WPF synchronization context and bound the final STOP/dispose attempt.
+            var shutdown=Task.Run(async ()=>{
+                try{await ptz.DisposeAsync();}
+                catch(Exception ex){_logger.LogError("ptz","bounded PTZ shutdown cleanup failed",ex);}
+            });
+            if(!shutdown.Wait(TimeSpan.FromSeconds(4)))
+                _logger.Warning("ptz","bounded PTZ shutdown cleanup timed out");
+        }
+        catch(Exception ex){_logger.LogError("ptz","PTZ shutdown cleanup failed",ex);}
     }
 
     private void RenderPtz()
@@ -703,7 +729,7 @@ public partial class MainWindow:Window
     private void MainWindow_Closing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
         _oidc.CancelActiveAttempt();
-        try{DeactivatePtzAsync().GetAwaiter().GetResult();}catch{}
+        ShutdownPtzForClose();
         try{DeactivatePlaybackAsync().GetAwaiter().GetResult();}catch{}
         try{DeactivateGridAsync(true).GetAwaiter().GetResult();}catch{}
         try{PlaybackMedia.DisposeAsync().AsTask().GetAwaiter().GetResult();}catch{}
