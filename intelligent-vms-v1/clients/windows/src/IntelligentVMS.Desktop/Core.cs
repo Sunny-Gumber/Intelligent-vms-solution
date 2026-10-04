@@ -100,6 +100,14 @@ public sealed record ClientDiagnostics(string ApplicationVersion, string OsVersi
     string TokenExpiry = "unknown", string OidcIssuerHost = "not configured", string LastAuthErrorCategory = "none",
     string CallbackMechanism = "none", string CredentialStoreStatus = "not used");
 
+public static class ServerProfileIdentity
+{
+    public static bool SameCredentialOrigin(ServerProfile left, ServerProfile right) =>
+        string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
+        left.Port == right.Port;
+}
+
 public static class ServerProfileValidator
 {
     public static ValidationResult Validate(ServerProfile profile)
