@@ -33,6 +33,14 @@ jobs:
       - name: Restore pinned client dependencies
         shell: pwsh
         run: dotnet restore clients/windows/src/IntelligentVMS.Desktop/IntelligentVMS.Desktop.csproj -p:Platform=x64
+      - name: Audit client dependencies
+        shell: pwsh
+        run: |
+          $audit = dotnet list clients/windows/src/IntelligentVMS.Desktop/IntelligentVMS.Desktop.csproj package --vulnerable --include-transitive
+          $audit | Write-Host
+          if($LASTEXITCODE -ne 0){throw "Client dependency audit failed"}
+          if(($audit -join [Environment]::NewLine) -match 'has the following vulnerable packages'){throw "Vulnerable desktop dependency detected"}
+
       - name: Build x64 native desktop client
         shell: pwsh
         run: dotnet build clients/windows/src/IntelligentVMS.Desktop/IntelligentVMS.Desktop.csproj -c Release -p:Platform=x64 --no-restore -warnaserror
@@ -49,6 +57,10 @@ jobs:
             if($source.Contains($forbidden)){throw "Forbidden client security pattern: $forbidden"}
           }
           if($source -match '(?i)ProgramData.*IntelligentVMS'){throw "Desktop client must not own server ProgramData state"}
+          if($source -match '(?i)ClientSecret\s*='){throw "Public desktop client must not configure a client secret"}
+          $oidc=Get-Content clients/windows/src/IntelligentVMS.Desktop/OidcAuthentication.cs -Raw
+          if($oidc -notmatch 'UseShellExecute\s*=\s*true'){throw "OIDC authentication must use the system browser"}
+          if($oidc -match 'WebView2'){throw "OIDC authentication must not use the media WebView2 boundary"}
       - name: Publish deterministic win-x64 package
         shell: pwsh
         run: .\clients\windows\packaging\Publish-Client.ps1 -Version "0.1.${{ github.run_number }}" -OutputRoot "$env:RUNNER_TEMP\client-artifacts"
