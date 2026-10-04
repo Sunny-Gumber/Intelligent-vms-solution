@@ -14,6 +14,7 @@ public partial class PlaybackMediaView:UserControl,IPlaybackMediaRenderer,IAsync
     private ServerProfile? _profile;
     private Func<string?>? _tokenProvider;
     private Guid _sessionId;
+    private long _generation;
     public string State{get;private set;}="IDLE";
     public event EventHandler<PlaybackRendererStateChangedEventArgs>? StateChanged;
     public event EventHandler<PlaybackPositionChangedEventArgs>? PositionChanged;
@@ -27,12 +28,14 @@ public partial class PlaybackMediaView:UserControl,IPlaybackMediaRenderer,IAsync
 
     public async Task OpenAsync(PlaybackMediaRequest request,CancellationToken cancellationToken=default)
     {
+        var generation=Interlocked.Increment(ref _generation);
         await _gate.WaitAsync(cancellationToken);
         try
         {
             if(_profile is null||_tokenProvider is null)throw new InvalidOperationException("Playback renderer is not configured.");
             ValidatePlaybackUri(_profile,request.MediaUri);
             await EnsureInitializedAsync();
+            if(generation!=Volatile.Read(ref _generation))return;
             _sessionId=request.SessionId;
             WebView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new{
                 action="open",sessionId=request.SessionId,mediaUrl=request.MediaUri.ToString(),
@@ -47,7 +50,11 @@ public partial class PlaybackMediaView:UserControl,IPlaybackMediaRenderer,IAsync
     public Task PauseAsync(CancellationToken cancellationToken=default)=>CommandAsync("pause",cancellationToken);
     public Task SetRateAsync(double rate,CancellationToken cancellationToken=default)=>
         CommandAsync("rate",cancellationToken,new{rate});
-    public Task StopAsync(CancellationToken cancellationToken=default)=>CommandAsync("stop",cancellationToken);
+    public Task StopAsync(CancellationToken cancellationToken=default)
+    {
+        Interlocked.Increment(ref _generation);
+        return CommandAsync("stop",cancellationToken);
+    }
 
     private async Task CommandAsync(string action,CancellationToken cancellationToken,object? extra=null)
     {
