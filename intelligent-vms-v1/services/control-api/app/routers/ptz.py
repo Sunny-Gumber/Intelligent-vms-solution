@@ -31,7 +31,10 @@ router = APIRouter(prefix="/api/v1/ptz", tags=["ptz"])
 _generation_lock = asyncio.Lock()
 _generations: dict[tuple[str, str, str], int] = {}
 _last_move_at: dict[tuple[str, str, str], float] = {}
+_context_seen_at: dict[tuple[str, str, str], float] = {}
 _MIN_MOVE_INTERVAL_SECONDS = 0.075
+_CONTEXT_IDLE_TTL_SECONDS = 600.0
+_MAX_CONTEXTS_PER_PRINCIPAL_CAMERA = 64
 
 
 def _http_error(exc: Exception) -> HTTPException:
@@ -76,6 +79,18 @@ async def _context(
     )
 
 
+def _prune_stale_contexts(now: float) -> None:
+    stale = [
+        key
+        for key, seen_at in _context_seen_at.items()
+        if now - seen_at > _CONTEXT_IDLE_TTL_SECONDS
+    ]
+    for key in stale:
+        _context_seen_at.pop(key, None)
+        _generations.pop(key, None)
+        _last_move_at.pop(key, None)
+
+
 async def _claim_generation(
     principal: Principal,
     camera_id: str,
@@ -86,14 +101,30 @@ async def _claim_generation(
 ) -> None:
     key = (principal.subject, camera_id, context_id)
     async with _generation_lock:
+        now = time.monotonic()
+        _prune_stale_contexts(now)
         current = _generations.get(key, 0)
         if generation <= current:
             raise HTTPException(
                 409,
                 {"code": "STALE_PTZ_COMMAND", "message": "PTZ command generation is stale"},
             )
+        if key not in _generations:
+            active_contexts = sum(
+                1
+                for subject, tracked_camera_id, _ in _context_seen_at
+                if subject == principal.subject and tracked_camera_id == camera_id
+            )
+            if active_contexts >= _MAX_CONTEXTS_PER_PRINCIPAL_CAMERA:
+                raise HTTPException(
+                    429,
+                    {
+                        "code": "PTZ_CONTEXT_LIMIT",
+                        "message": "Too many active PTZ client contexts",
+                    },
+                )
+        _context_seen_at[key] = now
         if movement:
-            now = time.monotonic()
             last = _last_move_at.get(key)
             if last is not None and now - last < _MIN_MOVE_INTERVAL_SECONDS:
                 raise HTTPException(
