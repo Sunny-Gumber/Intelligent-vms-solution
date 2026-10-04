@@ -259,7 +259,7 @@ public sealed class LiveGridCoordinator:IAsyncDisposable
     private async Task StartRuntimeAsync(TileRuntime runtime,string role,CancellationToken cancellationToken)
     {
         var generation=runtime.Model.NextGeneration();
-        runtime.Pending?.Cancel();runtime.Pending?.Dispose();
+        runtime.Pending?.Cancel();
         var pending=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);runtime.Pending=pending;
         runtime.Model.RequestedRole=role;runtime.Model.ActualRole="";runtime.Model.State=LiveTileState.Loading;runtime.Model.ErrorCategory="none";Notify();
         try
@@ -352,9 +352,10 @@ public sealed class LiveGridCoordinator:IAsyncDisposable
         foreach(var runtime in _tiles.Values)
         {
             if(runtime.StateHandler is not null)runtime.Renderer.StateChanged-=runtime.StateHandler;
-            runtime.Pending?.Cancel();runtime.Pending?.Dispose();
+            runtime.Pending?.Cancel();
             await runtime.Controller.DisposeAsync();
         }
-        _connectGate.Dispose();_disposed=true;
+        // Do not dispose the shared gate here: a cancellation-ignoring provider may still unwind and release it.
+        _disposed=true;
     }
 }
