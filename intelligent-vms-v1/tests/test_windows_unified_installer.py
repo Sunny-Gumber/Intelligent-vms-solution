@@ -96,3 +96,11 @@ def test_claims_remain_field_test_only():
     assert "field-test installer foundation" in OPS
     assert "Windows 10/11" in OPS
     assert "not Production Qualified" in OPS
+
+def test_postgres_admin_password_is_never_passed_on_command_line():
+    assert "VMS_POSTGRES_ADMIN_PASSWORD" in NSIS
+    assert "NSD_CreatePassword" in NSIS
+    assert "SetEnvironmentVariable" in NSIS
+    assert "/POSTGRESPASSWORD" not in NSIS
+    assert "VMS_POSTGRES_ADMIN_PASSWORD=" not in NSIS
+    assert "VMS_POSTGRES_ADMIN_PASSWORD=" not in SETUP
