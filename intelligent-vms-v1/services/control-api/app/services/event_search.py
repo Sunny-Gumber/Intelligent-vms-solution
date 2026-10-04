@@ -32,6 +32,8 @@ class EventSearchClient:
         start: datetime,
         end: datetime,
         limit: int,
+        before_timestamp: datetime | None = None,
+        before_event_id: str | None = None,
     ) -> list[dict]:
         """Search scoped event history with parameterized ClickHouse predicates.
 
@@ -73,6 +75,20 @@ class EventSearchClient:
         add_equal("camera_id", "camera", camera_id)
         add_equal("event_type", "event_type", event_type)
         add_equal("severity", "severity", severity)
+
+        if before_timestamp is not None:
+            params["param_before_timestamp"] = before_timestamp.isoformat()
+            if before_event_id:
+                params["param_before_event_id"] = before_event_id
+                clauses.append(
+                    "(timestamp < parseDateTime64BestEffort({before_timestamp:String}, 3, 'UTC') "
+                    "OR (timestamp = parseDateTime64BestEffort({before_timestamp:String}, 3, 'UTC') "
+                    "AND event_id < {before_event_id:String}))"
+                )
+            else:
+                clauses.append(
+                    "timestamp < parseDateTime64BestEffort({before_timestamp:String}, 3, 'UTC')"
+                )
 
         if allowed_sites is not None and site_id is None:
             if not allowed_sites:
