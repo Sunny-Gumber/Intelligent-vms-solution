@@ -16,6 +16,31 @@ from app.core.config import settings
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
+@router.get("/capabilities")
+async def authentication_capabilities():
+    """Return non-secret authentication modes supported by this VMS deployment."""
+    oidc_enabled = bool(
+        settings.auth_desktop_oidc_enabled
+        and settings.auth_require_oidc
+        and settings.auth_issuer.strip()
+        and settings.auth_oidc_client_id.strip()
+    )
+    return {
+        "authentication_required": not settings.auth_disabled,
+        "manual_token_login": not settings.auth_require_oidc,
+        "remember_session": True,
+        "oidc": {
+            "enabled": oidc_enabled,
+            "required": bool(settings.auth_require_oidc),
+            "authority": settings.auth_issuer if oidc_enabled else "",
+            "client_id": settings.auth_oidc_client_id if oidc_enabled else "",
+            "scopes": settings.auth_oidc_scopes.split() if oidc_enabled else [],
+            "callback": "loopback",
+            "pkce_methods": ["S256"] if oidc_enabled else [],
+        },
+    }
+
+
 def _session_payload(principal: Principal) -> dict:
     return {
         "authenticated": True,

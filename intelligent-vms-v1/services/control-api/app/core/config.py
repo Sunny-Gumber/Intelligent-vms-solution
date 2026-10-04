@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     auth_issuer: str = ""
     auth_audience: str = "intelligent-vms"
     auth_hs256_secret: str = ""
+    auth_desktop_oidc_enabled: bool = False
+    auth_oidc_client_id: str = ""
+    auth_oidc_scopes: str = "openid profile offline_access"
 
     cors_allowed_origins: str = ""
     cors_allowed_methods: str = "GET,POST,PUT,PATCH,DELETE,OPTIONS"

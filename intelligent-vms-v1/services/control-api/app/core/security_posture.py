@@ -87,3 +87,12 @@ def validate_security_posture() -> None:
 
     _require_https_url(settings.auth_jwks_url, "AUTH_JWKS_URL")
     _require_https_url(settings.auth_issuer, "AUTH_ISSUER")
+
+    if settings.auth_desktop_oidc_enabled:
+        if not settings.auth_oidc_client_id.strip():
+            raise RuntimeError("AUTH_DESKTOP_OIDC_ENABLED requires AUTH_OIDC_CLIENT_ID")
+        scopes = [value for value in settings.auth_oidc_scopes.split() if value]
+        if "openid" not in scopes:
+            raise RuntimeError("AUTH_DESKTOP_OIDC_ENABLED requires openid scope")
+        if any(any(ord(ch) < 0x21 or ord(ch) > 0x7E for ch in value) for value in scopes):
+            raise RuntimeError("AUTH_OIDC_SCOPES contains invalid characters")
