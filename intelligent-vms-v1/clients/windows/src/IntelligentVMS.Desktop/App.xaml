@@ -1,0 +1,20 @@
+<Application x:Class="IntelligentVMS.Desktop.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnExplicitShutdown">
+  <Application.Resources>
+    <SolidColorBrush x:Key="WindowBackground" Color="#10151D"/>
+    <SolidColorBrush x:Key="PanelBackground" Color="#18212C"/>
+    <SolidColorBrush x:Key="PanelBorder" Color="#344252"/>
+    <SolidColorBrush x:Key="TextPrimary" Color="#E8EEF6"/>
+    <SolidColorBrush x:Key="TextMuted" Color="#9CAFC3"/>
+    <Style TargetType="Window">
+      <Setter Property="Background" Value="{StaticResource WindowBackground}"/>
+      <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+      <Setter Property="FontFamily" Value="Segoe UI"/>
+    </Style>
+    <Style TargetType="Button"><Setter Property="Padding" Value="10,6"/><Setter Property="Margin" Value="3"/></Style>
+    <Style TargetType="TextBox"><Setter Property="Margin" Value="3"/><Setter Property="Padding" Value="6"/></Style>
+    <Style TargetType="ComboBox"><Setter Property="Margin" Value="3"/><Setter Property="Padding" Value="5"/></Style>
+  </Application.Resources>
+</Application>

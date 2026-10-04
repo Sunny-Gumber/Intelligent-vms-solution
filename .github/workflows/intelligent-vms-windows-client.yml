@@ -1,0 +1,78 @@
+name: Intelligent VMS Windows Client
+
+on:
+  pull_request:
+    paths:
+      - 'intelligent-vms-v1/clients/windows/**'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_CLIENT_FOUNDATION.md'
+      - 'intelligent-vms-v1/docs/operations/WINDOWS_DESKTOP_CLIENT.md'
+      - '.github/workflows/intelligent-vms-windows-client.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'intelligent-vms-v1/clients/windows/**'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_CLIENT_FOUNDATION.md'
+      - 'intelligent-vms-v1/docs/operations/WINDOWS_DESKTOP_CLIENT.md'
+      - '.github/workflows/intelligent-vms-windows-client.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-client-foundation:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore pinned client dependencies
+        shell: pwsh
+        run: dotnet restore clients/windows/src/IntelligentVMS.Desktop/IntelligentVMS.Desktop.csproj -p:Platform=x64
+      - name: Build x64 native desktop client
+        shell: pwsh
+        run: dotnet build clients/windows/src/IntelligentVMS.Desktop/IntelligentVMS.Desktop.csproj -c Release -p:Platform=x64 --no-restore -warnaserror
+      - name: Build and run deterministic client tests
+        shell: pwsh
+        run: |
+          dotnet build clients/windows/tests/IntelligentVMS.Desktop.Tests/IntelligentVMS.Desktop.Tests.csproj -c Release -p:Platform=x64
+          dotnet run --project clients/windows/tests/IntelligentVMS.Desktop.Tests/IntelligentVMS.Desktop.Tests.csproj -c Release -p:Platform=x64 --no-build
+      - name: Security contract scan
+        shell: pwsh
+        run: |
+          $source=(Get-ChildItem clients/windows/src,clients/windows/packaging -Recurse -File | Where-Object {$_.Extension -in ".cs",".xaml",".html",".ps1"} | Get-Content -Raw) -join [Environment]::NewLine
+          foreach($forbidden in @("ServerCertificateCustomValidationCallback","DangerousAcceptAnyServerCertificateValidator","AUTH_DISABLED=true","?token=")){
+            if($source.Contains($forbidden)){throw "Forbidden client security pattern: $forbidden"}
+          }
+          if($source -match '(?i)ProgramData.*IntelligentVMS'){throw "Desktop client must not own server ProgramData state"}
+      - name: Publish deterministic win-x64 package
+        shell: pwsh
+        run: .\clients\windows\packaging\Publish-Client.ps1 -Version "0.1.${{ github.run_number }}" -OutputRoot "$env:RUNNER_TEMP\client-artifacts"
+      - name: Launch smoke
+        shell: pwsh
+        run: |
+          $exe=Get-ChildItem "$env:RUNNER_TEMP\client-artifacts\stage" -Recurse -Filter "IntelligentVMS.Desktop.exe" | Select-Object -First 1
+          if(-not $exe){throw "Published desktop executable missing"}
+          $process=Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -Wait -PassThru
+          if($process.ExitCode -ne 0){throw "Desktop smoke launch failed: $($process.ExitCode)"}
+      - name: Verify package isolation
+        shell: pwsh
+        run: |
+          $zip=Get-ChildItem "$env:RUNNER_TEMP\client-artifacts" -Filter "*.zip" | Select-Object -First 1
+          if(-not $zip){throw "Client ZIP artifact missing"}
+          $hash=Get-Content "$($zip.FullName).sha256"
+          if(-not $hash -or $hash.Length -lt 64){throw "Package SHA-256 missing"}
+          $uninstall=Get-Content clients/windows/packaging/Uninstall-Client.ps1 -Raw
+          foreach($forbidden in @("IntelligentVMSControl","IntelligentVMSMedia","PostgreSQL","ProgramData")){if($uninstall -match $forbidden){throw "Uninstall isolation violation: $forbidden"}}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IntelligentVMS-DesktopClient-win-x64
+          path: |
+            ${{ runner.temp }}/client-artifacts/*.zip
+            ${{ runner.temp }}/client-artifacts/*.sha256
+          if-no-files-found: error
+          retention-days: 14

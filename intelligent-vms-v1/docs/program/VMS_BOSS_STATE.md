@@ -211,3 +211,21 @@ If no remote write is appropriate yet, give the user the findings and leave this
 - F02-006 engineering state is QA/software-evidenced; final verification remains NV / External Qualification Pending.
 - F02-020 and F02-021 remain QA/software-evidenced; architecture is reused, not reopened.
 - Product remains **Release Candidate / External Qualification Pending**. Security residual #261 remains separately open.
+
+## Native Windows Desktop Client Foundation — issue #6 / PR #7 — 2026-10-04
+
+- Verified starting main: `e49962afaa8b176ad8f7b67a0293642af51b02d3`, the accepted Windows Server baseline.
+- Dedicated branch: `feature/windows-desktop-client-foundation`; no server-baseline PR was reused.
+- Existing catalog rows selected: F08-001 Windows desktop client, F08-007 Secure login, F08-008 Remember-login. No duplicate feature IDs were created.
+- Technology: .NET 10 LTS + WPF x64. WebView2 is restricted to the replaceable secured WHEP/WebRTC renderer, not the application shell.
+- The client reuses existing FastAPI authentication/capability/camera/live-grant APIs and MediaMTX/WHEP. It does not add a database, recorder, camera authority or authentication bypass.
+- Remote profiles require HTTPS; HTTP is limited to localhost/loopback field testing. Certificate validation remains platform-default with revocation checking.
+- Remember-login uses Windows Credential Manager. Profiles JSON, logs and diagnostics do not intentionally contain bearer tokens/passwords/camera credentials.
+- Camera navigation consumes server-authorized camera scope and live-role availability.
+- Live-session lifecycle is generation-fenced and performs renderer cleanup on stop/switch/logout/unload/application close.
+- Client state uses per-user LocalAppData and is separate from server ProgramData.
+- Packaging is a deterministic self-contained win-x64 field-test ZIP plus SHA-256 and isolated per-user install/uninstall scripts; it is not claimed as the final commercial installer.
+- Automated evidence includes native compile, deterministic positive/edge/negative tests, production-source security scan, package generation and executable smoke launch. Existing CI, Security, Ubuntu and Windows Server field-test workflows remain regression gates.
+- F08-001/F08-007/F08-008 are promoted only to QA/software-evidenced; verification remains NV.
+- Windows 10/11 hardware qualification, real WHEP/camera/codec validation, DPI/multi-monitor, GPU/native decoding, high-density grids, OIDC/PKCE interactive UX and final signed installer/update channel remain External Qualification Pending.
+- Product status remains **Release Candidate / External Qualification Pending**.
