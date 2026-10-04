@@ -18,7 +18,7 @@ internal static class EventCenterTests
         provider.Pages.Enqueue(new EventHistoryPageDto{Items=Enumerable.Range(0,520).Select(i=>new EventRecord{
             EventId=$"e-{i:D4}",CameraId="c1",SiteId="s1",TenantId="t1",OccurredAt=now.AddSeconds(-i),EventType="motion",Source="camera",Severity="info"}).ToList()});
         await using var center=new EventCenterCoordinator(provider,new TestLogger());
-        await center.LoadAsync(new EventQuery(now.AddHours(-1),now.AddMinutes(1),Limit=100));
+        await center.LoadAsync(new EventQuery(now.AddHours(-1),now.AddMinutes(1),Limit:100));
         if(center.Events.Count!=EventCenterCoordinator.MaxDisplayedEvents||center.DroppedViewCount!=20)throw new InvalidOperationException("Event view bound failed.");
         var first=center.Events[0].EventId;
         provider.Pages.Enqueue(new EventHistoryPageDto{Items=[center.Events[0]]});
