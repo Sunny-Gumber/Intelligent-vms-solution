@@ -68,8 +68,8 @@ static Task TestTls(){
  return Task.CompletedTask;
 }
 static async Task TestDiagnostics(){
- var dir=TempDir();var service=new DiagnosticsService();var p=new ServerProfile(Guid.NewGuid(),"Remote","https","vms.example.com",443);
- var path=await service.ExportAsync(service.Build(p,ServerConnectionState.Connected,new(){DeploymentProfile="windows-small-site"},"IDLE"),dir);var text=await File.ReadAllTextAsync(path);
+ var dir=TempDir();var p=new ServerProfile(Guid.NewGuid(),"Remote","https","vms.example.com",443);
+ var path=await DiagnosticsService.ExportAsync(DiagnosticsService.Build(p,ServerConnectionState.Connected,new(){DeploymentProfile="windows-small-site"},"IDLE"),dir);var text=await File.ReadAllTextAsync(path);
  Assert(text.Contains("vms.example.com")&&!text.Contains("Bearer ")&&!text.Contains("password",StringComparison.OrdinalIgnoreCase));
 }
 static async Task TestPackaging(){
@@ -111,7 +111,7 @@ static async Task TestInterpolationGuard(){
 
 sealed class StubHandler(Func<HttpRequestMessage,HttpResponseMessage> response):HttpMessageHandler{protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken cancellationToken)=>Task.FromResult(response(request));}
 sealed class MemoryCredentials:ICredentialStore{public string? Value;public Task SaveAsync(Guid p,string t,CancellationToken c=default){Value=t;return Task.CompletedTask;}public Task<string?> LoadAsync(Guid p,CancellationToken c=default)=>Task.FromResult(Value);public Task DeleteAsync(Guid p,CancellationToken c=default){Value=null;return Task.CompletedTask;}}
-sealed class MemoryLogger:IClientLogger{public void Info(string s,string m){}public void Warning(string s,string m){}public void Error(string s,string m,Exception? e=null){}}
+sealed class MemoryLogger:IClientLogger{public void Info(string s,string m){}public void Warning(string s,string m){}public void LogError(string s,string m,Exception? e=null){}}
 sealed class FakeLiveProvider:ILiveAccessProvider{public Task<LiveAccessGrant> GetLiveAccessAsync(string cameraId,string role,CancellationToken c=default)=>Task.FromResult(new LiveAccessGrant{CameraId=cameraId,StreamRole=role,Path="path",WebRtcUrl=$"https://media.example/{cameraId}",AccessToken="short-lived",ExpiresAt=DateTimeOffset.UtcNow.AddMinutes(1)});}
 sealed class FakeRenderer:ILiveMediaRenderer{public int Starts,Stops;public string State{get;private set;}="IDLE";public Task StartAsync(LiveAccessGrant g,CancellationToken c=default){Starts++;State="LIVE";return Task.CompletedTask;}public Task StopAsync(CancellationToken c=default){Stops++;State="IDLE";return Task.CompletedTask;}}
 
