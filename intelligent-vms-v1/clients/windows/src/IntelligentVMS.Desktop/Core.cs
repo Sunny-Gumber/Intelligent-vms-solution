@@ -225,6 +225,7 @@ public interface ICredentialStore
 public sealed class WindowsCredentialStore : ICredentialStore
 {
     private const int CredTypeGeneric = 1, CredPersistLocalMachine = 2;
+    private const int MaxCredentialBlobBytes = 5 * 512;
     private readonly string _purpose;
     public WindowsCredentialStore(string purpose = "session")
     {
@@ -241,6 +242,7 @@ public sealed class WindowsCredentialStore : ICredentialStore
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         if (string.IsNullOrWhiteSpace(token)) throw new ArgumentException("Token is required.", nameof(token));
         var bytes = Encoding.Unicode.GetBytes(token);
+        if(bytes.Length > MaxCredentialBlobBytes){Array.Clear(bytes);throw new InvalidOperationException("Protected credential exceeds Windows Credential Manager capacity.");}
         var blob = Marshal.AllocCoTaskMem(bytes.Length + 2);
         try
         {
