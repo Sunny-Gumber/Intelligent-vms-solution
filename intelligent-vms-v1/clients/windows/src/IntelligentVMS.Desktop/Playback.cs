@@ -237,11 +237,7 @@ public sealed class PlaybackCoordinator:IAsyncDisposable
             var uri=_provider.BuildPlaybackUri(Camera.Id,target,duration);
             _activeSession=sessionId;
             await _renderer.OpenAsync(new(sessionId,uri,target,duration,Rate),pending.Token);
-            if(generation!=Generation||_activeSession!=sessionId)
-            {
-                await _renderer.StopAsync(CancellationToken.None);
-                return false;
-            }
+            if(generation!=Generation||_activeSession!=sessionId)return false;
             State=PlaybackState.Playing;ErrorCategory="none";Notify();
             _logger.Info("playback",$"playback_start camera_id={Safe(Camera.Id)}");
             return true;
