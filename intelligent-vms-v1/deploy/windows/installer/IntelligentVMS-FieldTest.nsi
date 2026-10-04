@@ -153,6 +153,18 @@ FunctionEnd
 
 Section "Install"
   SetShellVarContext all
+
+  ; Preflight from NSIS private extraction before Program Files/registry mutation.
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File "${StageRoot}\Invoke-Setup.ps1"
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\Invoke-Setup.ps1" -Action "Preflight" -Components "$Mode" -RecordingRoot "$RecordingRoot" -PayloadRoot "$PLUGINSDIR" -Version "${InstallerVersion}" -Commit "${BuildCommit}" -Quiet'
+  Pop $0
+  ${If} $0 != 0
+    DetailPrint "Preflight failed with exit code $0."
+    Abort
+  ${EndIf}
+
   SetOutPath "$INSTDIR\Setup"
   File "${StageRoot}\Invoke-Setup.ps1"
   File "${StageRoot}\product-version.json"
