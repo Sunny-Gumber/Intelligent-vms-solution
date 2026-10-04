@@ -40,6 +40,7 @@ public partial class MainWindow:Window
 
     private void InitializeLiveTiles()
     {
+        for(var i=0;i<12;i++){LiveGridHost.RowDefinitions.Add(new RowDefinition());LiveGridHost.ColumnDefinitions.Add(new ColumnDefinition());}
         for(var i=0;i<16;i++)
         {
             var tile=new LiveTileView();
@@ -293,12 +294,19 @@ public partial class MainWindow:Window
         var focused=grid?.FocusedTile;
         var layout=grid?.Layout??LiveGridLayout.FromCount(1);
         var visible=focused is int focus?new HashSet<int>{focus}:Enumerable.Range(0,layout.Count).ToHashSet();
-        LiveGridHost.Rows=focused is null?layout.Rows:1;
-        LiveGridHost.Columns=focused is null?layout.Columns:1;
+        var span=focused is null?12/layout.Columns:12;
         for(var index=0;index<_tileViews.Count;index++)
         {
             var tile=_tileViews[index];
-            tile.Visibility=visible.Contains(index)?Visibility.Visible:Visibility.Collapsed;
+            var isVisible=visible.Contains(index);
+            tile.Visibility=isVisible?Visibility.Visible:Visibility.Collapsed;
+            if(isVisible)
+            {
+                var position=focused is null?index:0;
+                var columns=focused is null?layout.Columns:1;
+                Grid.SetRow(tile,(position/columns)*span);Grid.SetColumn(tile,(position%columns)*span);
+                Grid.SetRowSpan(tile,span);Grid.SetColumnSpan(tile,span);
+            }
             var model=grid?.Tiles.FirstOrDefault(x=>x.Index==index);
             tile.Render(model,grid?.SelectedTile==index,focused==index);
         }
