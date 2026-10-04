@@ -18,6 +18,7 @@ public static class ClientPaths
     public static string CacheDirectory => Path.Combine(Root, "cache");
     public static string WebView2CacheDirectory => Path.Combine(CacheDirectory, "webview2");
     public static string ProfilesFile => Path.Combine(ConfigDirectory, "profiles.json");
+    public static string LiveGridFile => Path.Combine(ConfigDirectory, "live-grid.json");
     public static void EnsureCreated()
     {
         Directory.CreateDirectory(ConfigDirectory);
@@ -98,7 +99,9 @@ public sealed record ClientDiagnostics(string ApplicationVersion, string OsVersi
     string ConnectionState, string DeploymentProfile, string LogLocation, string MediaState,
     string AuthenticationMode = "none", string AuthenticationState = "SignedOut", bool RememberedSession = false,
     string TokenExpiry = "unknown", string OidcIssuerHost = "not configured", string LastAuthErrorCategory = "none",
-    string CallbackMechanism = "none", string CredentialStoreStatus = "not used");
+    string CallbackMechanism = "none", string CredentialStoreStatus = "not used",
+    string LiveLayout = "1-view", int ActiveTiles = 0, int ConnectingTiles = 0, int FailedTiles = 0,
+    string LiveTileStates = "none", string RendererType = "WebView2-WHEP");
 
 public static class ServerProfileIdentity
 {
@@ -428,9 +431,14 @@ public sealed class VmsApiClient : ILiveAccessProvider, IDisposable
     public void Dispose()=>_http.Dispose();
 }
 
+public sealed class LiveRendererStateChangedEventArgs(string state):EventArgs
+{
+    public string State { get; }=state;
+}
 public interface ILiveMediaRenderer
 {
     string State { get; }
+    event EventHandler<LiveRendererStateChangedEventArgs>? StateChanged;
     Task StartAsync(LiveAccessGrant grant,CancellationToken cancellationToken=default);
     Task StopAsync(CancellationToken cancellationToken=default);
 }
@@ -471,10 +479,12 @@ public static class DiagnosticsService
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
     public static ClientDiagnostics Build(ServerProfile? profile,ServerConnectionState state,ServerCapabilities? caps,string mediaState,
         string authenticationMode="none",string authenticationState="SignedOut",bool rememberedSession=false,DateTimeOffset? tokenExpiry=null,
-        string oidcIssuerHost="not configured",string lastAuthErrorCategory="none",string callbackMechanism="none",string credentialStoreStatus="not used")=>new(
+        string oidcIssuerHost="not configured",string lastAuthErrorCategory="none",string callbackMechanism="none",string credentialStoreStatus="not used",
+        string liveLayout="1-view",int activeTiles=0,int connectingTiles=0,int failedTiles=0,string liveTileStates="none",string rendererType="WebView2-WHEP")=>new(
         typeof(DiagnosticsService).Assembly.GetName().Version?.ToString()??"unknown",RuntimeInformation.OSDescription,RuntimeInformation.ProcessArchitecture.ToString(),
         profile?.SafeAddress??"not configured",state.ToString(),caps?.DeploymentProfile??"unknown",ClientPaths.LogDirectory,mediaState,
-        authenticationMode,authenticationState,rememberedSession,tokenExpiry?.ToString("O")??"unknown",oidcIssuerHost,lastAuthErrorCategory,callbackMechanism,credentialStoreStatus);
+        authenticationMode,authenticationState,rememberedSession,tokenExpiry?.ToString("O")??"unknown",oidcIssuerHost,lastAuthErrorCategory,callbackMechanism,credentialStoreStatus,
+        liveLayout,activeTiles,connectingTiles,failedTiles,liveTileStates,rendererType);
     public static async Task<string> ExportAsync(ClientDiagnostics diagnostics,string directory,CancellationToken ct=default)
     {
         Directory.CreateDirectory(directory); var path=Path.Combine(directory,$"intelligent-vms-client-diagnostics-{DateTime.UtcNow:yyyyMMddTHHmmssZ}.json");
