@@ -169,7 +169,9 @@ def test_windows_installer_is_non_docker_pins_media_and_protects_paths():
     assert "docker.exe" not in lower and "docker compose" not in lower
     assert "wsl.exe" not in lower and "wsl --" not in lower
     assert "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23" in INSTALL
-    assert "Get-FileHash -Algorithm SHA256" in INSTALL
+    assert "function Get-Sha256Hex" in INSTALL
+    assert "[Security.Cryptography.SHA256]::Create()" in INSTALL
+    assert "$actual = Get-Sha256Hex $mediaZip" in INSTALL
     assert "UNC/network recording storage is not supported" in INSTALL
     assert "icacls.exe" in INSTALL
     assert '"-m","alembic"' in INSTALL
@@ -336,6 +338,20 @@ def test_windows_service_event_log_failure_cannot_kill_service_host():
     assert 'servicemanager.LogInfoMsg("Intelligent VMS MediaMTX starting")' not in SERVICE_HOST
 
 
+def test_windows_mediamtx_integrity_does_not_depend_on_powershell_module_autoload():
+    assert "function Get-Sha256Hex" in INSTALL
+    assert "Get-FileHash -Algorithm SHA256 -LiteralPath $mediaZip" not in INSTALL
+    assert "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23" in INSTALL
+
+
+def test_windows_pywin32_layout_probe_avoids_powershell5_inline_python_quoting():
+    assert 'validate-pywin32-layout.py' in INSTALL
+    probe_block = INSTALL.split('$layoutProbe = Join-Path $VenvRoot "validate-pywin32-layout.py"', 1)[1].split('# Copy the CPython standard runtime', 1)[0]
+    assert 'Invoke-Checked $venvPython @($layoutProbe)' in probe_block
+    assert 'Invoke-Checked $venvPython @("-c",@\'' not in INSTALL
+    assert 'Remove-Item -LiteralPath $layoutProbe' in probe_block
+
+
 def test_windows_control_service_uses_thread_safe_selector_event_loop():
     assert "loop_factory=asyncio.SelectorEventLoop" in SERVICE_HOST
     assert "WindowsSelectorEventLoopPolicy" not in SERVICE_HOST
@@ -392,3 +408,10 @@ def test_windows_programdata_execution_and_persistent_paths_are_explicitly_prote
         "Protect-Directory $RecordingRoot",
     ):
         assert marker in INSTALL
+
+
+def test_windows_backup_hashing_does_not_depend_on_get_file_hash_autoload():
+    assert "function Get-Sha256Hex" in LIFECYCLE
+    assert "[Security.Cryptography.SHA256]::Create()" in LIFECYCLE
+    assert "(Get-Sha256Hex $dump)" in LIFECYCLE
+    assert "Get-FileHash -Algorithm SHA256 $dump" not in LIFECYCLE

@@ -959,3 +959,21 @@ After PR #11 acceptance, future work must still preserve: no direct camera RTSP/
 - Existing server export remains authoritative for authorization, continuous coverage, node boundary and limits; desktop never browses recording folders.
 - Product remains **Release Candidate / External Qualification Pending**. Windows 10/11, codec, 4K, high-speed, GPU, storage and long-duration playback qualification remain external.
 
+
+
+## Windows unified field-test installer foundation — issue #19 / PR #20 — 2026-10-04
+
+- Verified starting main: `c77d051c4426895a8f45f21f8e8e66329d41aee8`.
+- Dedicated branch: `release/windows-unified-field-test-installer`.
+- Installer technology: NSIS 3.13, pinned in CI. The artifact is unsigned field-test software; no trusted-publisher or final commercial installer claim is made.
+- One machine-wide setup entry point supports Server, Client and Both while preserving separate ownership: server state remains under protected ProgramData; client settings remain per-user LocalAppData and credentials remain in Windows Credential Manager.
+- Server mode orchestrates the accepted native Windows server baseline instead of replacing it. PostgreSQL is reused as a supported local dependency and is never silently removed; MediaMTX remains pinned/hash-verified; service dependency order and protected ACLs remain authoritative.
+- Client mode reuses the accepted self-contained win-x64 WPF package. WebView2 Evergreen is detected as a prerequisite; no arbitrary browser runtime is bundled.
+- Both mode installs/validates Server before Client and does not merge runtime/data ownership.
+- Preflight covers x64/OS family, elevation, recording-path safety, PostgreSQL/Python/WebView2 prerequisites, existing managed install state, downgrade protection and required-port conflicts.
+- Version manifest records product/installer/server/client/schema versions plus build commit. Same version maps to repair; older installed version maps to upgrade; unsafe downgrade is blocked; a global mutex blocks concurrent setup operations.
+- Default uninstall is non-destructive: recordings, server config/secrets/backups/database and per-user client data are preserved. No recording purge is implemented in this field-test foundation.
+- Failure handling keeps redacted installer diagnostics and performs bounded fresh-install cleanup or roll-forward-oriented recovery for an existing installation. Database rollback is not falsely promised after schema advancement.
+- Installer CI builds `IntelligentVMS-FieldTest-Setup-x64-0.2.0.exe` plus SHA-256 and exercises Client/Server/Both, repair, accepted-baseline upgrade, downgrade rejection, invalid-path rejection and default uninstall on hosted Windows Server 2022/2025.
+- Catalog row F41-001 remains TARGET because its full market wording also requires automatic prerequisite installation and central software deployment. This milestone records partial software evidence only. F41-006 likewise remains TARGET because arbitrary-version migration/backward compatibility is broader than the demonstrated accepted-baseline upgrade.
+- Product remains **Release Candidate / External Qualification Pending**. Windows 10/11, OEM images, endpoint-security/GPO compatibility, real-camera behavior, production signing and arbitrary legacy upgrade qualification remain external.
