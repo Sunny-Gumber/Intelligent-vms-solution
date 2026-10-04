@@ -25,7 +25,7 @@ public sealed class EventRecord
     [JsonPropertyName("ingested_at")] public DateTimeOffset? ReceivedAt { get; set; }
     public string CameraName { get; set; }="";
     public string DisplayType=>EventTypeNormalizer.Display(EventType);
-    public string DisplayTime=>OccurredAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+    public string DisplayTime=>OccurredAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss",System.Globalization.CultureInfo.InvariantCulture);
 }
 
 public sealed class EventHistoryPageDto
