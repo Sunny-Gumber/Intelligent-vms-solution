@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text;
 using Duende.IdentityModel.Client;
 using Duende.IdentityModel.OidcClient;
 using IntelligentVMS.Desktop;
@@ -156,7 +158,7 @@ internal static class OidcSecurityTests
     }
 
     private static string RandomValue()=>OidcAuthorizationRequestValidator.Base64Url(RandomNumberGenerator.GetBytes(32));
-    private static HttpResponseMessage Json(HttpStatusCode code,string json)=>new(code){Content=new StringContent(json,Encoding.UTF8,"application/json")};
+    private static HttpResponseMessage Json(HttpStatusCode code,string json){var content=new StringContent(json,Encoding.UTF8);content.Headers.ContentType=new MediaTypeHeaderValue("application/json");return new HttpResponseMessage(code){Content=content};}
     private static void Assert(bool value){if(!value)throw new InvalidOperationException("OIDC test assertion failed.");}
     private static void Throws<T>(Action action) where T:Exception{try{action();}catch(T){return;}throw new InvalidOperationException($"Expected {typeof(T).Name}.");}
     private static async Task ThrowsAsync<T>(Func<Task> action) where T:Exception{try{await action();}catch(T){return;}throw new InvalidOperationException($"Expected {typeof(T).Name}.");}
