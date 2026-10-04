@@ -14,7 +14,6 @@ public sealed class PtzCapabilities
     [JsonPropertyName("software_supported")] public bool SoftwareSupported { get; set; }
     [JsonPropertyName("hardware_verified")] public bool HardwareVerified { get; set; }
 }
-
 public sealed class PtzMoveRequestDto
 {
     [JsonPropertyName("pan")] public double Pan { get; set; }
@@ -34,7 +33,6 @@ public sealed class PtzCommandAck
     [JsonPropertyName("state")] public string State { get; set; } = "";
     [JsonPropertyName("generation")] public int Generation { get; set; }
 }
-
 public interface IPtzProvider
 {
     Task<PtzCapabilities> GetPtzCapabilitiesAsync(string cameraId,CancellationToken cancellationToken=default);
@@ -42,12 +40,16 @@ public interface IPtzProvider
     Task<PtzCommandAck> StopPtzAsync(string cameraId,PtzStopRequestDto request,CancellationToken cancellationToken=default);
 }
 
-public sealed class PtzCoordinator : IAsyncDisposable
+/// <summary>
+/// Owns PTZ for exactly one active live tile. No monitor is held across network I/O:
+/// a newer STOP can therefore cancel/fence a slow MOVE immediately.
+/// </summary>
+public sealed class PtzCoordinator:IAsyncDisposable
 {
     private readonly IPtzProvider _provider;
     private readonly IClientLogger _logger;
     private readonly Guid _contextId=Guid.NewGuid();
-    private readonly SemaphoreSlim _gate=new(1,1);
+    private readonly object _sync=new();
     private CancellationTokenSource? _pending;
     private string? _cameraId;
     private int _tileIndex=-1;
@@ -57,8 +59,8 @@ public sealed class PtzCoordinator : IAsyncDisposable
 
     public PtzState State{get;private set;}=PtzState.Unavailable;
     public PtzCapabilities? Capabilities{get;private set;}
-    public string? ActiveCameraId=>_cameraId;
-    public int ActiveTileIndex=>_tileIndex;
+    public string? ActiveCameraId{get{lock(_sync)return _cameraId;}}
+    public int ActiveTileIndex{get{lock(_sync)return _tileIndex;}}
     public int Generation=>Volatile.Read(ref _generation);
     public string ErrorCategory{get;private set;}="none";
     public event EventHandler? Changed;
@@ -68,117 +70,158 @@ public sealed class PtzCoordinator : IAsyncDisposable
     public async Task BindAsync(int tileIndex,string? cameraId,CancellationToken cancellationToken=default)
     {
         ThrowIfDisposed();
-        await _gate.WaitAsync(cancellationToken);
-        try
+        string? priorCamera;
+        lock(_sync)
         {
             if(_cameraId==cameraId&&_tileIndex==tileIndex&&Capabilities is not null)return;
-            if(_cameraId is not null && (_cameraId!=cameraId||_tileIndex!=tileIndex))
-                await StopLockedAsync(CancellationToken.None,true);
-            FencePending();
+            priorCamera=_cameraId;
+        }
+        if(priorCamera is not null&&(priorCamera!=cameraId||ActiveTileIndex!=tileIndex))
+            await StopAsync(CancellationToken.None);
+
+        CancellationTokenSource linked;
+        int generation;
+        lock(_sync)
+        {
+            FencePendingLocked();
             _tileIndex=tileIndex;_cameraId=string.IsNullOrWhiteSpace(cameraId)?null:cameraId;
-            Capabilities=null;_motion=null;ErrorCategory="none";State=PtzState.Unavailable;Notify();
+            Capabilities=null;_motion=null;ErrorCategory="none";State=PtzState.Unavailable;
+            Notify();
             if(_cameraId is null)return;
-            var generation=Interlocked.Increment(ref _generation);
-            using var linked=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            generation=Interlocked.Increment(ref _generation);
+            linked=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _pending=linked;
-            try
+            cameraId=_cameraId;
+        }
+        try
+        {
+            var capabilities=await _provider.GetPtzCapabilitiesAsync(cameraId!,linked.Token);
+            lock(_sync)
             {
-                var capabilities=await _provider.GetPtzCapabilitiesAsync(_cameraId,linked.Token);
-                if(generation!=_generation||linked.IsCancellationRequested)return;
-                if(!string.Equals(capabilities.CameraId,_cameraId,StringComparison.Ordinal))throw new InvalidOperationException("PTZ capability camera mismatch.");
+                if(generation!=_generation||linked.IsCancellationRequested||_cameraId!=cameraId)return;
+                if(!string.Equals(capabilities.CameraId,cameraId,StringComparison.Ordinal))
+                    throw new InvalidOperationException("PTZ capability camera mismatch.");
                 Capabilities=capabilities;
                 State=capabilities.Ptz&&(capabilities.PanTilt||capabilities.Zoom)?PtzState.Ready:PtzState.Unavailable;
-                _logger.Info("ptz",$"ptz_capability_loaded camera_id={Safe(_cameraId)} pan_tilt={capabilities.PanTilt} zoom={capabilities.Zoom}");
+                ErrorCategory="none";
+                _logger.Info("ptz",$"ptz_capability_loaded camera_id={Safe(cameraId!)} pan_tilt={capabilities.PanTilt} zoom={capabilities.Zoom}");
             }
-            catch(OperationCanceledException) when(linked.IsCancellationRequested){}
-            catch(SessionExpiredException){State=PtzState.Failed;ErrorCategory="authentication";throw;}
-            catch(VmsApiException ex) when(ex.StatusCode is System.Net.HttpStatusCode.UnprocessableEntity or System.Net.HttpStatusCode.NotFound)
-            {State=PtzState.Unavailable;ErrorCategory="unsupported";}
-            catch(Exception ex){State=PtzState.Failed;ErrorCategory="capability";_logger.LogError("ptz","ptz capability load failed",ex);}
-            finally{if(ReferenceEquals(_pending,linked))_pending=null;Notify();}
         }
-        finally{_gate.Release();}
+        catch(OperationCanceledException) when(linked.IsCancellationRequested){}
+        catch(SessionExpiredException){SetFailureIfCurrent(generation,cameraId!,"authentication");throw;}
+        catch(VmsApiException ex) when(ex.StatusCode is System.Net.HttpStatusCode.UnprocessableEntity or System.Net.HttpStatusCode.NotFound)
+        {SetUnavailableIfCurrent(generation,cameraId!);}
+        catch(Exception ex){SetFailureIfCurrent(generation,cameraId!,"capability");_logger.LogError("ptz","ptz capability load failed",ex);}
+        finally{CompletePending(linked);Notify();}
     }
 
     public async Task MoveAsync(double pan,double tilt,double zoom,double speed=0.65,CancellationToken cancellationToken=default)
     {
-        ThrowIfDisposed();
-        ValidateAxis(pan);ValidateAxis(tilt);ValidateAxis(zoom);
+        ThrowIfDisposed();ValidateAxis(pan);ValidateAxis(tilt);ValidateAxis(zoom);
         if(!double.IsFinite(speed)||speed<=0||speed>1)throw new ArgumentOutOfRangeException(nameof(speed));
         if(pan==0&&tilt==0&&zoom==0)throw new ArgumentException("PTZ move vector must not be zero.");
-        await _gate.WaitAsync(cancellationToken);
-        try
+        string cameraId;int generation;CancellationTokenSource linked;(double,double,double) vector=(pan*speed,tilt*speed,zoom*speed);
+        lock(_sync)
         {
-            if(_cameraId is null||Capabilities is null||State==PtzState.Unavailable)throw new InvalidOperationException("PTZ is unavailable for the active tile.");
+            if(_cameraId is null||Capabilities is null||State==PtzState.Unavailable)
+                throw new InvalidOperationException("PTZ is unavailable for the active tile.");
             if((pan!=0||tilt!=0)&&!Capabilities.PanTilt)throw new InvalidOperationException("Pan/tilt is unavailable for the active camera.");
             if(zoom!=0&&!Capabilities.Zoom)throw new InvalidOperationException("Zoom is unavailable for the active camera.");
-            var vector=(pan*speed,tilt*speed,zoom*speed);
             if(State==PtzState.Moving&&_motion==vector)return;
-            FencePending();
-            var generation=Interlocked.Increment(ref _generation);
-            var cameraId=_cameraId;
-            using var linked=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            _pending=linked;
-            try
-            {
-                var ack=await _provider.MovePtzAsync(cameraId,new PtzMoveRequestDto{Pan=vector.Item1,Tilt=vector.Item2,Zoom=vector.Item3,Generation=generation,ContextId=_contextId},linked.Token);
-                if(generation!=_generation||linked.IsCancellationRequested)return;
-                if(ack.Generation!=generation||ack.CameraId!=cameraId)throw new InvalidOperationException("PTZ move acknowledgement mismatch.");
-                _motion=vector;State=PtzState.Moving;ErrorCategory="none";_logger.Info("ptz",$"ptz_move_started camera_id={Safe(cameraId)} generation={generation}");
-            }
-            catch(OperationCanceledException) when(linked.IsCancellationRequested){}
-            catch
-            {
-                if(generation==_generation){State=PtzState.Failed;ErrorCategory="command";await StopLockedAsync(CancellationToken.None,true);}
-                throw;
-            }
-            finally{if(ReferenceEquals(_pending,linked))_pending=null;Notify();}
+            FencePendingLocked();
+            generation=Interlocked.Increment(ref _generation);cameraId=_cameraId;
+            linked=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);_pending=linked;
         }
-        finally{_gate.Release();}
+        try
+        {
+            var ack=await _provider.MovePtzAsync(cameraId,new PtzMoveRequestDto{Pan=vector.Item1,Tilt=vector.Item2,Zoom=vector.Item3,Generation=generation,ContextId=_contextId},linked.Token);
+            lock(_sync)
+            {
+                if(generation!=_generation||linked.IsCancellationRequested||_cameraId!=cameraId)return;
+                if(ack.Generation!=generation||ack.CameraId!=cameraId)throw new InvalidOperationException("PTZ move acknowledgement mismatch.");
+                _motion=vector;State=PtzState.Moving;ErrorCategory="none";
+                _logger.Info("ptz",$"ptz_move_started camera_id={Safe(cameraId)} generation={generation}");
+            }
+        }
+        catch(OperationCanceledException) when(linked.IsCancellationRequested){}
+        catch(SessionExpiredException){SetFailureIfCurrent(generation,cameraId,"authentication");throw;}
+        catch(Exception ex)
+        {
+            var current=SetFailureIfCurrent(generation,cameraId,"command");
+            _logger.LogError("ptz","ptz move failed",ex);
+            if(current)await StopAfterFailedMoveAsync(cameraId);
+            throw;
+        }
+        finally{CompletePending(linked);Notify();}
     }
 
     public async Task StopAsync(CancellationToken cancellationToken=default)
     {
         ThrowIfDisposed();
-        await _gate.WaitAsync(cancellationToken);
-        try{await StopLockedAsync(cancellationToken,false);}
-        finally{_gate.Release();}
-    }
-
-    private async Task StopLockedAsync(CancellationToken cancellationToken,bool bestEffort)
-    {
-        FencePending();
-        var cameraId=_cameraId;
-        _motion=null;
-        if(cameraId is null){State=PtzState.Unavailable;Notify();return;}
-        var generation=Interlocked.Increment(ref _generation);
-        State=PtzState.Stopping;Notify();
+        string? cameraId;int generation;CancellationTokenSource linked;
+        lock(_sync)
+        {
+            FencePendingLocked();_motion=null;cameraId=_cameraId;
+            if(cameraId is null){State=PtzState.Unavailable;Notify();return;}
+            generation=Interlocked.Increment(ref _generation);State=PtzState.Stopping;ErrorCategory="none";
+            linked=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            linked.CancelAfter(TimeSpan.FromSeconds(3));_pending=linked;Notify();
+        }
         try
         {
-            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(3));
-            var ack=await _provider.StopPtzAsync(cameraId,new PtzStopRequestDto{Generation=generation,ContextId=_contextId},timeout.Token);
-            if(generation==_generation&&ack.Generation==generation){State=Capabilities is null?PtzState.Unavailable:PtzState.Ready;ErrorCategory="none";}
-            _logger.Info("ptz",$"ptz_stop_sent camera_id={Safe(cameraId)} generation={generation}");
+            var ack=await _provider.StopPtzAsync(cameraId,new PtzStopRequestDto{Generation=generation,ContextId=_contextId},linked.Token);
+            lock(_sync)
+            {
+                if(generation!=_generation||_cameraId!=cameraId)return;
+                if(ack.Generation!=generation||ack.CameraId!=cameraId)throw new InvalidOperationException("PTZ stop acknowledgement mismatch.");
+                State=Capabilities is null?PtzState.Unavailable:PtzState.Ready;ErrorCategory="none";
+                _logger.Info("ptz",$"ptz_stop_sent camera_id={Safe(cameraId)} generation={generation}");
+            }
         }
-        catch(SessionExpiredException){State=PtzState.Failed;ErrorCategory="authentication";if(!bestEffort)throw;}
-        catch(Exception ex){State=PtzState.Failed;ErrorCategory="stop";_logger.LogError("ptz","ptz stop failed",ex);if(!bestEffort)throw;}
-        finally{Notify();}
+        catch(OperationCanceledException) when(linked.IsCancellationRequested)
+        {
+            lock(_sync){if(generation==_generation){State=PtzState.Failed;ErrorCategory="stop_timeout";}}
+            if(cancellationToken.IsCancellationRequested)throw;
+        }
+        catch(SessionExpiredException){SetFailureIfCurrent(generation,cameraId,"authentication");throw;}
+        catch(Exception ex){SetFailureIfCurrent(generation,cameraId,"stop");_logger.LogError("ptz","ptz stop failed",ex);throw;}
+        finally{CompletePending(linked);Notify();}
+    }
+
+    private async Task StopAfterFailedMoveAsync(string cameraId)
+    {
+        try{await StopAsync(CancellationToken.None);}
+        catch{}
+        lock(_sync){if(_cameraId==cameraId){State=PtzState.Failed;ErrorCategory="command";}}
+        Notify();
     }
 
     public async Task ClearAsync(CancellationToken cancellationToken=default)
     {
         ThrowIfDisposed();
-        await _gate.WaitAsync(cancellationToken);
-        try
+        string? camera;lock(_sync)camera=_cameraId;
+        if(camera is not null){try{await StopAsync(cancellationToken);}catch{}}
+        lock(_sync)
         {
-            if(_cameraId is not null)await StopLockedAsync(cancellationToken,true);
-            FencePending();_cameraId=null;_tileIndex=-1;Capabilities=null;_motion=null;State=PtzState.Unavailable;ErrorCategory="none";Notify();
+            FencePendingLocked();_cameraId=null;_tileIndex=-1;Capabilities=null;_motion=null;
+            State=PtzState.Unavailable;ErrorCategory="none";Notify();
         }
-        finally{_gate.Release();}
     }
 
-    private void FencePending(){Interlocked.Increment(ref _generation);_pending?.Cancel();_pending?.Dispose();_pending=null;}
+    private bool SetFailureIfCurrent(int generation,string cameraId,string category)
+    {
+        lock(_sync)
+        {
+            if(generation!=_generation||_cameraId!=cameraId)return false;
+            State=PtzState.Failed;ErrorCategory=category;_motion=null;return true;
+        }
+    }
+    private void SetUnavailableIfCurrent(int generation,string cameraId)
+    {
+        lock(_sync){if(generation==_generation&&_cameraId==cameraId){State=PtzState.Unavailable;ErrorCategory="unsupported";}}
+    }
+    private void FencePendingLocked(){Interlocked.Increment(ref _generation);_pending?.Cancel();_pending?.Dispose();_pending=null;}
+    private void CompletePending(CancellationTokenSource source){lock(_sync){if(ReferenceEquals(_pending,source))_pending=null;}source.Dispose();}
     private static void ValidateAxis(double value){if(!double.IsFinite(value)||value < -1||value > 1)throw new ArgumentOutOfRangeException(nameof(value));}
     private static string Safe(string value)=>new(value.Where(c=>char.IsLetterOrDigit(c)||c is '-' or '_' or '.').Take(96).ToArray());
     private void Notify()=>Changed?.Invoke(this,EventArgs.Empty);
@@ -187,6 +230,6 @@ public sealed class PtzCoordinator : IAsyncDisposable
     {
         if(_disposed)return;
         try{await ClearAsync();}catch{}
-        _disposed=true;_gate.Dispose();
+        _disposed=true;
     }
 }
