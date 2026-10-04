@@ -58,6 +58,15 @@ def test_uninstall_is_non_destructive_by_default():
     assert "record" not in removes.lower()
     assert "default uninstall preserved recordings config secrets backups database and per-user client data" in SETUP
 
+def test_component_ownership_is_merged_across_component_additions():
+    assert "function Merge-ComponentOwnership" in SETUP
+    assert 'if($Existing -in @("Server","Client") -and $Requested -in @("Server","Client")){return "Both"}' in SETUP
+    save=SETUP.split("function Save-State",1)[1].split("function Collect-FailureDiagnostics",1)[0]
+    assert "components=$owned" in save
+    assert "recording_root=$recordingRootToStore" in save
+    assert 'elseif($state -and ($state.PSObject.Properties.Name -contains "recording_root"))' in save
+
+
 def test_failed_fresh_install_has_data_safe_rollback_contract():
     assert "$HadManagedState=Test-Path $StateFile" in SETUP
     assert 'if(-not $HadManagedState -and $Action -eq "Install")' in SETUP
