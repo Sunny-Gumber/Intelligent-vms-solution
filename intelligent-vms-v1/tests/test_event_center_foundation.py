@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from app.routers.events import _validate_window
+from app.models.schemas import EventRead
+from app.routers.events import _event_center_projection, _validate_window
 
 ROOT=Path(__file__).parents[1]
 ROUTER=(ROOT/"services/control-api/app/routers/events.py").read_text(encoding="utf-8")
@@ -76,6 +77,27 @@ def test_event_center_history_contract_excludes_snapshot_urls():
     block=schemas.split("class EventCenterRead",1)[1].split("class EventHistoryPage",1)[0]
     assert "snapshot_uri" not in block
     assert 'exclude={"snapshot_uri"}' in ROUTER
+    assert "_safe_event_attributes" in ROUTER
+
+
+
+
+def test_event_center_projection_redacts_sensitive_metadata_and_urls():
+    event=EventRead(
+        event_id="e1",tenant_id="t",site_id="s",camera_id="c",
+        timestamp=datetime(2026,10,4,tzinfo=timezone.utc),event_type="motion",
+        source="camera",severity="info",snapshot_uri="https://internal/snapshot",
+        attributes={
+            "zone":"gate",
+            "private_url":"https://10.0.0.5/internal",
+            "token":"secret",
+            "nested":{"unsafe":"value"},
+            "note":"safe text",
+        },
+    )
+    safe=_event_center_projection(event)
+    assert safe.attributes=={"zone":"gate","note":"safe text"}
+    assert not hasattr(safe,"snapshot_uri")
 
 
 def test_event_response_and_client_do_not_use_raw_camera_transport():
