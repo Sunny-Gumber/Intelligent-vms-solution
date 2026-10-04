@@ -11,6 +11,7 @@ internal static class PlaybackTests
         await TestAuthAndExportAsync();
         await TestContextResetAsync();
         TestRendererUrlPolicy();
+        await TestRendererGenerationContractAsync();
     }
 
     private static void TestTimelineAndTimezone()
@@ -100,6 +101,18 @@ internal static class PlaybackTests
         Throws<InvalidOperationException>(()=>PlaybackMediaView.ValidatePlaybackUri(profile,new Uri("https://other.example.test/api/v1/recordings/cameras/cam/play?duration=60")));
         var sensitiveKey=string.Concat("to","ken");
         Throws<InvalidOperationException>(()=>PlaybackMediaView.ValidatePlaybackUri(profile,new Uri($"https://vms.example.test/api/v1/recordings/cameras/cam/play?{sensitiveKey}=x")));
+    }
+
+    private static async Task TestRendererGenerationContractAsync()
+    {
+        var current=new DirectoryInfo(Directory.GetCurrentDirectory());
+        while(current is not null && !Directory.Exists(Path.Combine(current.FullName,"clients","windows")))current=current.Parent;
+        if(current is null)throw new InvalidOperationException("Repository root not found.");
+        var source=await File.ReadAllTextAsync(Path.Combine(current.FullName,"clients","windows","src","IntelligentVMS.Desktop","Media","playback.html"));
+        Assert(source.Contains("detachHandlers();sessionId='';baseMs=0;video.pause()",StringComparison.Ordinal));
+        Assert(source.Contains("mine===generation&&id===sessionId",StringComparison.Ordinal));
+        Assert(source.Contains("if(!id||id!==sessionId)return",StringComparison.Ordinal));
+        Assert(source.Contains("removeEventListener",StringComparison.Ordinal));
     }
 
     private static RecordingSpanDto Span(string start,string end)
