@@ -118,9 +118,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path $record|Out-Null
           "recording-sentinel" | Set-Content (Join-Path $record "preserve.me")
           $mode="${{ matrix.mode }}"
+          Remove-Item Env:PGBIN -ErrorAction SilentlyContinue
           $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=$mode","/RECORDINGROOT=$record") -Wait -PassThru
           if($p.ExitCode -ne 0){throw "Setup failed mode=$mode exit=$($p.ExitCode)"}
           if($mode -in @("server","both")){
+            $setupLog=Get-Content "$env:ProgramData\IntelligentVMS\installer-logs\setup.log" -Raw
+            if($setupLog -notmatch "windows_field_test_stage=postgres_discovery source="){throw "PostgreSQL discovery evidence missing"}
+            if($setupLog -match "source=PGBIN"){throw "Normal lifecycle unexpectedly depended on PGBIN"}
             $services=Get-Service IntelligentVMSControl,IntelligentVMSMedia
             if($services.Where({$_.Status -ne "Running"})){throw "Server services unhealthy"}
             & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Health
@@ -261,6 +265,121 @@ jobs:
           $ctl="$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1"
           if(Test-Path $ctl){try{& $ctl -Action Uninstall}catch{}}
 
+  fresh-install-retry:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        fail_stage: [before_config, config_generated, role_ready]
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: IntelligentVMS-FieldTest-Setup-x64
+          path: ${{ runner.temp }}/installer
+      - name: Inject bounded fresh-install failure
+        shell: pwsh
+        env:
+          VMS_POSTGRES_ADMIN_PASSWORD: root
+          VMS_INSTALLER_TEST_FAIL_STAGE: ${{ matrix.fail_stage }}
+        run: |
+          Remove-Item Env:PGBIN -ErrorAction SilentlyContinue
+          $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
+          $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Retry-Recordings"
+          New-Item -ItemType Directory -Force -Path $record|Out-Null
+          "retry-sentinel"|Set-Content (Join-Path $record "preserve.me")
+          $sw=[Diagnostics.Stopwatch]::StartNew()
+          $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=server","/RECORDINGROOT=$record") -Wait -PassThru
+          $sw.Stop()
+          if($p.ExitCode -eq 0){throw "Injected failure unexpectedly passed"}
+          if($sw.Elapsed.TotalMinutes -gt 20){throw "Injected failure was not bounded"}
+          if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Failure rollback deleted recording data"}
+          $envFile="$env:ProgramData\IntelligentVMS\config\vms.env"
+          if("${{ matrix.fail_stage }}" -eq "before_config"){
+            if(Test-Path $envFile){throw "before_config failure unexpectedly created vms.env"}
+          } else {
+            if(-not (Test-Path $envFile)){throw "Expected preserved vms.env missing"}
+            $envHash=(Get-FileHash -Algorithm SHA256 $envFile).Hash
+            $envHash|Set-Content "$env:RUNNER_TEMP\vms-env-before.txt"
+          }
+      - name: Retry same installer without manual repair
+        shell: pwsh
+        env:
+          VMS_POSTGRES_ADMIN_PASSWORD: root
+        run: |
+          Remove-Item Env:VMS_INSTALLER_TEST_FAIL_STAGE -ErrorAction SilentlyContinue
+          Remove-Item Env:PGBIN -ErrorAction SilentlyContinue
+          $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
+          $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Retry-Recordings"
+          $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=server","/RECORDINGROOT=$record") -Wait -PassThru
+          if($p.ExitCode -ne 0){
+            $log="$env:ProgramData\IntelligentVMS\installer-logs\setup.log"
+            if(Test-Path $log){Get-Content $log -Tail 160}
+            throw "Fresh-install retry failed"
+          }
+          if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Retry lost recording data"}
+          $state=Get-Content "$env:ProgramData\IntelligentVMS\bootstrap-state.json" -Raw|ConvertFrom-Json
+          if($state.phase -ne "completed"){throw "Bootstrap state did not reach completed"}
+          $beforeFile="$env:RUNNER_TEMP\vms-env-before.txt"
+          if(Test-Path $beforeFile){
+            $before=(Get-Content $beforeFile -Raw).Trim()
+            $after=(Get-FileHash -Algorithm SHA256 "$env:ProgramData\IntelligentVMS\config\vms.env").Hash
+            if($before -ne $after){throw "Retry rotated preserved vms.env"}
+          }
+          & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Health
+          if(-not $?){throw "Retry health validation failed"}
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          $ctl="$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1"
+          if(Test-Path $ctl){try{& $ctl -Action Uninstall}catch{}}
+
+  quiet-credential-negative:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: IntelligentVMS-FieldTest-Setup-x64
+          path: ${{ runner.temp }}/installer
+      - name: Missing quiet PostgreSQL credential fails fast
+        shell: pwsh
+        run: |
+          Remove-Item Env:VMS_POSTGRES_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+          Remove-Item Env:PGBIN -ErrorAction SilentlyContinue
+          $setup=Get-ChildItem "$env:RUNNER_TEMP\installer" -Filter "*.exe"|Select-Object -First 1
+          $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-NoCredential-Recordings"
+          New-Item -ItemType Directory -Force -Path $record|Out-Null
+          $sw=[Diagnostics.Stopwatch]::StartNew()
+          $p=Start-Process $setup.FullName -ArgumentList @("/S","/MODE=server","/RECORDINGROOT=$record") -Wait -PassThru
+          $sw.Stop()
+          if($p.ExitCode -eq 0){throw "Quiet install unexpectedly passed without PostgreSQL credential"}
+          if($sw.Elapsed.TotalMinutes -gt 5){throw "Missing-credential failure was not fast/bounded"}
+          $log="$env:ProgramData\IntelligentVMS\installer-logs\setup.log"
+          if(-not (Test-Path $log)){throw "Expected setup.log missing"}
+          $text=Get-Content $log -Raw
+          if($text -notmatch "hidden prompting is disabled"){throw "Missing-credential error was not actionable"}
+          if($text -match "root"){throw "Credential value leaked to setup.log"}
+
   upgrade-and-negative:
     needs: build
     runs-on: windows-2022
@@ -289,6 +408,12 @@ jobs:
           $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Upgrade-Recordings"
           New-Item -ItemType Directory -Force -Path $record|Out-Null
           "upgrade-sentinel"|Set-Content (Join-Path $record "preserve.me")
+          $runtime=Join-Path $PWD "deploy\windows\runtime"
+          New-Item -ItemType Directory -Force -Path $runtime|Out-Null
+          $media=Join-Path $runtime "mediamtx_v1.21.1_windows_amd64.zip"
+          Invoke-WebRequest -Uri "https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/mediamtx_v1.21.1_windows_amd64.zip" -OutFile $media -UseBasicParsing
+          $mediaHash=(Get-FileHash -Algorithm SHA256 $media).Hash.ToLowerInvariant()
+          if($mediaHash -ne "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"){throw "Legacy upgrade fixture MediaMTX hash mismatch"}
           .\deploy\windows\Install-WindowsFieldTest.ps1 -RecordingRoot $record -CameraCidr "127.0.0.1/32"
           .\clients\windows\packaging\Publish-Client.ps1 -Version "0.1.0" -OutputRoot "$env:RUNNER_TEMP\old-client"
           $old=Get-ChildItem "$env:RUNNER_TEMP\old-client\stage" -Directory|Select-Object -First 1
