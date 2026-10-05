@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VMS camera qualification manifest",
+  "type": "object",
+  "required": [
+    "manufacturer",
+    "model",
+    "firmware",
+    "streams",
+    "authentication_method",
+    "qualification_result"
+  ],
+  "properties": {
+    "manufacturer": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "firmware": {
+      "type": "string"
+    },
+    "onvif_profiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ip_transport": {
+      "type": "string"
+    },
+    "codec": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "H.264",
+          "H.265",
+          "H.264+",
+          "H.265+",
+          "OTHER"
+        ]
+      }
+    },
+    "resolution": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fps": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      }
+    },
+    "bitrate_mode": {
+      "type": "string"
+    },
+    "configured_bitrate_kbps": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "streams": {
+      "type": "object",
+      "required": [
+        "MAIN",
+        "SUB"
+      ],
+      "properties": {
+        "MAIN": {
+          "type": "string"
+        },
+        "SUB": {
+          "type": "string"
+        },
+        "THIRD": {
+          "type": "string"
+        }
+      }
+    },
+    "audio_capability": {
+      "type": "string"
+    },
+    "ptz_capability": {
+      "type": "string"
+    },
+    "event_capability": {
+      "type": "string"
+    },
+    "authentication_method": {
+      "type": "string"
+    },
+    "qualification_result": {
+      "enum": [
+        "NOT_RUN",
+        "BLOCKED_EXTERNAL",
+        "PASS",
+        "FAIL",
+        "PASS_WITH_LIMITATION",
+        "NOT_APPLICABLE"
+      ]
+    }
+  },
+  "additionalProperties": false
+}
