@@ -32,7 +32,9 @@ if(-not $MediaMTXZip){
   if(-not (Test-Path $MediaMTXZip)){
     $partial="$MediaMTXZip.partial"
     Remove-Item $partial -Force -ErrorAction SilentlyContinue
-    Invoke-WebRequest -Uri "https://github.com/bluenviron/mediamtx/releases/download/v$mediaVersion/$mediaName" -OutFile $partial -UseBasicParsing -TimeoutSec 180
+    $mediaUrl="https://github.com/bluenviron/mediamtx/releases/download/v$mediaVersion/$mediaName"
+    & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 240 -o $partial $mediaUrl
+    if($LASTEXITCODE -ne 0 -or -not (Test-Path $partial)){throw "Pinned MediaMTX build-input download failed after bounded retries."}
     Move-Item $partial $MediaMTXZip -Force
   }
 }
