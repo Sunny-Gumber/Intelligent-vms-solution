@@ -1,0 +1,34 @@
+{
+  "qualification_run_id": "VMS-WIN-20261005-001",
+  "build": {
+    "git_sha": "7a35bc7f3cc100687bed3549a09ecdf36ac3881e",
+    "installer": "IntelligentVMS-FieldTest-Setup-x64-0.2.0.exe",
+    "installer_sha256": "4f8bf89c2b06becbb90729eded7327d466c9fb9779276a29b70abe8dfda54a07",
+    "product_version": "0.2.0",
+    "server_version": "0.2.0",
+    "client_version": "0.2.0",
+    "db_schema_revision": "0018",
+    "mediamtx": {
+      "version": "1.21.1",
+      "sha256": "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"
+    }
+  },
+  "evidence_source": "SIMULATED",
+  "overall_result": "NOT_RUN",
+  "signing_status": "UNSIGNED_EXPECTED",
+  "machine_manifest": null,
+  "camera_manifests": [],
+  "results": [
+    {
+      "test_id": "WIN11-INSTALL",
+      "state": "BLOCKED_EXTERNAL",
+      "evidence_source": "SIMULATED",
+      "reason": "No external Windows 11 evidence attached",
+      "severity": "NONE",
+      "evidence_refs": []
+    }
+  ],
+  "known_limitations": [
+    "Example only; not qualification evidence"
+  ]
+}
