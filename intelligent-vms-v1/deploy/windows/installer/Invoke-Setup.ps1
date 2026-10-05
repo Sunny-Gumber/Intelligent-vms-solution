@@ -27,7 +27,7 @@ function Write-SafeLog([string]$Stage,[string]$Message){
   $safe=$safe -replace '(?i)\b((?:rtsp|rtsps|http|https)://)[^/\s:@]+:[^@\s/]+@','$1[REDACTED]@'
   $line=("{0:o} stage={1} {2}" -f [DateTimeOffset]::UtcNow,$Stage,$safe)
   Add-Content -LiteralPath (Join-Path $LogRoot "setup.log") -Value $line -Encoding UTF8
-  if(-not $Quiet){Write-Host $line}
+  Write-Host $line
 }
 function Assert-Admin {
   $id=[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -128,21 +128,22 @@ function Install-Client {
 function Install-Server {
   $script=Join-Path $PayloadRoot "server\deploy\windows\Install-WindowsFieldTest.ps1"
   if(-not (Test-Path $script)){throw "Server payload is missing."}
-  $args=@("-NoProfile","-ExecutionPolicy","Bypass","-File",$script,"-RecordingRoot",$RecordingRoot)
+  $args=@("-NoProfile","-ExecutionPolicy","Bypass","-File",$script,"-RecordingRoot",$RecordingRoot,"-NonInteractive")
   if($Action -in @("Upgrade","Repair")){$args+="-Upgrade"}
+  Write-SafeLog "server" "stage=server_child_start"
   $previousPreference=$ErrorActionPreference
   try {
     $ErrorActionPreference="Continue"
-    $output=& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @args 2>&1
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @args 2>&1 | ForEach-Object {
+      $text=[string]$_
+      if($text){Write-SafeLog "server" $text}
+    }
     $code=$LASTEXITCODE
   } finally {
     $ErrorActionPreference=$previousPreference
   }
-  foreach($line in @($output)){
-    $text=[string]$line
-    if($text){Write-SafeLog "server" $text}
-  }
   if($code -ne 0){throw "Accepted Windows server installer failed with exit $code."}
+  Write-SafeLog "server" "stage=server_child_complete"
   & (Join-Path $PayloadRoot "server\deploy\windows\Vms-Windows.ps1") -Action Health
 }
 function Merge-ComponentOwnership([string]$Existing,[string]$Requested){
