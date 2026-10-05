@@ -23,8 +23,9 @@ $HadManagedState=Test-Path $StateFile
 
 function Write-SafeLog([string]$Stage,[string]$Message){
   New-Item -ItemType Directory -Force -Path $LogRoot|Out-Null
-  $safe=$Message -replace '(?i)(password|secret|token|authorization|credential)\s*[:=]\s*\S+','$1=[REDACTED]'
+  $safe=$Message -replace '(?i)Bearer\s+[A-Za-z0-9._~+\\/-]+=*','Bearer [REDACTED]'
   $safe=$safe -replace '(?i)\b((?:rtsp|rtsps|http|https)://)[^/\s:@]+:[^@\s/]+@','$1[REDACTED]@'
+  $safe=$safe -replace '(?i)(password|secret|token|authorization|credential|private[_ -]?key)\s*[:=]\s*\S+','$1=[REDACTED]'
   $line=("{0:o} stage={1} {2}" -f [DateTimeOffset]::UtcNow,$Stage,$safe)
   Add-Content -LiteralPath (Join-Path $LogRoot "setup.log") -Value $line -Encoding UTF8
   Write-Host $line
