@@ -76,8 +76,10 @@ def release_manifest(d:dict)->dict:
 def verify_signature(path:str, expect_unsigned:bool):
     if os.name!="nt": return ("UNSIGNED_EXPECTED" if expect_unsigned else "NOT_RUN","Authenticode verification requires Windows")
     escaped=str(Path(path)).replace("'","''")
-    ps="(Get-AuthenticodeSignature -LiteralPath '"+escaped+"') | Select-Object Status,StatusMessage,SignerCertificate,TimeStamperCertificate | ConvertTo-Json -Depth 4"
-    cp=subprocess.run(["powershell.exe","-NoProfile","-NonInteractive","-Command",ps],capture_output=True,text=True,timeout=30)
+    ps="Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; (Get-AuthenticodeSignature -LiteralPath '"+escaped+"') | Select-Object Status,StatusMessage,SignerCertificate,TimeStamperCertificate | ConvertTo-Json -Depth 4"
+    winps=Path(os.environ.get("SystemRoot",r"C:\\Windows"))/"System32"/"WindowsPowerShell"/"v1.0"/"powershell.exe"
+    exe=str(winps) if winps.exists() else "powershell.exe"
+    cp=subprocess.run([exe,"-NoProfile","-NonInteractive","-Command",ps],capture_output=True,text=True,timeout=30)
     if cp.returncode: return "FAIL",cp.stderr.strip()
     data=json.loads(cp.stdout); status=data.get("Status")
     if status=="Valid": return "SIGNED_VALID",json.dumps(data,sort_keys=True)
