@@ -10,7 +10,7 @@ q=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(q)
 
 def base():
-    return {"qualification_run_id":"VMS-WIN-20261005-001","build":{"git_sha":"a"*40,"installer":"x.exe","installer_sha256":"b"*64},"evidence_source":"SIMULATED","overall_result":"NOT_RUN","results":[]}
+    return {"qualification_run_id":"VMS-WIN-20261005-001","started_utc":"2026-10-05T02:00:00+00:00","tester_id":"TESTER-001","machine_id":"MACHINE-001","test_profile":"UNIT_TEST","build":{"git_sha":"a"*40,"installer":"x.exe","installer_version":"0.2.0.0","installer_sha256":"b"*64},"evidence_source":"SIMULATED","overall_result":"NOT_RUN","approval":{"automated_result":"NOT_RUN","tester_signoff":"NOT_RUN","independent_review":"NOT_RUN"},"results":[]}
 
 def test_run_id_contract():
     assert q.run_id(7,dt.date(2026,10,5))=="VMS-WIN-20261005-007"
@@ -35,6 +35,7 @@ def test_fail_requires_expected_actual_severity():
     assert any("expected" in x for x in errors)
     assert any("actual" in x for x in errors)
     assert any("severity" in x for x in errors)
+    assert any("retest_status" in x for x in errors)
 
 def test_redaction_removes_known_secret_shapes():
     raw="password=hunter2\nAuthorization: Bearer abc.def.ghi\nrtsp://admin:secret@10.0.0.5/live\nprivate_key=XYZ"
