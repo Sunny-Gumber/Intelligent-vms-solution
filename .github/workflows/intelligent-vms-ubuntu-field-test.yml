@@ -48,11 +48,24 @@ jobs:
           curl -fsS -b /tmp/vms-cookies http://127.0.0.1:8080/api/v1/cameras >/tmp/cameras-before.json
           curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"tenant_id":"field-test","site_id":"site-01","name":"CI Loopback Camera","host":"127.0.0.1","rtsp_port":8554,"main_path":"/ci-main"}' http://127.0.0.1:8080/api/v1/cameras >/tmp/camera.json
           touch "$RUNNER_TEMP/vms-recordings/persistence-sentinel"
-          docker compose --env-file .env restart postgres mediamtx control-api web
-          docker compose --env-file .env up -d --wait postgres mediamtx control-api web
+          docker compose --env-file .env restart postgres mediamtx control-api
+          docker compose --env-file .env up -d --wait postgres mediamtx control-api
+          # nginx resolves the control-api service at startup; start/restart web
+          # only after the backend has its stable post-restart container address.
+          docker compose --env-file .env restart web
+          docker compose --env-file .env up -d --wait web
           bash deploy/field-test/vmsctl.sh health
           TOKEN2="$(python3 deploy/field-test/mint_access_token.py 2>/dev/null)"
-          curl -fsS -H "Authorization: Bearer $TOKEN2" http://127.0.0.1:8080/api/v1/cameras >/tmp/cameras-after.json
+          for attempt in {1..12}; do
+            if curl -fsS -H "Authorization: Bearer $TOKEN2" http://127.0.0.1:8080/api/v1/cameras >/tmp/cameras-after.json; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "camera API did not become reachable after restart within 60 seconds" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           python3 - <<'PY'
           import json
           rows=json.load(open('/tmp/cameras-after.json'))
