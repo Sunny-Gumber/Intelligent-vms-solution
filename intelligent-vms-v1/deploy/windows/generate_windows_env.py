@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import os
 import secrets
 from pathlib import Path, PureWindowsPath
 
@@ -124,17 +125,23 @@ def main() -> None:
     parser.add_argument("--recording-dir", required=True, type=Path)
     parser.add_argument("--app-root", required=True, type=Path)
     parser.add_argument("--venv-python", required=True, type=Path)
-    parser.add_argument("--postgres-password", required=True)
+    parser.add_argument("--postgres-password")
+    parser.add_argument("--postgres-password-env")
     parser.add_argument("--postgres-service", required=True)
     parser.add_argument("--camera-cidr", action="append", default=[])
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    postgres_password = args.postgres_password
+    if args.postgres_password_env:
+        postgres_password = os.environ.get(args.postgres_password_env)
+    if not postgres_password:
+        parser.error("PostgreSQL password is required through --postgres-password or --postgres-password-env")
     generate(
         args.output,
         recording_dir=args.recording_dir,
         app_root=args.app_root,
         venv_python=args.venv_python,
-        postgres_password=args.postgres_password,
+        postgres_password=postgres_password,
         postgres_service=args.postgres_service,
         camera_cidrs=args.camera_cidr,
         force=args.force,
