@@ -37,9 +37,15 @@ def validate_result(d:dict)->list[str]:
     b=d.get("build",{})
     if not re.fullmatch(r"[0-9a-f]{40}",str(b.get("git_sha",""))): errors.append("build.git_sha must be exact 40-char lowercase SHA")
     if not re.fullmatch(r"[0-9a-f]{64}",str(b.get("installer_sha256",""))): errors.append("build.installer_sha256 must be lowercase SHA-256")
+    for key in ("started_utc","tester_id","machine_id","test_profile"):
+        if not str(d.get(key,"")).strip(): errors.append(f"{key} is required")
+    if not str(b.get("installer_version","")).strip(): errors.append("build.installer_version is required")
     source=d.get("evidence_source")
     if source not in SOURCES: errors.append("invalid evidence_source")
     if d.get("overall_result","NOT_RUN") not in STATES: errors.append("invalid overall_result")
+    approval=d.get("approval",{})
+    for key in ("automated_result","tester_signoff","independent_review"):
+        if not str(approval.get(key,"")).strip(): errors.append(f"approval.{key} is required")
     for row in d.get("results",[]):
         tid=str(row.get("test_id","")); state=row.get("state"); rsource=row.get("evidence_source",source)
         if state not in STATES: errors.append(f"{tid}: invalid state")
@@ -49,7 +55,7 @@ def validate_result(d:dict)->list[str]:
         if state in {"PASS","PASS_WITH_LIMITATION"} and tid.startswith(EXTERNAL_ONLY_PREFIXES) and rsource in {"HOSTED_CI","SIMULATED"}:
             errors.append(f"{tid}: {rsource} cannot create real external PASS")
         if state=="FAIL":
-            for key in ("expected","actual","severity"):
+            for key in ("expected","actual","severity","retest_status"):
                 if not str(row.get(key,"")).strip(): errors.append(f"{tid}: FAIL requires {key}")
     return errors
 
@@ -67,7 +73,7 @@ def summary(d:dict)->str:
 def release_manifest(d:dict)->dict:
     b=d["build"]
     return {"product":"Intelligent VMS","product_version":b.get("product_version"),"git_sha":b.get("git_sha"),
-      "installer":b.get("installer"),"installer_sha256":b.get("installer_sha256"),"server_version":b.get("server_version"),
+      "installer":b.get("installer"),"installer_version":b.get("installer_version"),"installer_sha256":b.get("installer_sha256"),"server_version":b.get("server_version"),
       "client_version":b.get("client_version"),"db_schema_revision":b.get("db_schema_revision"),"mediamtx":b.get("mediamtx"),
       "installer_tool":"NSIS 3.13","qualification_run_id":d.get("qualification_run_id"),
       "qualification_status":d.get("overall_result"),"signing_status":d.get("signing_status","UNSIGNED_EXPECTED"),
@@ -97,7 +103,7 @@ def main():
     perf=sp.add_parser("performance-template"); perf.add_argument("--output",required=True)
     args=p.parse_args()
     if args.cmd=="new-run":
-        d={"qualification_run_id":run_id(args.sequence),"build":{"git_sha":args.git_sha,"installer":Path(args.installer).name,"installer_sha256":args.installer_sha256,"product_version":"0.2.0","server_version":"0.2.0","client_version":"0.2.0","db_schema_revision":"0018","mediamtx":{"version":"1.21.1","sha256":"faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"}},"evidence_source":"SIMULATED","overall_result":"NOT_RUN","signing_status":"UNSIGNED_EXPECTED","results":[],"known_limitations":["External Windows 10/11, camera, soak, performance and production signing evidence pending"]}
+        d={"qualification_run_id":run_id(args.sequence),"started_utc":dt.datetime.now(dt.timezone.utc).isoformat(),"tester_id":"HOSTED_CI","machine_id":"HOSTED-CI","test_profile":"LAYER_A_SIMULATION","build":{"git_sha":args.git_sha,"installer":Path(args.installer).name,"installer_version":"0.2.0.0","installer_sha256":args.installer_sha256,"product_version":"0.2.0","server_version":"0.2.0","client_version":"0.2.0","db_schema_revision":"0018","mediamtx":{"version":"1.21.1","sha256":"faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"}},"evidence_source":"SIMULATED","overall_result":"NOT_RUN","signing_status":"UNSIGNED_EXPECTED","approval":{"automated_result":"NOT_RUN","tester_signoff":"NOT_RUN","independent_review":"NOT_RUN"},"results":[],"known_limitations":["External Windows 10/11, camera, soak, performance and production signing evidence pending"]}
         Path(args.output).write_text(json.dumps(d,indent=2)+"\n",encoding="utf-8"); return 0
     if args.cmd=="validate":
         e=validate_result(load(args.result)); print("\n".join(e) if e else "qualification_result_valid"); return 1 if e else 0
