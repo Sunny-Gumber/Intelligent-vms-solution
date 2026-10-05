@@ -1,9 +1,9 @@
 {
   "product": "Intelligent VMS",
-  "product_version": "0.2.0",
-  "installer_version": "0.2.0.0",
-  "server_package_version": "0.2.0",
-  "client_package_version": "0.2.0",
+  "product_version": "0.2.1",
+  "installer_version": "0.2.1.0",
+  "server_package_version": "0.2.1",
+  "client_package_version": "0.2.1",
   "schema_baseline": "0018",
   "build_commit": "SOURCE",
   "status": "Release Candidate / External Qualification Pending"
