@@ -59,8 +59,8 @@ for($i=0;$i -lt $Samples;$i++){
   $cpuPct=(Get-Counter "\Processor(_Total)\% Processor Time").CounterSamples.CookedValue
   $mem=Get-CimInstance Win32_OperatingSystem
   $ramPct=100.0*(($mem.TotalVisibleMemorySize-$mem.FreePhysicalMemory)/$mem.TotalVisibleMemorySize)
-  $proc=Get-Process -Name "pythonservice" -ErrorAction SilentlyContinue|Measure-Object WorkingSet64 -Sum
-  $working=if($proc.Sum){[math]::Round($proc.Sum/1MB,2)}else{0}
+  $procs=@(Get-Process -Name "pythonservice" -ErrorAction SilentlyContinue)
+  $working=if($procs.Count -gt 0){[math]::Round((($procs|Measure-Object WorkingSet64 -Sum).Sum)/1MB,2)}else{0}
   $line="{0},MEASURED,0,0,0,{1:F2},{2:F2},{3},,, ,0,0" -f [DateTimeOffset]::UtcNow.ToString("O"),$cpuPct,$ramPct,$working
   Add-Content $perf $line
   if($i -lt $Samples-1){Start-Sleep -Seconds $IntervalSeconds}
