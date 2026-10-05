@@ -143,7 +143,7 @@ def test_v021_postgres_discovery_is_systemic_and_validated():
 
 
 def test_v021_mediamtx_is_bundled_and_install_path_is_offline():
-    assert "mediamtx_v1.21.1_windows_amd64.zip" in BUILD
+    assert '$mediaName="mediamtx_v$($mediaVersion)_windows_amd64.zip"' in BUILD
     assert "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23" in BUILD
     assert "build-inputs" in BUILD
     assert "deploy\\windows\\runtime" in BUILD
