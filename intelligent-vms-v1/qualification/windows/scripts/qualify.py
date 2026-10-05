@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Safe stdlib-only qualification evidence tooling."""
 from __future__ import annotations
-import argparse, csv, datetime as dt, json, os, re, subprocess
+import argparse, csv, datetime as dt, json, os, re, struct, subprocess
 from pathlib import Path
 
 STATES={"NOT_RUN","BLOCKED_EXTERNAL","PASS","FAIL","PASS_WITH_LIMITATION","NOT_APPLICABLE"}
@@ -79,8 +79,34 @@ def release_manifest(d:dict)->dict:
       "qualification_status":d.get("overall_result"),"signing_status":d.get("signing_status","UNSIGNED_EXPECTED"),
       "known_limitations":d.get("known_limitations",[])}
 
+def pe_has_authenticode(path:Path)->bool:
+    data=path.read_bytes()
+    if len(data)<0x40 or data[:2]!=b"MZ":
+        return False
+    pe_off=struct.unpack_from("<I",data,0x3C)[0]
+    if pe_off+24>len(data) or data[pe_off:pe_off+4]!=b"PE\\0\\0":
+        return False
+    opt_off=pe_off+24
+    magic=struct.unpack_from("<H",data,opt_off)[0]
+    if magic==0x10B:
+        directory_off=opt_off+96
+    elif magic==0x20B:
+        directory_off=opt_off+112
+    else:
+        return False
+    security_entry=directory_off+(4*8)
+    if security_entry+8>len(data):
+        return False
+    cert_offset,cert_size=struct.unpack_from("<II",data,security_entry)
+    return cert_offset>0 and cert_size>0 and cert_offset+cert_size<=len(data)
+
 def verify_signature(path:str, expect_unsigned:bool):
-    if os.name!="nt": return ("UNSIGNED_EXPECTED" if expect_unsigned else "NOT_RUN","Authenticode verification requires Windows")
+    artifact=Path(path)
+    has_signature=pe_has_authenticode(artifact)
+    if not has_signature:
+        return ("UNSIGNED_EXPECTED" if expect_unsigned else "FAIL","PE has no Authenticode certificate table")
+    if os.name!="nt":
+        return "NOT_RUN","Authenticode cryptographic verification requires Windows"
     escaped=str(Path(path)).replace("'","''")
     ps="Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; (Get-AuthenticodeSignature -LiteralPath '"+escaped+"') | Select-Object Status,StatusMessage,SignerCertificate,TimeStamperCertificate | ConvertTo-Json -Depth 4"
     winps=Path(os.environ.get("SystemRoot",r"C:\\Windows"))/"System32"/"WindowsPowerShell"/"v1.0"/"powershell.exe"
