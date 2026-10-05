@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Intelligent VMS qualification result",
+  "type": "object",
+  "required": [
+    "qualification_run_id",
+    "started_utc",
+    "tester_id",
+    "machine_id",
+    "test_profile",
+    "build",
+    "evidence_source",
+    "overall_result",
+    "approval",
+    "results"
+  ],
+  "properties": {
+    "qualification_run_id": {
+      "type": "string",
+      "pattern": "^VMS-WIN-[0-9]{8}-[0-9]{3}$"
+    },
+    "build": {
+      "type": "object",
+      "required": [
+        "git_sha",
+        "installer",
+        "installer_version",
+        "installer_sha256",
+        "product_version",
+        "server_version",
+        "client_version",
+        "db_schema_revision"
+      ],
+      "properties": {
+        "git_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "installer": {
+          "type": "string"
+        },
+        "installer_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "product_version": {
+          "type": "string"
+        },
+        "server_version": {
+          "type": "string"
+        },
+        "client_version": {
+          "type": "string"
+        },
+        "db_schema_revision": {
+          "type": "string"
+        },
+        "mediamtx": {
+          "type": "object"
+        },
+        "installer_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "evidence_source": {
+      "enum": [
+        "HOSTED_CI",
+        "VM_EXTERNAL",
+        "PHYSICAL_MACHINE",
+        "REAL_CAMERA",
+        "SIMULATED"
+      ]
+    },
+    "overall_result": {
+      "enum": [
+        "NOT_RUN",
+        "BLOCKED_EXTERNAL",
+        "PASS",
+        "FAIL",
+        "PASS_WITH_LIMITATION",
+        "NOT_APPLICABLE"
+      ]
+    },
+    "signing_status": {
+      "enum": [
+        "UNSIGNED_EXPECTED",
+        "SIGNED_VALID",
+        "SIGNING_PENDING",
+        "FAIL"
+      ]
+    },
+    "machine_manifest": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "camera_manifests": {
+      "type": "array"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "test_id",
+          "state"
+        ],
+        "properties": {
+          "test_id": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "NOT_RUN",
+              "BLOCKED_EXTERNAL",
+              "PASS",
+              "FAIL",
+              "PASS_WITH_LIMITATION",
+              "NOT_APPLICABLE"
+            ]
+          },
+          "evidence_source": {
+            "enum": [
+              "HOSTED_CI",
+              "VM_EXTERNAL",
+              "PHYSICAL_MACHINE",
+              "REAL_CAMERA",
+              "SIMULATED"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "string"
+          },
+          "actual": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "BLOCKER",
+              "CRITICAL",
+              "MAJOR",
+              "MINOR",
+              "NONE"
+            ]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "retest_status": {
+            "type": "string"
+          },
+          "github_issue": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "known_limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "started_utc": {
+      "type": "string"
+    },
+    "tester_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "machine_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "test_profile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approval": {
+      "type": "object",
+      "required": [
+        "automated_result",
+        "tester_signoff",
+        "independent_review"
+      ],
+      "properties": {
+        "automated_result": {
+          "type": "string"
+        },
+        "tester_signoff": {
+          "type": "string"
+        },
+        "independent_review": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -6,6 +6,8 @@ on:
       - 'intelligent-vms-v1/clients/windows/**'
       - 'intelligent-vms-v1/deploy/windows/installer/**'
       - 'intelligent-vms-v1/release/windows/**'
+      - 'intelligent-vms-v1/qualification/windows/**'
+      - 'intelligent-vms-v1/qualification/windows/**'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_CLIENT_FOUNDATION.md'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_LIVE_GRID.md'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_DESKTOP_PLAYBACK_FOUNDATION.md'

@@ -1,0 +1,5 @@
+platform,target_edition_or_build,evidence_source,result,notes
+Windows 11 x64,Current supported production build,VM_EXTERNAL or PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Record exact edition/version/build before any support statement
+Windows 10 x64,Specific edition/build only,VM_EXTERNAL or PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Record lifecycle status and distinguish LTSC from retired consumer editions
+Windows Server 2022 x64,Hosted CI regression baseline,HOSTED_CI,PASS_WITH_LIMITATION,Software lifecycle evidence only; not physical hardware qualification
+Windows Server 2025 x64,Hosted CI regression baseline,HOSTED_CI,PASS_WITH_LIMITATION,Software lifecycle evidence only; not physical hardware qualification

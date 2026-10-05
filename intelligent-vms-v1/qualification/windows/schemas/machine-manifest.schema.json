@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VMS Windows machine manifest",
+  "type": "object",
+  "required": [
+    "machine_id",
+    "windows",
+    "cpu",
+    "ram_gb",
+    "system_disk",
+    "network_adapter"
+  ],
+  "properties": {
+    "machine_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "manufacturer": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "bios_firmware": {
+      "type": "string"
+    },
+    "cpu": {
+      "type": "string"
+    },
+    "cores": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "threads": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ram_gb": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "gpu": {
+      "type": "string"
+    },
+    "gpu_driver": {
+      "type": "string"
+    },
+    "system_disk": {
+      "type": "object"
+    },
+    "recording_disk": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "filesystem": {
+      "type": "string"
+    },
+    "windows": {
+      "type": "object",
+      "required": [
+        "edition",
+        "version",
+        "os_build",
+        "servicing_channel",
+        "lifecycle_status"
+      ],
+      "properties": {
+        "edition": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "os_build": {
+          "type": "string"
+        },
+        "servicing_channel": {
+          "type": "string"
+        },
+        "lifecycle_status": {
+          "type": "string"
+        }
+      }
+    },
+    "security_product": {
+      "type": "string"
+    },
+    "domain_state": {
+      "type": "string"
+    },
+    "virtualization_state": {
+      "type": "string"
+    },
+    "network_adapter": {
+      "type": "string"
+    },
+    "display_configuration": {
+      "type": "string"
+    },
+    "disks": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": false
+}
