@@ -227,16 +227,22 @@ if(Test-Path $BootstrapStateFile){
 $isFreshConfig=-not (Test-Path $EnvFile)
 if($isFreshConfig){
     $dbPassword=New-RandomHex
-    Invoke-Checked $venvPython @(
-        (Join-Path $AppRoot "deploy\windows\generate_windows_env.py"),
-        "--output",$EnvFile,
-        "--recording-dir",$RecordingRoot,
-        "--app-root",$AppRoot,
-        "--venv-python",$venvPython,
-        "--postgres-password",$dbPassword,
-        "--postgres-service",$postgresService,
-        "--camera-cidr",$CameraCidr
-    ) 180
+    $previousBootstrapPassword=$env:VMS_BOOTSTRAP_DB_PASSWORD
+    try {
+        $env:VMS_BOOTSTRAP_DB_PASSWORD=$dbPassword
+        Invoke-Checked $venvPython @(
+            (Join-Path $AppRoot "deploy\windows\generate_windows_env.py"),
+            "--output",$EnvFile,
+            "--recording-dir",$RecordingRoot,
+            "--app-root",$AppRoot,
+            "--venv-python",$venvPython,
+            "--postgres-password-env","VMS_BOOTSTRAP_DB_PASSWORD",
+            "--postgres-service",$postgresService,
+            "--camera-cidr",$CameraCidr
+        ) 180
+    } finally {
+        $env:VMS_BOOTSTRAP_DB_PASSWORD=$previousBootstrapPassword
+    }
     Protect-Directory $ConfigRoot
     @{phase="config_generated";updated_utc=[DateTimeOffset]::UtcNow.ToString("O")}|ConvertTo-Json|Set-Content $BootstrapStateFile -Encoding UTF8
 } else {
