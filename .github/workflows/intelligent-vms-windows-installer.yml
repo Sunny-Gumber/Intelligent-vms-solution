@@ -411,7 +411,9 @@ jobs:
           $runtime=Join-Path $PWD "deploy\windows\runtime"
           New-Item -ItemType Directory -Force -Path $runtime|Out-Null
           $media=Join-Path $runtime "mediamtx_v1.21.1_windows_amd64.zip"
-          Invoke-WebRequest -Uri "https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/mediamtx_v1.21.1_windows_amd64.zip" -OutFile $media -UseBasicParsing
+          $url="https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/mediamtx_v1.21.1_windows_amd64.zip"
+          & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 240 -o $media $url
+          if($LASTEXITCODE -ne 0 -or -not (Test-Path $media)){throw "Legacy upgrade fixture MediaMTX download failed"}
           $mediaHash=(Get-FileHash -Algorithm SHA256 $media).Hash.ToLowerInvariant()
           if($mediaHash -ne "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"){throw "Legacy upgrade fixture MediaMTX hash mismatch"}
           .\deploy\windows\Install-WindowsFieldTest.ps1 -RecordingRoot $record -CameraCidr "127.0.0.1/32"
