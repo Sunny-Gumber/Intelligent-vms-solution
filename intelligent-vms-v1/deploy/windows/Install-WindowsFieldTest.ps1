@@ -179,6 +179,11 @@ function Get-Sha256Hex([string]$Path) {
         $stream.Dispose()
     }
 }
+function Invoke-CiFailurePoint([string]$Stage) {
+    if($env:GITHUB_ACTIONS -eq "true" -and $env:VMS_INSTALLER_TEST_FAIL_STAGE -eq $Stage){
+        throw "CI injected installer failure at $Stage"
+    }
+}
 
 Assert-Administrator
 if (-not [Environment]::Is64BitOperatingSystem) { throw "Windows x64 is required." }
@@ -250,6 +255,7 @@ if($isFreshConfig){
     }
     Protect-Directory $ConfigRoot
     @{phase="config_generated";updated_utc=[DateTimeOffset]::UtcNow.ToString("O")}|ConvertTo-Json|Set-Content $BootstrapStateFile -Encoding UTF8
+    Invoke-CiFailurePoint "config_generated"
 } else {
     Import-VmsEnv $EnvFile
     $dbPassword=$env:WINDOWS_POSTGRES_PASSWORD
@@ -286,6 +292,7 @@ if($needsBootstrap){
             Invoke-Checked (Join-Path $pgBin "psql.exe") @("-h","127.0.0.1","-U","postgres","-d","postgres","-v","ON_ERROR_STOP=1","-f",$sqlFile) 120
         } finally {Remove-Item $sqlFile -Force -ErrorAction SilentlyContinue}
         @{phase="role_ready";updated_utc=[DateTimeOffset]::UtcNow.ToString("O")}|ConvertTo-Json|Set-Content $BootstrapStateFile -Encoding UTF8
+        Invoke-CiFailurePoint "role_ready"
 
         Write-Host "windows_field_test_stage=postgres_database"
         $dbResult=Invoke-Bounded (Join-Path $pgBin "psql.exe") @("-h","127.0.0.1","-U","postgres","-d","postgres","-tAc","SELECT 1 FROM pg_database WHERE datname='vms'") 120
@@ -293,6 +300,7 @@ if($needsBootstrap){
         $databaseFound=@($dbResult.Lines|ForEach-Object{$_.Trim()}) -contains "1"
         if(-not $databaseFound){Invoke-Checked (Join-Path $pgBin "createdb.exe") @("-h","127.0.0.1","-U","postgres","-O","vms","vms") 120}
         @{phase="database_ready";updated_utc=[DateTimeOffset]::UtcNow.ToString("O")}|ConvertTo-Json|Set-Content $BootstrapStateFile -Encoding UTF8
+        Invoke-CiFailurePoint "database_ready"
     } finally {
         $env:PGPASSWORD=$previousPgPassword
         $adminPassword=$null
