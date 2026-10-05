@@ -3,7 +3,8 @@ param(
  [string]$OutputRoot="",
  [string]$VersionManifest="",
  [string]$CommitSha=$env:GITHUB_SHA,
- [string]$Makensis=""
+ [string]$Makensis="",
+ [string]$MediaMTXZip=""
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference="Stop"
@@ -19,6 +20,28 @@ New-Item -ItemType Directory -Force -Path $payload|Out-Null
 
 $server=Join-Path $payload "server"
 New-Item -ItemType Directory -Force -Path $server|Out-Null
+
+# MediaMTX is a pinned installer build input. Installation itself is offline.
+$mediaVersion="1.21.1"
+$mediaSha="faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"
+$mediaName="mediamtx_v$($mediaVersion)_windows_amd64.zip"
+if(-not $MediaMTXZip){
+  $cache=Join-Path $OutputRoot "build-inputs"
+  New-Item -ItemType Directory -Force -Path $cache|Out-Null
+  $MediaMTXZip=Join-Path $cache $mediaName
+  if(-not (Test-Path $MediaMTXZip)){
+    $partial="$MediaMTXZip.partial"
+    Remove-Item $partial -Force -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri "https://github.com/bluenviron/mediamtx/releases/download/v$mediaVersion/$mediaName" -OutFile $partial -UseBasicParsing -TimeoutSec 180
+    Move-Item $partial $MediaMTXZip -Force
+  }
+}
+if(-not (Test-Path $MediaMTXZip)){throw "Pinned MediaMTX build input missing: $MediaMTXZip"}
+$mediaActual=(Get-FileHash -Algorithm SHA256 -LiteralPath $MediaMTXZip).Hash.ToLowerInvariant()
+if($mediaActual -ne $mediaSha){throw "Pinned MediaMTX build input checksum mismatch. expected=$mediaSha actual=$mediaActual"}
+$runtimeStage=Join-Path $server "deploy\windows\runtime"
+New-Item -ItemType Directory -Force -Path $runtimeStage|Out-Null
+Copy-Item -LiteralPath $MediaMTXZip -Destination (Join-Path $runtimeStage $mediaName) -Force
 foreach($name in @("services","deploy","migrations","web")){
   & robocopy.exe (Join-Path $VmsRoot $name) (Join-Path $server $name) /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP /XD "__pycache__" "tests"|Out-Null
   if($LASTEXITCODE -gt 7){throw "Failed to stage server asset $name"}
