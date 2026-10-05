@@ -353,7 +353,7 @@ Write-Host "windows_field_test_stage=runtime_install component=mediamtx"
 $mediaZip = Join-Path $SourceRoot "deploy\windows\runtime\mediamtx_v1.21.1_windows_amd64.zip"
 $mediaSha = "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"
 if(-not (Test-Path $mediaZip)){throw "Bundled MediaMTX runtime is missing from the installer payload."}
-$actual=Get-Sha256Hex $mediaZip
+$actual = Get-Sha256Hex $mediaZip
 if($actual -ne $mediaSha){throw "Bundled MediaMTX checksum mismatch."}
 if (-not (Test-Path (Join-Path $MediaRoot "mediamtx.exe"))) {
     if (Test-Path $MediaRoot) { Remove-Item $MediaRoot -Recurse -Force }
