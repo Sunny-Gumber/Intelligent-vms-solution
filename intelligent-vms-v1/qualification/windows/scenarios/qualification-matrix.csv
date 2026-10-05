@@ -1,0 +1,32 @@
+test_id,area,target,evidence_required,default_state,notes
+WIN11-INSTALL,OS/Installer,Windows 11 x64 physical or external VM,VM_EXTERNAL or PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Record edition version build and lifecycle
+WIN10-INSTALL,OS/Installer,Specific Windows 10 edition/build,VM_EXTERNAL or PHYSICAL_MACHINE,BLOCKED_EXTERNAL,No blanket Windows 10 claim
+INSTALL-CLIENT,Installer,Fresh Client install,External machine evidence,NOT_RUN,UAC shortcut WebView2 launch uninstall
+INSTALL-SERVER,Installer,Fresh Server install,External machine evidence,NOT_RUN,PostgreSQL services health reboot
+INSTALL-BOTH,Installer,Fresh Both install,External machine evidence,NOT_RUN,Server first then Client
+CLIENT-DPI,Client,DPI 100/125/150/200 where available,PHYSICAL_MACHINE or VM_EXTERNAL,NOT_RUN,Record display topology
+AUTH-OIDC,Auth,Generic system-browser OIDC,VM_EXTERNAL or PHYSICAL_MACHINE,NOT_RUN,Named IdPs separate
+CAM-FIXED,Camera,Real fixed IPC,REAL_CAMERA,BLOCKED_EXTERNAL,Exact model firmware required
+CAM-PTZ,Camera,Real PTZ,REAL_CAMERA,BLOCKED_EXTERNAL,STOP safety blocker if motion continues
+LIVE-MAIN-SUB,Live,MAIN/SUB switching,REAL_CAMERA,BLOCKED_EXTERNAL,Verify diagnostics not appearance
+GRID-1,Grid,1 real stream,REAL_CAMERA,BLOCKED_EXTERNAL,
+GRID-4,Grid,4 real streams,REAL_CAMERA,BLOCKED_EXTERNAL,
+GRID-9,Grid,9 real streams,REAL_CAMERA,BLOCKED_EXTERNAL,Do not pass with fewer streams
+GRID-16,Grid,16 real streams,REAL_CAMERA,BLOCKED_EXTERNAL,Do not pass with fewer streams
+PTZ-STOP,PTZ,Lost network/app close/tile switch/logout while moving,REAL_CAMERA,BLOCKED_EXTERNAL,Unexpected continued motion is BLOCKER
+PLAYBACK-REAL,Playback,Real spans gaps seek retention,REAL_CAMERA,BLOCKED_EXTERNAL,
+EXPORT-MP4,Export,Real MP4 and approved external player,REAL_CAMERA,BLOCKED_EXTERNAL,Hash artifact where useful
+EVENT-HW-MOTION,Events,Hardware motion Event-to-Live/Playback,REAL_CAMERA,BLOCKED_EXTERNAL,Only supported device events
+RECORD-REBOOT,Recording,Server reboot continuity,PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Measure actual gap
+RECORD-SERVICE-KILL,Recording,Control/Media recovery,PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Do not kill PostgreSQL here
+NETWORK-DISCONNECT,Network,Controlled server-camera interruption,REAL_CAMERA,BLOCKED_EXTERNAL,Authorized lab only
+STORAGE-REAL-SSD,Storage,Local SSD,PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Record filesystem
+STORAGE-REAL-HDD,Storage,Local HDD,PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Record filesystem
+STORAGE-LOW-DISK,Storage,Controlled test volume safety reserve,PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Never fill OS volume
+SOAK-2H,Soak,Short soak,PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Bounded metrics
+SOAK-8H,Soak,Extended soak,PHYSICAL_MACHINE,BLOCKED_EXTERNAL,
+SOAK-24H,Soak,Qualification candidate,PHYSICAL_MACHINE,BLOCKED_EXTERNAL,Thresholds require product approval
+PERF-REAL-P1,Performance,1 real live stream,REAL_CAMERA,BLOCKED_EXTERNAL,Measured only if no approved threshold
+PERF-REAL-P4,Performance,4 real live streams,REAL_CAMERA,BLOCKED_EXTERNAL,
+PERF-REAL-P9,Performance,9 real live streams,REAL_CAMERA,BLOCKED_EXTERNAL,
+PERF-REAL-P16,Performance,16 real live streams,REAL_CAMERA,BLOCKED_EXTERNAL,
