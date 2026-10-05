@@ -48,8 +48,12 @@ jobs:
           curl -fsS -b /tmp/vms-cookies http://127.0.0.1:8080/api/v1/cameras >/tmp/cameras-before.json
           curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"tenant_id":"field-test","site_id":"site-01","name":"CI Loopback Camera","host":"127.0.0.1","rtsp_port":8554,"main_path":"/ci-main"}' http://127.0.0.1:8080/api/v1/cameras >/tmp/camera.json
           touch "$RUNNER_TEMP/vms-recordings/persistence-sentinel"
-          docker compose --env-file .env restart postgres mediamtx control-api web
-          docker compose --env-file .env up -d --wait postgres mediamtx control-api web
+          docker compose --env-file .env restart postgres mediamtx control-api
+          docker compose --env-file .env up -d --wait postgres mediamtx control-api
+          # nginx resolves the control-api service at startup; start/restart web
+          # only after the backend has its stable post-restart container address.
+          docker compose --env-file .env restart web
+          docker compose --env-file .env up -d --wait web
           bash deploy/field-test/vmsctl.sh health
           TOKEN2="$(python3 deploy/field-test/mint_access_token.py 2>/dev/null)"
           for attempt in {1..12}; do
