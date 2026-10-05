@@ -51,12 +51,23 @@ jobs:
           if (-not $pg) { throw "Hosted runner PostgreSQL service not found" }
           Write-Host "PostgreSQL service: $($pg.Name)"
 
+      - name: Prepare pinned MediaMTX direct-script fixture
+        shell: pwsh
+        run: |
+          $runtime=Join-Path $PWD "deploy\windows\runtime"
+          New-Item -ItemType Directory -Force -Path $runtime|Out-Null
+          $zip=Join-Path $runtime "mediamtx_v1.21.1_windows_amd64.zip"
+          Invoke-WebRequest -Uri "https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/mediamtx_v1.21.1_windows_amd64.zip" -OutFile $zip -UseBasicParsing
+          $hash=(Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if($hash -ne "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"){throw "Pinned MediaMTX direct-script fixture hash mismatch"}
+
       - name: Install native VMS field-test profile
         shell: pwsh
         env:
           VMS_POSTGRES_ADMIN_PASSWORD: root
         run: |
           Set-ExecutionPolicy -Scope Process Bypass -Force
+          Remove-Item Env:PGBIN -ErrorAction SilentlyContinue
           $recording = Join-Path $env:RUNNER_TEMP "IntelligentVMS-Recordings"
           .\deploy\windows\Install-WindowsFieldTest.ps1 -RecordingRoot $recording -CameraCidr "127.0.0.1/32"
 
