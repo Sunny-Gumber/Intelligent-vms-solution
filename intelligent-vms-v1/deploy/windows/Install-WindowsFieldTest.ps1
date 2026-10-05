@@ -201,6 +201,15 @@ $EnvFile = Join-Path $ConfigRoot "vms.env"
 $MediaRoot = Join-Path $RuntimeRoot "mediamtx"
 $BootstrapStateFile = Join-Path $Root "bootstrap-state.json"
 
+$bootstrapState=$null
+if(Test-Path $BootstrapStateFile){
+    try{$bootstrapState=Get-Content $BootstrapStateFile -Raw|ConvertFrom-Json}catch{$bootstrapState=$null}
+}
+$bootstrapNeededBeforeMutation=(-not $Upgrade) -and ((-not (Test-Path $EnvFile)) -or (-not $bootstrapState) -or [string]$bootstrapState.phase -ne "completed")
+if($NonInteractive -and $bootstrapNeededBeforeMutation -and -not $env:VMS_POSTGRES_ADMIN_PASSWORD){
+    throw "PostgreSQL administrator credential is required for quiet first-time/retry bootstrap; hidden prompting is disabled."
+}
+
 foreach ($path in @($Root,$ConfigRoot,$RuntimeRoot,$LogsRoot,$BackupRoot,$RecordingRoot)) {
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
@@ -220,11 +229,7 @@ if ((Get-Service $postgresService).Status -ne "Running") {
 $pgBin = Find-PostgresBin $postgresService
 
 if ($Upgrade) {
-    $bootstrapState=$null
-if(Test-Path $BootstrapStateFile){
-    try{$bootstrapState=Get-Content $BootstrapStateFile -Raw|ConvertFrom-Json}catch{$bootstrapState=$null}
-}
-$isFreshConfig=-not (Test-Path $EnvFile)
+    $isFreshConfig=-not (Test-Path $EnvFile)
 if($isFreshConfig){
     $dbPassword=New-RandomHex
     $previousBootstrapPassword=$env:VMS_BOOTSTRAP_DB_PASSWORD
