@@ -67,6 +67,16 @@ jobs:
         run: |
           $collector=Get-Content qualification/windows/scripts/Collect-QualificationEvidence.ps1 -Raw
           foreach($forbidden in @("Restart-Computer","Stop-Computer","Remove-Item.*Record","New-NetFirewallRule","Set-NetFirewallProfile","DisableRealtimeMonitoring","Format-Volume")){if($collector -match $forbidden){throw "unsafe collector token: $forbidden"}}
+      - name: Hosted-CI collector smoke (software evidence only)
+        shell: pwsh
+        run: |
+          $out=Join-Path $env:RUNNER_TEMP "qualification-collector"
+          .\qualification\windows\scripts\Collect-QualificationEvidence.ps1 -OutputRoot $out -RunId "VMS-WIN-20261005-001" -Samples 1 -IntervalSeconds 1
+          foreach($required in @("machine-manifest.json","service-states.json","performance.csv","collection-metadata.json")){if(-not (Test-Path (Join-Path $out $required))){throw "missing collector output: $required"}}
+          $machine=Get-Content (Join-Path $out "machine-manifest.json") -Raw|ConvertFrom-Json
+          if(-not $machine.machine_id -or -not $machine.windows.os_build -or -not $machine.system_disk){throw "machine inventory incomplete"}
+          $bundle=Join-Path $env:RUNNER_TEMP "qualification-diagnostics-VMS-WIN-20261005-001.zip"
+          if(-not (Test-Path $bundle)){throw "qualification diagnostics bundle missing"}
       - uses: actions/upload-artifact@v4
         with:
           name: qualification-harness-simulated-evidence
