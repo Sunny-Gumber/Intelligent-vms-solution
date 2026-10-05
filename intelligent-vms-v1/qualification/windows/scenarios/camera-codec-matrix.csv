@@ -1,0 +1,16 @@
+class_or_codec,required_evidence,result,notes
+Fixed IPC,REAL_CAMERA,BLOCKED_EXTERNAL,Exact manufacturer/model/firmware required
+Varifocal IPC,REAL_CAMERA,BLOCKED_EXTERNAL,Only if hardware available
+PTZ,REAL_CAMERA,BLOCKED_EXTERNAL,STOP safety is release-blocking
+Dual-stream,REAL_CAMERA,BLOCKED_EXTERNAL,Verify MAIN/SUB diagnostics
+Triple-stream,REAL_CAMERA,BLOCKED_EXTERNAL,Only if device exposes THIRD
+H.264,REAL_CAMERA,BLOCKED_EXTERNAL,Record resolution/FPS/bitrate/stream role
+H.265,REAL_CAMERA,BLOCKED_EXTERNAL,Record resolution/FPS/bitrate/stream role
+H.264+,REAL_CAMERA,BLOCKED_EXTERNAL,Vendor smart codec not inferred from H.264
+H.265+,REAL_CAMERA,BLOCKED_EXTERNAL,Vendor smart codec not inferred from H.265
+720p,REAL_CAMERA,BLOCKED_EXTERNAL,Actual decode/render evidence
+1080p,REAL_CAMERA,BLOCKED_EXTERNAL,Actual decode/render evidence
+4MP,REAL_CAMERA,BLOCKED_EXTERNAL,Actual decode/render evidence
+5MP,REAL_CAMERA,BLOCKED_EXTERNAL,Actual decode/render evidence
+6MP,REAL_CAMERA,BLOCKED_EXTERNAL,Actual decode/render evidence
+8MP/4K,REAL_CAMERA,BLOCKED_EXTERNAL,No capacity claim from logical mocks
