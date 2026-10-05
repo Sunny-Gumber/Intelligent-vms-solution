@@ -24,9 +24,11 @@ def load(path:str)->dict:
 
 def redact(text:str)->str:
     out=text
-    out=SECRET_PATTERNS[0].sub(lambda m:f"{m.group(1)}=[REDACTED]",out)
+    # Redact structured bearer/credential URLs before generic key=value patterns
+    # so generic "authorization" matching cannot strand the bearer value.
     out=SECRET_PATTERNS[1].sub("Bearer [REDACTED]",out)
     out=SECRET_PATTERNS[2].sub(r"\1[REDACTED]@",out)
+    out=SECRET_PATTERNS[0].sub(lambda m:f"{m.group(1)}=[REDACTED]",out)
     return out
 
 def validate_result(d:dict)->list[str]:
