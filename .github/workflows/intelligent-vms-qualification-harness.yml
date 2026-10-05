@@ -1,0 +1,78 @@
+name: Intelligent VMS Qualification Harness
+
+on:
+  pull_request:
+    paths:
+      - 'intelligent-vms-v1/qualification/**'
+      - 'intelligent-vms-v1/tests/test_windows_qualification_harness.py'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_CODE_SIGNING_READINESS.md'
+      - '.github/workflows/intelligent-vms-qualification-harness.yml'
+      - 'intelligent-vms-v1/docs/program/PROJECT_HANDOFF.md'
+      - 'intelligent-vms-v1/docs/program/VMS_BOSS_STATE.md'
+      - 'intelligent-vms-v1/docs/program/IMPLEMENTATION_HISTORY.md'
+  push:
+    branches: [main]
+    paths:
+      - 'intelligent-vms-v1/qualification/**'
+      - 'intelligent-vms-v1/tests/test_windows_qualification_harness.py'
+      - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_CODE_SIGNING_READINESS.md'
+      - '.github/workflows/intelligent-vms-qualification-harness.yml'
+      - 'intelligent-vms-v1/docs/program/PROJECT_HANDOFF.md'
+      - 'intelligent-vms-v1/docs/program/VMS_BOSS_STATE.md'
+      - 'intelligent-vms-v1/docs/program/IMPLEMENTATION_HISTORY.md'
+
+permissions:
+  contents: read
+
+jobs:
+  qualification-harness:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Deterministic harness tests
+        shell: pwsh
+        run: |
+          python -m pip install -r tests/requirements.txt
+          python -m pytest -q tests/test_windows_qualification_harness.py
+      - name: Generate simulated evidence and reports
+        shell: pwsh
+        run: |
+          $sha="${{ github.event.pull_request.head.sha || github.sha }}"
+          python qualification/windows/scripts/qualify.py new-run --sequence 1 --git-sha $sha --installer IntelligentVMS-FieldTest-Setup-x64-0.2.0.exe --installer-sha256 4f8bf89c2b06becbb90729eded7327d466c9fb9779276a29b70abe8dfda54a07 --output "$env:RUNNER_TEMP\qualification-result.json"
+          python qualification/windows/scripts/qualify.py validate --result "$env:RUNNER_TEMP\qualification-result.json"
+          python qualification/windows/scripts/qualify.py summarize --result "$env:RUNNER_TEMP\qualification-result.json" --output "$env:RUNNER_TEMP\qualification-summary.md"
+          python qualification/windows/scripts/qualify.py release-manifest --result "$env:RUNNER_TEMP\qualification-result.json" --output "$env:RUNNER_TEMP\release-manifest.json"
+          python qualification/windows/scripts/qualify.py performance-template --output "$env:RUNNER_TEMP\performance.csv"
+      - name: Redaction regression
+        shell: pwsh
+        run: |
+          "password=known-secret`nAuthorization: Bearer aaa.bbb.ccc`nrtsp://user:camera-pass@127.0.0.1/live" | Set-Content "$env:RUNNER_TEMP\unsafe.txt"
+          python qualification/windows/scripts/qualify.py redact --input "$env:RUNNER_TEMP\unsafe.txt" --output "$env:RUNNER_TEMP\safe.txt"
+          $safe=Get-Content "$env:RUNNER_TEMP\safe.txt" -Raw
+          foreach($value in @("known-secret","aaa.bbb.ccc","user:camera-pass")){if($safe.Contains($value)){throw "redaction failed"}}
+      - name: Unsigned field-test contract
+        shell: pwsh
+        run: |
+          New-Item "$env:RUNNER_TEMP\unsigned.bin" -ItemType File|Out-Null
+          python qualification/windows/scripts/qualify.py verify-signature --artifact "$env:RUNNER_TEMP\unsigned.bin" --expect-unsigned
+      - name: Collector safety contract
+        shell: pwsh
+        run: |
+          $collector=Get-Content qualification/windows/scripts/Collect-QualificationEvidence.ps1 -Raw
+          foreach($forbidden in @("Restart-Computer","Stop-Computer","Remove-Item.*Record","New-NetFirewallRule","Set-NetFirewallProfile","DisableRealtimeMonitoring","Format-Volume")){if($collector -match $forbidden){throw "unsafe collector token: $forbidden"}}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualification-harness-simulated-evidence
+          path: |
+            ${{ runner.temp }}/qualification-result.json
+            ${{ runner.temp }}/qualification-summary.md
+            ${{ runner.temp }}/release-manifest.json
+            ${{ runner.temp }}/performance.csv
+          retention-days: 7
