@@ -29,12 +29,50 @@ function Read-VmsEnv {
     return $values
 }
 function Find-PgBin([hashtable]$Values) {
-    $service = $Values["WINDOWS_POSTGRES_SERVICE"]
-    $version = ($service -replace "^postgresql-x64-", "")
-    $candidate = Join-Path $env:ProgramFiles "PostgreSQL\$version\bin"
-    if (Test-Path (Join-Path $candidate "pg_dump.exe")) { return $candidate }
-    if ($env:PGBIN -and (Test-Path (Join-Path $env:PGBIN "pg_dump.exe"))) { return $env:PGBIN }
-    throw "PostgreSQL client tools not found."
+    $service=[string]$Values["WINDOWS_POSTGRES_SERVICE"]
+    $version=($service -replace "^postgresql-x64-","")
+    $candidates=[Collections.Generic.List[object]]::new()
+    function Add-Candidate([string]$Path,[int]$Priority){
+        if([string]::IsNullOrWhiteSpace($Path)){return}
+        try{$full=[IO.Path]::GetFullPath($Path)}catch{return}
+        foreach($tool in @("psql.exe","pg_dump.exe","pg_restore.exe","dropdb.exe")){
+            if(-not (Test-Path (Join-Path $full $tool))){return}
+        }
+        $major=0
+        try{$major=[Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $full "psql.exe")).FileMajorPart}catch{}
+        if($major -lt 14){return}
+        $preferred=if([string]$major -eq $version){1}else{0}
+        $candidates.Add([pscustomobject]@{Path=$full;Priority=$Priority;Major=$major;Preferred=$preferred})
+    }
+    try{
+        $escaped=$service.Replace("'","''")
+        $svc=Get-CimInstance Win32_Service -Filter "Name='$escaped'" -ErrorAction Stop
+        if($svc.PathName){
+            $m=[regex]::Match([string]$svc.PathName,'^\s*"([^"]+\.exe)"|^\s*([^\s]+\.exe)')
+            if($m.Success){
+                $exe=if($m.Groups[1].Success){$m.Groups[1].Value}else{$m.Groups[2].Value}
+                Add-Candidate (Split-Path $exe -Parent) 400
+            }
+        }
+    }catch{}
+    foreach($regRoot in @("HKLM:\SOFTWARE\PostgreSQL\Installations","HKLM:\SOFTWARE\WOW6432Node\PostgreSQL\Installations")){
+        foreach($key in Get-ChildItem $regRoot -ErrorAction SilentlyContinue){
+            try{
+                $p=Get-ItemProperty $key.PSPath
+                $base=[string]$p.'Base Directory'
+                if($base){Add-Candidate (Join-Path $base "bin") 300}
+            }catch{}
+        }
+    }
+    $pf=[Environment]::GetEnvironmentVariable("ProgramW6432")
+    if(-not $pf){$pf=$env:ProgramFiles}
+    foreach($dir in Get-ChildItem (Join-Path $pf "PostgreSQL") -Directory -ErrorAction SilentlyContinue){
+        Add-Candidate (Join-Path $dir.FullName "bin") 200
+    }
+    if($env:PGBIN){Add-Candidate $env:PGBIN 100}
+    $best=$candidates|Sort-Object @{Expression="Preferred";Descending=$true},@{Expression="Major";Descending=$true},@{Expression="Priority";Descending=$true},Path|Select-Object -First 1
+    if(-not $best){throw "PostgreSQL client tools not found in supported x64 PostgreSQL 14+ locations."}
+    return [string]$best.Path
 }
 function Import-VmsEnv([hashtable]$Values) {
     foreach ($key in $Values.Keys) { [Environment]::SetEnvironmentVariable($key,$Values[$key],"Process") }
