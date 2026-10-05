@@ -175,8 +175,9 @@ def test_windows_installer_is_non_docker_pins_media_and_protects_paths():
     assert "UNC/network recording storage is not supported" in INSTALL
     assert "icacls.exe" in INSTALL
     assert '"-m","alembic"' in INSTALL
-    assert '$roleFound = @($roleExists) -contains "1"' in INSTALL
-    assert '$databaseFound = @($dbExists) -contains "1"' in INSTALL
+    assert '$roleFound=@($roleResult.Lines|ForEach-Object{$_.Trim()}) -contains "1"' in INSTALL
+    assert '$databaseFound=@($dbResult.Lines|ForEach-Object{$_.Trim()}) -contains "1"' in INSTALL
+    assert 'Invoke-Bounded (Join-Path $pgBin "psql.exe")' in INSTALL
     assert '([string]$roleExists).Trim()' not in INSTALL
     assert '([string]$dbExists).Trim()' not in INSTALL
 
