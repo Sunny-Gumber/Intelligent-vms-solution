@@ -52,7 +52,16 @@ jobs:
           docker compose --env-file .env up -d --wait postgres mediamtx control-api web
           bash deploy/field-test/vmsctl.sh health
           TOKEN2="$(python3 deploy/field-test/mint_access_token.py 2>/dev/null)"
-          curl -fsS -H "Authorization: Bearer $TOKEN2" http://127.0.0.1:8080/api/v1/cameras >/tmp/cameras-after.json
+          for attempt in {1..12}; do
+            if curl -fsS -H "Authorization: Bearer $TOKEN2" http://127.0.0.1:8080/api/v1/cameras >/tmp/cameras-after.json; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "camera API did not become reachable after restart within 60 seconds" >&2
+              exit 1
+            fi
+            sleep 5
+          done
           python3 - <<'PY'
           import json
           rows=json.load(open('/tmp/cameras-after.json'))
