@@ -4,9 +4,14 @@
   "type": "object",
   "required": [
     "qualification_run_id",
+    "started_utc",
+    "tester_id",
+    "machine_id",
+    "test_profile",
     "build",
     "evidence_source",
     "overall_result",
+    "approval",
     "results"
   ],
   "properties": {
@@ -19,6 +24,7 @@
       "required": [
         "git_sha",
         "installer",
+        "installer_version",
         "installer_sha256",
         "product_version",
         "server_version",
@@ -51,6 +57,10 @@
         },
         "mediamtx": {
           "type": "object"
+        },
+        "installer_version": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -144,6 +154,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "retest_status": {
+            "type": "string"
+          },
+          "github_issue": {
+            "type": "string"
           }
         }
       }
@@ -152,6 +168,40 @@
       "type": "array",
       "items": {
         "type": "string"
+      }
+    },
+    "started_utc": {
+      "type": "string"
+    },
+    "tester_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "machine_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "test_profile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approval": {
+      "type": "object",
+      "required": [
+        "automated_result",
+        "tester_signoff",
+        "independent_review"
+      ],
+      "properties": {
+        "automated_result": {
+          "type": "string"
+        },
+        "tester_signoff": {
+          "type": "string"
+        },
+        "independent_review": {
+          "type": "string"
+        }
       }
     }
   },
