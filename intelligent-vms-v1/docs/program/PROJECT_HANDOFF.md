@@ -977,3 +977,17 @@ After PR #11 acceptance, future work must still preserve: no direct camera RTSP/
 - Installer CI builds `IntelligentVMS-FieldTest-Setup-x64-0.2.0.exe` plus SHA-256 and exercises Client/Server/Both, repair, accepted-baseline upgrade, downgrade rejection, invalid-path rejection and default uninstall on hosted Windows Server 2022/2025.
 - Catalog row F41-001 remains TARGET because its full market wording also requires automatic prerequisite installation and central software deployment. This milestone records partial software evidence only. F41-006 likewise remains TARGET because arbitrary-version migration/backward compatibility is broader than the demonstrated accepted-baseline upgrade.
 - Product remains **Release Candidate / External Qualification Pending**. Windows 10/11, OEM images, endpoint-security/GPO compatibility, real-camera behavior, production signing and arbitrary legacy upgrade qualification remain external.
+
+
+## Windows external qualification harness + signing-readiness foundation — Issue #21
+
+- Dedicated qualification tooling lives under `qualification/windows/`; production runtime behavior is unchanged.
+- Run identity is `VMS-WIN-YYYYMMDD-###` and evidence is bound to exact Git SHA + installer SHA-256 + product/server/client/schema identity.
+- Evidence sources are explicit: HOSTED_CI, VM_EXTERNAL, PHYSICAL_MACHINE, REAL_CAMERA, SIMULATED.
+- Validator prevents hosted/simulated evidence from creating Windows 10/11, real-camera/PTZ/event, real storage, soak or performance PASS claims.
+- Machine and camera manifest schemas, central matrix, external runbook, guided real-camera scenarios, performance CSV framework, bounded evidence collector, redaction tooling, release-manifest generator and Authenticode verification utility are included.
+- Production-signing ADR is provider-neutral; private-key custody must be managed/HSM-backed and no paid provider/certificate is selected or purchased by this milestone.
+- Current field-test artifacts remain UNSIGNED_EXPECTED. Signing does not imply SmartScreen reputation.
+- SBOM generation is deferred as a release-readiness gap; third-party/commercial license notice and final product license/EULA remain release-readiness/owner-action items if not already resolved.
+- Layer A can be accepted by code review and CI. Windows 10/11, real-camera, PTZ hardware, event hardware, recording/recovery, storage, soak and performance remain BLOCKED_EXTERNAL/PENDING until real evidence exists.
+- Product status remains **Release Candidate / External Qualification Pending**.
