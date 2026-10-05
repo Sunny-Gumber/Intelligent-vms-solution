@@ -57,3 +57,26 @@ def test_schemas_and_example_are_truthful():
     example=json.loads((ROOT/"qualification/windows/templates/qualification-result.example.json").read_text())
     assert example["overall_result"]=="NOT_RUN"
     assert example["results"][0]["state"]=="BLOCKED_EXTERNAL"
+
+
+def test_pe_authenticode_table_detection(tmp_path):
+    import struct
+    def make_pe(path, cert_size):
+        data=bytearray(512)
+        data[0:2]=b"MZ"
+        struct.pack_into("<I",data,0x3C,0x80)
+        data[0x80:0x84]=b"PE\x00\x00"
+        # COFF header is 20 bytes; optional header starts at 0x98.
+        struct.pack_into("<H",data,0x98,0x10B)
+        security=0x98+96+(4*8)
+        cert_offset=0x180 if cert_size else 0
+        struct.pack_into("<II",data,security,cert_offset,cert_size)
+        if cert_size:
+            if len(data)<cert_offset+cert_size:
+                data.extend(b"\x00"*(cert_offset+cert_size-len(data)))
+        path.write_bytes(data)
+    unsigned=tmp_path/"unsigned.exe"; signed=tmp_path/"signed.exe"
+    make_pe(unsigned,0); make_pe(signed,32)
+    assert q.pe_has_authenticode(unsigned) is False
+    assert q.pe_has_authenticode(signed) is True
+    assert q.verify_signature(str(unsigned),True)[0]=="UNSIGNED_EXPECTED"
