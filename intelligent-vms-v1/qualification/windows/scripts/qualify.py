@@ -84,7 +84,7 @@ def pe_has_authenticode(path:Path)->bool:
     if len(data)<0x40 or data[:2]!=b"MZ":
         return False
     pe_off=struct.unpack_from("<I",data,0x3C)[0]
-    if pe_off+24>len(data) or data[pe_off:pe_off+4]!=b"PE\\0\\0":
+    if pe_off+24>len(data) or data[pe_off:pe_off+4]!=b"PE\\x00\\x00":
         return False
     opt_off=pe_off+24
     magic=struct.unpack_from("<H",data,opt_off)[0]
