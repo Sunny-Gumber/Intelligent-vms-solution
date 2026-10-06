@@ -28,8 +28,9 @@ Default developer density is 200 persistent camera subscriptions/worker. This is
 
 ## Event safety
 
-- Event XAddr and camera-returned PullPoint addresses require the exact tenant/site camera CIDR policy and are pinned to one approved IP before credential-bearing requests.
-- Scoped SOAP requests re-apply site pinning at the final network boundary; missing event scope fails closed rather than falling back to the global allowlist.
+- Event XAddr and camera-returned PullPoint addresses require the exact tenant/site camera CIDR policy; every credential-bearing SOAP request connects to one freshly approved pinned IP.
+- Camera-returned PullPoint addresses are stored as pinned destinations, while their original logical authority is retained for WS-Addressing, HTTP Host and HTTPS SNI/certificate verification.
+- Scoped SOAP requests re-apply site pinning at the final network boundary; a DNS change outside the site is rejected before the HTTP client receives credentials, and missing event scope fails closed rather than falling back to the global allowlist.
 - XML is parsed by defusedxml.
 - SOAP responses are streamed under a cumulative byte cap, including chunked responses without Content-Length.
 - The whole SOAP operation has a bounded deadline; PullMessages keeps explicit headroom over the requested long-poll interval.

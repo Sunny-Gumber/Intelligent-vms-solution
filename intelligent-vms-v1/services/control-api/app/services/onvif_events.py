@@ -4,8 +4,17 @@ import logging
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
-from app.services.network_policy import pin_site_http_xaddr
-from app.services.onvif_client import OnvifError, _first_text, _local, _soap
+from app.services.network_policy import (
+    pin_site_http_xaddr,
+    validate_site_http_xaddr,
+)
+from app.services.onvif_client import (
+    OnvifError,
+    _first_text,
+    _http_authority,
+    _local,
+    _soap,
+)
 
 EVENT_NS = "http://www.onvif.org/ver10/events/wsdl"
 CREATE_ACTION = f"{EVENT_NS}/EventPortType/CreatePullPointSubscriptionRequest"
@@ -24,6 +33,10 @@ class PullPointSubscription:
         tenant_id: Tenant owning the camera and subscription.
         site_id: Site whose camera network may be reached.
         reference_parameters_xml: Optional WS-Addressing reference parameters.
+        logical_address: Original camera-advertised WS-Addressing endpoint.
+        request_host_header: Original HTTP Host authority preserved after IP pinning.
+        tls_server_name: Original HTTPS SNI/certificate hostname preserved after
+            IP pinning.
 
     Returns:
         An immutable subscription descriptor.
@@ -37,6 +50,9 @@ class PullPointSubscription:
     tenant_id: str
     site_id: str
     reference_parameters_xml: str = ""
+    logical_address: str | None = None
+    request_host_header: str | None = None
+    tls_server_name: str | None = None
 
 
 def event_service_xaddr(
@@ -45,7 +61,7 @@ def event_service_xaddr(
     tenant_id: str,
     site_id: str,
 ) -> str | None:
-    """Return the site-approved, IP-pinned ONVIF event-service URL.
+    """Return a site-approved ONVIF event-service URL for final request pinning.
 
     Args:
         services: ONVIF service descriptors discovered from the camera.
@@ -53,7 +69,8 @@ def event_service_xaddr(
         site_id: Site whose camera network may be reached.
 
     Returns:
-        The pinned event-service URL when advertised, otherwise None.
+        The validated camera-advertised event-service URL when present. The final
+        credential-bearing SOAP request re-resolves and IP-pins it atomically.
 
     Raises:
         TargetNotAllowed: If site policy is absent or the URL violates it.
@@ -64,7 +81,7 @@ def event_service_xaddr(
         if "/events/" in namespace or namespace.endswith("/events/wsdl"):
             xaddr = item.get("xaddr")
             if xaddr:
-                return pin_site_http_xaddr(xaddr, tenant_id, site_id)
+                return validate_site_http_xaddr(xaddr, tenant_id, site_id)
     return None
 
 
@@ -92,7 +109,9 @@ def _subscription_from_root(
     address = _first_text(subscription_reference, "Address")
     if not address:
         raise RuntimeError("ONVIF device returned no PullPoint subscription address")
-    address = pin_site_http_xaddr(address, tenant_id, site_id)
+    logical_address = address
+    address = pin_site_http_xaddr(logical_address, tenant_id, site_id)
+    request_host_header, tls_server_name = _http_authority(logical_address)
 
     reference_xml = ""
     reference_parameters = next(
@@ -113,6 +132,9 @@ def _subscription_from_root(
         tenant_id=tenant_id,
         site_id=site_id,
         reference_parameters_xml=reference_xml,
+        logical_address=logical_address,
+        request_host_header=request_host_header,
+        tls_server_name=tls_server_name,
     )
 
 
@@ -199,11 +221,13 @@ async def set_synchronization_point(
         password,
         extra_header_xml=_addressing_header(
             SYNC_ACTION,
-            subscription.address,
+            subscription.logical_address or subscription.address,
             subscription.reference_parameters_xml,
         ),
         tenant_id=subscription.tenant_id,
         site_id=subscription.site_id,
+        request_host_header=subscription.request_host_header,
+        tls_server_name=subscription.tls_server_name,
     )
 
 
@@ -247,11 +271,13 @@ async def pull_messages(
         operation_timeout_seconds=35.0,
         extra_header_xml=_addressing_header(
             PULL_ACTION,
-            subscription.address,
+            subscription.logical_address or subscription.address,
             subscription.reference_parameters_xml,
         ),
         tenant_id=subscription.tenant_id,
         site_id=subscription.site_id,
+        request_host_header=subscription.request_host_header,
+        tls_server_name=subscription.tls_server_name,
     )
 
 
@@ -286,11 +312,13 @@ async def unsubscribe(
             password,
             extra_header_xml=_addressing_header(
                 UNSUBSCRIBE_ACTION,
-                subscription.address,
+                subscription.logical_address or subscription.address,
                 subscription.reference_parameters_xml,
             ),
             tenant_id=subscription.tenant_id,
             site_id=subscription.site_id,
+            request_host_header=subscription.request_host_header,
+            tls_server_name=subscription.tls_server_name,
         )
     except OnvifError as exc:
         # A finite subscription will expire, so a known camera/network cleanup

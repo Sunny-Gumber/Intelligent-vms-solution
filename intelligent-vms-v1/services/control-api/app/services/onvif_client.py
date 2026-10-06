@@ -98,6 +98,31 @@ def _safe_fault_message(root) -> str:
     return "Camera returned an ONVIF SOAP fault"
 
 
+def _http_authority(url: str) -> tuple[str, str]:
+    """Return a safe HTTP Host authority and TLS server name for an ONVIF URL.
+
+    Args:
+        url: Already policy-validated ONVIF HTTP/HTTPS URL.
+
+    Returns:
+        Tuple of HTTP Host authority and TLS server-name hostname.
+
+    Raises:
+        TargetNotAllowed: If the URL has no usable host or has an invalid port.
+    """
+    parsed = urlsplit(url)
+    if not parsed.hostname:
+        raise TargetNotAllowed("invalid ONVIF service URL")
+    hostname = parsed.hostname
+    authority_host = f"[{hostname}]" if ":" in hostname else hostname
+    try:
+        port = parsed.port
+    except ValueError:
+        raise TargetNotAllowed("invalid ONVIF service URL") from None
+    authority = f"{authority_host}:{port}" if port is not None else authority_host
+    return authority, hostname
+
+
 async def _read_bounded_response(response: httpx.Response, max_bytes: int) -> bytes:
     """Read a streamed ONVIF response without exceeding its cumulative byte cap.
 
@@ -148,6 +173,8 @@ async def _soap(
     extra_header_xml: str = "",
     tenant_id: str | None = None,
     site_id: str | None = None,
+    request_host_header: str | None = None,
+    tls_server_name: str | None = None,
 ):
     """Execute one bounded ONVIF SOAP request against an approved camera target.
 
@@ -161,6 +188,10 @@ async def _soap(
         extra_header_xml: Optional additional SOAP header XML.
         tenant_id: Optional tenant for exact site-network enforcement.
         site_id: Optional site for exact camera-network enforcement.
+        request_host_header: Optional original HTTP authority retained while the
+            TCP destination is IP-pinned.
+        tls_server_name: Optional original TLS SNI/certificate hostname retained
+            while the TCP destination is IP-pinned.
 
     Returns:
         Parsed defused XML root for a successful bounded SOAP response.
@@ -173,9 +204,23 @@ async def _soap(
     if (tenant_id is None) != (site_id is None):
         raise TargetNotAllowed("tenant and site scope must be provided together")
     if tenant_id is not None and site_id is not None:
+        logical_xaddr = xaddr
         xaddr = pin_site_http_xaddr(xaddr, tenant_id, site_id)
+        default_host_header, default_tls_server_name = _http_authority(logical_xaddr)
+        request_host_header = request_host_header or default_host_header
+        tls_server_name = tls_server_name or default_tls_server_name
     else:
         validate_http_xaddr(xaddr)
+
+    request_headers = {
+        "Content-Type": f'application/soap+xml; charset=utf-8; action="{action}"',
+        "Accept": "application/soap+xml, text/xml",
+    }
+    if request_host_header:
+        request_headers["Host"] = request_host_header
+    request_extensions = {}
+    if urlsplit(xaddr).scheme == "https" and tls_server_name:
+        request_extensions["sni_hostname"] = tls_server_name
 
     operation_timeout = (
         operation_timeout_seconds or settings.onvif_operation_timeout_seconds
@@ -196,12 +241,8 @@ async def _soap(
                 "POST",
                 xaddr,
                 content=_envelope(body, username, password, extra_header_xml),
-                headers={
-                    "Content-Type": (
-                        f'application/soap+xml; charset=utf-8; action="{action}"'
-                    ),
-                    "Accept": "application/soap+xml, text/xml",
-                },
+                headers=request_headers,
+                extensions=request_extensions,
             ) as response:
                 if response.status_code in {401, 403}:
                     raise OnvifError(

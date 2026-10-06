@@ -174,9 +174,24 @@ def test_same_site_event_lifecycle_preserves_scope_and_poll_headroom(monkeypatch
     async def fake_soap(xaddr, action, body, username, password, **kwargs):
         calls.append((xaddr, action, username, password, kwargs))
         if action == onvif_events.CREATE_ACTION:
-            return _subscription_root("http://10.1.0.9/onvif/subscription")
+            return _subscription_root(
+                "http://pullpoint.example/onvif/subscription"
+            )
         return DET.fromstring(b"<Envelope/>")
 
+    monkeypatch.setattr(
+        network_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("10.1.0.9", 0),
+            )
+        ],
+    )
     monkeypatch.setattr(onvif_events, "_soap", fake_soap)
     event_xaddr = onvif_events.event_service_xaddr(
         EVENT_SERVICES,
@@ -225,11 +240,26 @@ def test_same_site_event_lifecycle_preserves_scope_and_poll_headroom(monkeypatch
     )
 
     assert first.address == "http://10.1.0.9/onvif/subscription"
+    assert first.logical_address == "http://pullpoint.example/onvif/subscription"
+    assert first.request_host_header == "pullpoint.example"
+    assert first.tls_server_name == "pullpoint.example"
     assert retry.tenant_id == "tenant-a" and retry.site_id == "site-a"
     assert all(call[4]["tenant_id"] == "tenant-a" for call in calls)
     assert all(call[4]["site_id"] == "site-a" for call in calls)
+    subscription_calls = [
+        call for call in calls if call[1] != onvif_events.CREATE_ACTION
+    ]
+    assert all(
+        call[4]["request_host_header"] == "pullpoint.example"
+        for call in subscription_calls
+    )
+    assert all(
+        call[4]["tls_server_name"] == "pullpoint.example"
+        for call in subscription_calls
+    )
     pull_call = next(call for call in calls if call[1] == onvif_events.PULL_ACTION)
     assert pull_call[4]["operation_timeout_seconds"] == 35.0
+    assert "pullpoint.example" in pull_call[4]["extra_header_xml"]
 
 
 @pytest.mark.parametrize(
@@ -287,11 +317,65 @@ def test_event_apis_fail_closed_without_required_scope(monkeypatch):
     assert created == []
 
 
-def test_dns_is_pinned_once_and_refused_destination_receives_no_credentials(
-    monkeypatch,
-):
-    """Use the first approved DNS answer as the request target without re-resolution."""
+def test_dns_pin_preserves_http_host_and_https_sni(monkeypatch):
+    """Connect to one approved IP while retaining the camera hostname authority."""
     resolutions = []
+
+    def resolver(host, *_args, **_kwargs):
+        resolutions.append(host)
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("10.1.0.8", 0),
+            )
+        ]
+
+    monkeypatch.setattr(network_policy.socket, "getaddrinfo", resolver)
+    services = [
+        {
+            "namespace": EVENT_SERVICES[0]["namespace"],
+            "xaddr": "https://camera-a.example:8443/onvif/events",
+        }
+    ]
+    logical = onvif_events.event_service_xaddr(
+        services,
+        tenant_id="tenant-a",
+        site_id="site-a",
+    )
+    assert logical == "https://camera-a.example:8443/onvif/events"
+
+    response = _FakeResponse()
+    client_options, requests = _install_client(monkeypatch, response)
+    asyncio.run(
+        onvif_client._soap(
+            logical,
+            "urn:synthetic-action",
+            "<tds:GetDeviceInformation/>",
+            "synthetic-user",
+            "synthetic-password",
+            tenant_id="tenant-a",
+            site_id="site-a",
+        )
+    )
+
+    assert resolutions == ["camera-a.example", "camera-a.example"]
+    assert [request["url"] for request in requests] == [
+        "https://10.1.0.8:8443/onvif/events"
+    ]
+    assert requests[0]["headers"]["Host"] == "camera-a.example:8443"
+    assert requests[0]["extensions"]["sni_hostname"] == "camera-a.example"
+    assert client_options[0]["follow_redirects"] is False
+    assert "verify" not in client_options[0]
+    assert b"synthetic-password" not in requests[0]["content"]
+
+
+def test_dns_change_between_validation_and_request_is_refused(monkeypatch):
+    """Reject a DNS change to another site before the HTTP client sees credentials."""
+    resolutions = []
+    created = []
 
     def resolver(host, *_args, **_kwargs):
         resolutions.append(host)
@@ -306,39 +390,40 @@ def test_dns_is_pinned_once_and_refused_destination_receives_no_credentials(
             )
         ]
 
+    def client_factory(**_kwargs):
+        created.append(True)
+        raise AssertionError("network client must not be created")
+
     monkeypatch.setattr(network_policy.socket, "getaddrinfo", resolver)
+    monkeypatch.setattr(onvif_client.httpx, "AsyncClient", client_factory)
     services = [
         {
             "namespace": EVENT_SERVICES[0]["namespace"],
             "xaddr": "http://camera-a.example/onvif/events",
         }
     ]
-    pinned = onvif_events.event_service_xaddr(
+    logical = onvif_events.event_service_xaddr(
         services,
         tenant_id="tenant-a",
         site_id="site-a",
     )
-    assert pinned == "http://10.1.0.8/onvif/events"
+    assert logical == "http://camera-a.example/onvif/events"
 
-    response = _FakeResponse()
-    client_options, requests = _install_client(monkeypatch, response)
-    asyncio.run(
-        onvif_client._soap(
-            pinned,
-            "urn:synthetic-action",
-            "<tds:GetDeviceInformation/>",
-            "synthetic-user",
-            "synthetic-password",
-            tenant_id="tenant-a",
-            site_id="site-a",
+    with pytest.raises(TargetNotAllowed):
+        asyncio.run(
+            onvif_client._soap(
+                logical,
+                "urn:synthetic-action",
+                "<tds:GetDeviceInformation/>",
+                "synthetic-user",
+                "synthetic-password",
+                tenant_id="tenant-a",
+                site_id="site-a",
+            )
         )
-    )
 
-    assert resolutions == ["camera-a.example"]
-    assert [request["url"] for request in requests] == [pinned]
-    assert client_options[0]["follow_redirects"] is False
-    assert "verify" not in client_options[0]
-    assert b"synthetic-password" not in requests[0]["content"]
+    assert resolutions == ["camera-a.example", "camera-a.example"]
+    assert created == []
 
 
 def test_cross_site_soap_target_is_refused_before_network_client(monkeypatch):
