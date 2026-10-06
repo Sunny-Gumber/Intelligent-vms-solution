@@ -53,7 +53,7 @@ jobs:
       - name: Validate actual media runtime transport and redirect boundaries
         run: |
           python3 -m pip install -r services/control-api/requirements.txt
-          docker compose --env-file .env create --no-deps mediamtx
+          docker compose --env-file .env create mediamtx
           id=$(docker compose --env-file .env ps -aq mediamtx)
           test -n "$id"
           docker cp "$id:/mediamtx" "$RUNNER_TEMP/mediamtx"
