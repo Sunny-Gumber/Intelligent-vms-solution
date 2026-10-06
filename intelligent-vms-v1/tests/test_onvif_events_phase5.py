@@ -83,7 +83,11 @@ def test_unsubscribe_logs_expected_onvif_cleanup_failure(monkeypatch, caplog):
         raise OnvifError("NETWORK_UNREACHABLE", "camera unavailable")
 
     monkeypatch.setattr(onvif_events, "_soap", fail_soap)
-    subscription = PullPointSubscription("http://192.168.1.20/onvif/subscription")
+    subscription = PullPointSubscription(
+        address="http://192.168.1.20/onvif/subscription",
+        tenant_id="tenant-a",
+        site_id="site-a",
+    )
 
     with caplog.at_level(logging.WARNING, logger=onvif_events.__name__):
         asyncio.run(unsubscribe(subscription, None, None))
@@ -98,7 +102,11 @@ def test_unsubscribe_propagates_unexpected_programming_failure(monkeypatch):
         raise RuntimeError("unexpected bug")
 
     monkeypatch.setattr(onvif_events, "_soap", fail_soap)
-    subscription = PullPointSubscription("http://192.168.1.20/onvif/subscription")
+    subscription = PullPointSubscription(
+        address="http://192.168.1.20/onvif/subscription",
+        tenant_id="tenant-a",
+        site_id="site-a",
+    )
 
     with pytest.raises(RuntimeError, match="unexpected bug"):
         asyncio.run(unsubscribe(subscription, None, None))

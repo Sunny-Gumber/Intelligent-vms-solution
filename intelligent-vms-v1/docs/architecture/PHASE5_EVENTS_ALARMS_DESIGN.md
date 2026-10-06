@@ -28,10 +28,11 @@ Default developer density is 200 persistent camera subscriptions/worker. This is
 
 ## Event safety
 
-- XAddr and PullPoint addresses pass the same network allowlist used by camera onboarding.
+- Event XAddr and camera-returned PullPoint addresses require the exact tenant/site camera CIDR policy and are pinned to one approved IP before credential-bearing requests.
+- Scoped SOAP requests re-apply site pinning at the final network boundary; missing event scope fails closed rather than falling back to the global allowlist.
 - XML is parsed by defusedxml.
-- response size is bounded.
-- long-poll operation timeout has explicit headroom.
+- SOAP responses are streamed under a cumulative byte cap, including chunked responses without Content-Length.
+- The whole SOAP operation has a bounded deadline; PullMessages keeps explicit headroom over the requested long-poll interval.
 - exponential retry backoff avoids reconnect storms.
 - WS-Addressing ReferenceParameters returned by the device are preserved.
 - SetSynchronizationPoint is best-effort because vendor behavior varies.

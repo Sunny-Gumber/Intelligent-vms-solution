@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import os
@@ -11,11 +12,11 @@ from defusedxml import ElementTree as DET
 from app.core.config import settings
 from app.services.rtsp import build_rtsp_uri, validate_source_path
 from app.services.network_policy import (
+    TargetNotAllowed,
     pin_site_http_xaddr,
     pin_site_rtsp_uri,
     validate_http_xaddr,
     validate_rtsp_uri,
-    validate_site_http_xaddr,
     validate_site_rtsp_uri,
 )
 
@@ -97,6 +98,45 @@ def _safe_fault_message(root) -> str:
     return "Camera returned an ONVIF SOAP fault"
 
 
+async def _read_bounded_response(response: httpx.Response, max_bytes: int) -> bytes:
+    """Read a streamed ONVIF response without exceeding its cumulative byte cap.
+
+    Args:
+        response: Open streamed HTTP response.
+        max_bytes: Maximum cumulative decoded response bytes to retain.
+
+    Returns:
+        Response payload bytes when the stream completes within the cap.
+
+    Raises:
+        OnvifError: If the declared or streamed response exceeds max_bytes.
+        httpx.HTTPError: If response streaming fails.
+        asyncio.CancelledError: If the surrounding operation is cancelled.
+    """
+    declared = response.headers.get("content-length")
+    if declared is not None:
+        try:
+            declared_bytes = int(declared)
+        except ValueError:
+            declared_bytes = None
+        if declared_bytes is not None and declared_bytes > max_bytes:
+            raise OnvifError(
+                "DEVICE_SERVICE_INVALID",
+                "ONVIF response exceeded configured size limit",
+            )
+
+    payload = bytearray()
+    chunk_size = min(64 * 1024, max(1, max_bytes + 1))
+    async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+        if len(payload) + len(chunk) > max_bytes:
+            raise OnvifError(
+                "DEVICE_SERVICE_INVALID",
+                "ONVIF response exceeded configured size limit",
+            )
+        payload.extend(chunk)
+    return bytes(payload)
+
+
 async def _soap(
     xaddr: str,
     action: str,
@@ -109,40 +149,105 @@ async def _soap(
     tenant_id: str | None = None,
     site_id: str | None = None,
 ):
+    """Execute one bounded ONVIF SOAP request against an approved camera target.
+
+    Args:
+        xaddr: ONVIF HTTP/HTTPS service endpoint.
+        action: SOAP action URI.
+        body: SOAP body XML fragment.
+        username: Optional camera username.
+        password: Optional camera password.
+        operation_timeout_seconds: Optional whole-operation deadline override.
+        extra_header_xml: Optional additional SOAP header XML.
+        tenant_id: Optional tenant for exact site-network enforcement.
+        site_id: Optional site for exact camera-network enforcement.
+
+    Returns:
+        Parsed defused XML root for a successful bounded SOAP response.
+
+    Raises:
+        TargetNotAllowed: If scope is partial or the endpoint violates network policy.
+        OnvifError: If authentication, network, timeout, size, XML or SOAP handling fails.
+        asyncio.CancelledError: If the caller cancels the operation.
+    """
+    if (tenant_id is None) != (site_id is None):
+        raise TargetNotAllowed("tenant and site scope must be provided together")
     if tenant_id is not None and site_id is not None:
-        validate_site_http_xaddr(xaddr, tenant_id, site_id)
+        xaddr = pin_site_http_xaddr(xaddr, tenant_id, site_id)
     else:
         validate_http_xaddr(xaddr)
+
+    operation_timeout = (
+        operation_timeout_seconds or settings.onvif_operation_timeout_seconds
+    )
     timeout = httpx.Timeout(
-        operation_timeout_seconds or settings.onvif_operation_timeout_seconds,
+        operation_timeout,
         connect=settings.onvif_connect_timeout_seconds,
     )
     auth = httpx.DigestAuth(username, password or "") if username else None
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, auth=auth) as client:
-            response = await client.post(
+
+    async def request_and_read() -> tuple[int, bytes]:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=False,
+            auth=auth,
+        ) as soap_client:
+            async with soap_client.stream(
+                "POST",
                 xaddr,
                 content=_envelope(body, username, password, extra_header_xml),
                 headers={
-                    "Content-Type": f'application/soap+xml; charset=utf-8; action="{action}"',
+                    "Content-Type": (
+                        f'application/soap+xml; charset=utf-8; action="{action}"'
+                    ),
                     "Accept": "application/soap+xml, text/xml",
                 },
-            )
-    except httpx.TimeoutException as exc:
-        raise OnvifError("NETWORK_UNREACHABLE", "ONVIF operation timed out", 504) from exc
-    except httpx.HTTPError as exc:
-        raise OnvifError("NETWORK_UNREACHABLE", "ONVIF device could not be reached", 502) from exc
+            ) as response:
+                if response.status_code in {401, 403}:
+                    raise OnvifError(
+                        "AUTH_FAILED",
+                        "Camera rejected ONVIF credentials",
+                        401,
+                    )
+                content = await _read_bounded_response(
+                    response,
+                    settings.onvif_max_response_bytes,
+                )
+                return response.status_code, content
 
-    if response.status_code in {401, 403}:
-        raise OnvifError("AUTH_FAILED", "Camera rejected ONVIF credentials", 401)
-    if len(response.content) > settings.onvif_max_response_bytes:
-        raise OnvifError("DEVICE_SERVICE_INVALID", "ONVIF response exceeded configured size limit")
     try:
-        root = DET.fromstring(response.content)
-    except Exception as exc:
-        raise OnvifError("DEVICE_SERVICE_INVALID", "Camera returned invalid ONVIF XML") from exc
+        status_code, content = await asyncio.wait_for(
+            request_and_read(),
+            timeout=operation_timeout,
+        )
+    except TimeoutError as exc:
+        raise OnvifError(
+            "NETWORK_UNREACHABLE",
+            "ONVIF operation timed out",
+            504,
+        ) from exc
+    except httpx.TimeoutException as exc:
+        raise OnvifError(
+            "NETWORK_UNREACHABLE",
+            "ONVIF operation timed out",
+            504,
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise OnvifError(
+            "NETWORK_UNREACHABLE",
+            "ONVIF device could not be reached",
+            502,
+        ) from exc
 
-    if response.status_code >= 400 or any(_local(el.tag) == "Fault" for el in root.iter()):
+    try:
+        root = DET.fromstring(content)
+    except Exception as exc:
+        raise OnvifError(
+            "DEVICE_SERVICE_INVALID",
+            "Camera returned invalid ONVIF XML",
+        ) from exc
+
+    if status_code >= 400 or any(_local(el.tag) == "Fault" for el in root.iter()):
         raise OnvifError("SOAP_FAULT", _safe_fault_message(root), 502)
     return root
 
