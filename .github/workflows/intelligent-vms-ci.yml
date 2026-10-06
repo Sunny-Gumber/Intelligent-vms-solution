@@ -29,6 +29,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: azure/setup-helm@v4
         with:
           version: v3.16.4
@@ -40,6 +43,10 @@ jobs:
           pip install pyyaml
       - name: Compile Python
         run: python -m compileall -q services tools tests
+      - name: Parse frontend JavaScript and reject prior broken patterns
+        run: |
+          python tools/check_frontend_syntax.py
+          pytest -q tests/test_frontend_syntax.py
       - name: Enforce Python quality gate
         run: |
           ruff check services tools tests

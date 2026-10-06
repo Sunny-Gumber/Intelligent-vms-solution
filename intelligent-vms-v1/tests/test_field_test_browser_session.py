@@ -4,8 +4,10 @@ import hashlib
 import hmac
 import json
 import time
+import secrets
 
 import pytest
+import jwt
 from fastapi import HTTPException, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from starlette.requests import Request
@@ -13,7 +15,7 @@ from starlette.requests import Request
 from app.core.auth import BROWSER_CSRF_COOKIE, BROWSER_SESSION_COOKIE, Principal, get_principal
 from app.core.config import settings
 from app.core.security_posture import validate_security_posture
-from app.routers.auth_session import create_browser_session
+from app.routers.auth_session import create_browser_session, delete_browser_session
 
 
 def _token(secret: str) -> str:
@@ -121,3 +123,44 @@ def test_production_oidc_rejects_insecure_browser_cookie(monkeypatch):
     monkeypatch.setattr(settings, "auth_hs256_secret", "")
     with pytest.raises(RuntimeError, match="secure browser-session cookies"):
         validate_security_posture()
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_browser_exchange_rejects_invalid_signature_or_expired_token(monkeypatch, expired):
+    secret = secrets.token_urlsafe(32)
+    monkeypatch.setattr(settings, "auth_disabled", False)
+    monkeypatch.setattr(settings, "auth_browser_session_enabled", True)
+    monkeypatch.setattr(settings, "auth_hs256_secret", secret)
+    monkeypatch.setattr(settings, "auth_jwks_url", "")
+    monkeypatch.setattr(settings, "auth_issuer", "")
+    monkeypatch.setattr(settings, "auth_audience", "intelligent-vms")
+    token = jwt.encode(
+        {"sub": "temporary", "exp": 0 if expired else 4102444800,
+         "aud": "intelligent-vms", "roles": ["admin"], "tenant_id": "field-test", "site_ids": ["site-01"]},
+        secret if expired else secrets.token_urlsafe(32), algorithm="HS256",
+    )
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(get_principal(_request("POST"), credentials))
+    assert exc.value.status_code == 401
+
+
+def test_cookie_mutation_rejects_mismatched_csrf(monkeypatch):
+    monkeypatch.setattr(settings, "auth_disabled", False)
+    monkeypatch.setattr(settings, "auth_browser_session_enabled", True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(get_principal(_request("DELETE", cookie="vms_session=temporary; vms_csrf=expected", csrf="wrong"), None))
+    assert exc.value.status_code == 403
+
+
+def test_session_logout_clears_both_cookie_paths(monkeypatch):
+    monkeypatch.setattr(settings, "auth_browser_session_cookie_secure", True)
+    response = Response()
+    principal = Principal("temporary", frozenset({"admin"}), "field-test", frozenset({"site-01"}))
+    payload = asyncio.run(delete_browser_session(response, principal))
+    assert payload == {"authenticated": False}
+    cookies = response.headers.getlist("set-cookie")
+    assert len(cookies) == 2
+    assert all("Max-Age=0" in cookie and "SameSite=strict" in cookie and "Secure" in cookie for cookie in cookies)
+    assert any(cookie.startswith("vms_session=") and "Path=/api" in cookie for cookie in cookies)
+    assert any(cookie.startswith("vms_csrf=") and "Path=/;" in cookie for cookie in cookies)

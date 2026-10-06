@@ -1,0 +1,2 @@
+# Test-only headless browser driver; no application/runtime dependency.
+playwright==1.63.0
