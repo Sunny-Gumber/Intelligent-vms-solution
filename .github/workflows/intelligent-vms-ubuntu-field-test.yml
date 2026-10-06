@@ -20,6 +20,20 @@ jobs:
         working-directory: intelligent-vms-v1
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned test-only Chromium driver
+        run: |
+          python3 -m pip install -r tests/requirements-browser.txt -r tests/requirements.txt
+          python3 -m playwright install --with-deps chromium
+      - name: Frontend syntax and prior-defect regression
+        run: |
+          python3 tools/check_frontend_syntax.py
+          python3 -m pytest -q tests/test_frontend_syntax.py
       - name: Generate private field-test configuration
         run: |
           rm -f .env
@@ -41,6 +55,8 @@ jobs:
           docker compose --env-file .env up -d --wait control-api
           docker compose --env-file .env up -d --wait mediamtx web
           bash deploy/field-test/vmsctl.sh health
+      - name: Browser login, session security and camera-form smoke
+        run: python3 tools/field_test_browser_smoke.py --base-url http://127.0.0.1:8080 --env-file .env
       - name: Authenticate and persist state across restart
         run: |
           TOKEN="$(python3 deploy/field-test/mint_access_token.py 2>/dev/null)"

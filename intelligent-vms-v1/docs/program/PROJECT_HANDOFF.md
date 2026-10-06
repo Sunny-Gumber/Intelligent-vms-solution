@@ -1008,3 +1008,15 @@ The 0.2.1 field-test candidate fixes defects found during the first real Windows
 - Server installer stage output is streamed into `setup.log` while the child is running. Safe markers identify PostgreSQL discovery/auth/role/database, Python environment, runtime install, Alembic, service install/start, health and completion.
 - GitHub-only failure injection points exist solely for deterministic retry CI and are inert outside GitHub Actions.
 - Product remains **Release Candidate / External Qualification Pending**. This remediation does not qualify Windows 11, Windows 10, cameras, performance/capacity, or production signing.
+
+
+## Ubuntu / Web UI field-test login blocker — issue #25 — 2026-10-06
+
+- Starting accepted main: `c93e55040b2596c9da21de513037b739c8f6cd3b`; focused branch `fix/ubuntu-web-login-regression`.
+- External Ubuntu 24.04.5.1 Desktop x86_64 smoke passed configuration/preflight/deployment, Compose services, migrations to 0018, health and page load. GUI JavaScript initialization failed; login/camera/live/recording/playback/export were BLOCKED. Functional restart/reboot remains NOT YET TESTED.
+- Source audit fixes four bare API interpolations, literal HTML newline text, ICE whitespace escaping and WHEP slash escaping. Backend authentication, CSRF, JWT/RBAC/tenant/site scope and installer architecture are unchanged.
+- Real Node parsing and prior-broken negative regressions are wired into VMS CI and Ubuntu field-test CI. Pinned test-only Playwright Chromium runs real login/session/security/camera-form smoke against the Ubuntu 22.04/24.04 deployment; a simulated loopback camera is not real-camera evidence.
+- Exact fixing PR, final reviewed head, accepted merge/main SHA and post-merge CI are the acceptance record in [issue #25](https://github.com/Sunny-Gumber/Intelligent-vms-solution/issues/25). Acceptance requires executable green gates and independent QA/review; this document alone does not confer acceptance.
+- Root-cause/source-location map, regression commands and operator retest: `docs/testing/WEB_FIELD_TEST_BROWSER_REGRESSION.md`.
+- After software acceptance STOP engineering work. Resume the existing Ubuntu VM from browser Login at the recorded merge SHA, upgrade and health-check normally, and mint a NEW 600-second token. Never reuse a previously exposed operator token.
+- Product remains **Release Candidate / External Qualification Pending**. Manual Ubuntu functional smoke, Windows 10/11, real cameras/codecs, hardware/capacity and production signing remain external.
