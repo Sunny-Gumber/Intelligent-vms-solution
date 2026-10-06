@@ -22,20 +22,16 @@ $server=Join-Path $payload "server"
 New-Item -ItemType Directory -Force -Path $server|Out-Null
 
 # MediaMTX is a pinned installer build input. Installation itself is offline.
-$mediaVersion="1.21.1"
-$mediaSha="faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"
+$mediaVersion="1.21.1-vms.1"
+$mediaSha="4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046"
 $mediaName="mediamtx_v$($mediaVersion)_windows_amd64.zip"
 if(-not $MediaMTXZip){
   $cache=Join-Path $OutputRoot "build-inputs"
   New-Item -ItemType Directory -Force -Path $cache|Out-Null
   $MediaMTXZip=Join-Path $cache $mediaName
   if(-not (Test-Path $MediaMTXZip)){
-    $partial="$MediaMTXZip.partial"
-    Remove-Item $partial -Force -ErrorAction SilentlyContinue
-    $mediaUrl="https://github.com/bluenviron/mediamtx/releases/download/v$mediaVersion/$mediaName"
-    & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 240 -o $partial $mediaUrl
-    if($LASTEXITCODE -ne 0 -or -not (Test-Path $partial)){throw "Pinned MediaMTX build-input download failed after bounded retries."}
-    Move-Item $partial $MediaMTXZip -Force
+    & python (Join-Path $VmsRoot "tools\build_mediamtx.py") --work (Join-Path $cache "source") --output $MediaMTXZip --target-os windows
+    if($LASTEXITCODE -ne 0){throw "Pinned MediaMTX source build failed."}
   }
 }
 if(-not (Test-Path $MediaMTXZip)){throw "Pinned MediaMTX build input missing: $MediaMTXZip"}

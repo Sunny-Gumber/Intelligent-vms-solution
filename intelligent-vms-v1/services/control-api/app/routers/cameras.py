@@ -43,7 +43,7 @@ from app.services.network_policy import (
     validate_site_camera_rtsp_target,
 )
 from app.services.node_media import NodeEndpointError, assigned_node, node_clients, public_media_bases
-from app.services.rtsp import build_rtsp_uri
+from app.services.rtsp import build_rtsp_uri, source_trust_options
 from app.services.stream_keys import make_role_stream_key, make_stream_key
 
 router = APIRouter(prefix="/api/v1/cameras", tags=["cameras"])
@@ -95,6 +95,8 @@ def to_read(entity: CameraEntity, node: InfrastructureNodeEntity | None = None) 
         group_id=entity.group_id,
         host=entity.host,
         rtsp_port=entity.rtsp_port,
+        source_protocol=entity.source_protocol or "rtsp",
+        source_fingerprint=entity.source_fingerprint,
         stream_key=entity.stream_key,
         third_stream_key=entity.third_stream_key,
         available_live_roles=available_live_roles(entity),
@@ -203,6 +205,8 @@ async def create_camera(
         name=payload.name,
         host=pinned_host,
         rtsp_port=rtsp_port,
+        source_protocol=payload.source_protocol,
+        source_fingerprint=payload.source_fingerprint,
         main_path=main_path,
         sub_path=sub_path,
         third_path=third_path,
@@ -226,13 +230,14 @@ async def create_camera(
                 entity.sub_path or entity.main_path,
                 payload.username,
                 payload.password,
+                source_protocol=getattr(entity, "source_protocol", None) or "rtsp",
             )
             provisioned_keys.append(entity.stream_key)
-            await mediamtx.add_or_replace_path(entity.stream_key, source)
+            await mediamtx.add_or_replace_path(entity.stream_key, source, **source_trust_options(entity))
             if entity.sub_path:
                 main_key = main_live_stream_key(entity)
                 provisioned_keys.append(main_key)
-                await mediamtx.add_or_replace_path(main_key, main_live_source(entity))
+                await mediamtx.add_or_replace_path(main_key, main_live_source(entity), **source_trust_options(entity))
             if entity.third_path and entity.third_stream_key:
                 third_source = build_rtsp_uri(
                     entity.host,
@@ -240,11 +245,13 @@ async def create_camera(
                     entity.third_path,
                     payload.username,
                     payload.password,
+                    source_protocol=getattr(entity, "source_protocol", None) or "rtsp",
                 )
                 provisioned_keys.append(entity.third_stream_key)
                 await mediamtx.add_or_replace_path(
                     entity.third_stream_key,
                     third_source,
+                    **source_trust_options(entity),
                 )
         await session.commit()
     except Exception as exc:
@@ -521,6 +528,10 @@ async def replace_camera(
     snapshot, policy = await prepare_source_mutation(session, camera)
     camera.host = pinned_host
     camera.rtsp_port = rtsp_port
+    # Omitted protocol preserves a secure source; downgrade requires explicit RTSP.
+    if "source_protocol" in payload.model_fields_set:
+        camera.source_protocol = payload.source_protocol
+    camera.source_fingerprint = payload.source_fingerprint
     camera.main_path = main_path
     camera.sub_path = sub_path
     camera.third_path = third_path

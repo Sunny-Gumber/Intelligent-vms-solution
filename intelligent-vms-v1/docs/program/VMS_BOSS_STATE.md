@@ -341,3 +341,14 @@ The 0.2.1 field-test candidate fixes defects found during the first real Windows
 - Root-cause/source-location map, regression commands and operator retest: `docs/testing/WEB_FIELD_TEST_BROWSER_REGRESSION.md`.
 - After software acceptance STOP engineering work. Resume the existing Ubuntu VM from browser Login at the recorded merge SHA, upgrade and health-check normally, and mint a NEW 600-second token. Never reuse a previously exposed operator token.
 - Product remains **Release Candidate / External Qualification Pending**. Manual Ubuntu functional smoke, Windows 10/11, real cameras/codecs, hardware/capacity and production signing remain external.
+
+## Secure RTSP / RTSPS camera source blocker — issue #27 — 2026-10-06
+
+- Starting accepted main: `fd7167d7915185d440913d7c10c38d03aaec89c6`; branch `fix/rtsps-camera-source-support`.
+- Camera `source_protocol` is constrained to RTSP/RTSPS; migration 0019 defaults existing rows to RTSP. Source trust/protocol propagate through creation, replacement, credential rotation, MAIN/SUB/THIRD, authoritative MAIN recording, rollback, distributed reconciliation and restart.
+- Optional explicitly approved certificate SHA-256 pin supports device-generated certificates; normal PKI verification remains the default. There is no silent TLS downgrade or global verification disable.
+- MediaMTX 1.21.1-vms.1 blocks upstream source redirects in both Linux and Windows so credentials cannot move beyond a pinned camera target. Build source/assets/compiler/package checksums and actual runtime TLS/redirect regressions are part of the gates.
+- Supplied CP-UNC-VE21ZL4C-VMDS-Q FFprobe evidence: RTSPS MAIN /0 HEVC 3840×2160 20 FPS and SUB /1 H.264 1920×1080 20 FPS PASS; THIRD /2 NOT QUALIFIED. VMS hardware onboarding/live/recording/recovery remain external, not inferred from the probe or CI.
+- Exact fixing PR, reviewed head, accepted merge/main and post-merge CI acceptance are recorded in [issue #27](https://github.com/Sunny-Gumber/Intelligent-vms-solution/issues/27). This source document alone does not confer acceptance.
+- Operator/trust/build/regression runbook: `docs/operations/SECURE_CAMERA_SOURCES.md`. After accepted post-merge CI, STOP; upgrade the existing Ubuntu VM to the accepted SHA, configure RTSPS /0 + /1, THIRD blank, and manually verify onboarding then SUB live and MAIN recording.
+- Product remains **Release Candidate / External Qualification Pending**. No full camera, THIRD, HEVC-browser, Windows 10/11, capacity or production claim.

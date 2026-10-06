@@ -24,3 +24,7 @@ MANUAL / EXTERNAL require real hardware or operator evidence.
 18. Backup: verify PostgreSQL dump/checksum and explicit media/ClickHouse/secrets exclusions.
 19. Restore drill: on an approved disposable field machine use CONFIRM_RESTORE=YES and verify health.
 20. Result: PASS, FAIL or NOT TESTED. Never convert container automation into Ubuntu Production Qualified or camera qualification.
+
+## Secure source configuration
+
+See [RTSP/RTSPS source and certificate trust](../operations/SECURE_CAMERA_SOURCES.md). Existing sources default to RTSP; select RTSPS explicitly for a secure camera. Recording uses MAIN; normal browser live prefers SUB. Real-camera qualification remains external.

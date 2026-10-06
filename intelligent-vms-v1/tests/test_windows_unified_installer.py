@@ -13,7 +13,7 @@ OPS=(ROOT/"docs/operations/WINDOWS_UNIFIED_FIELD_TEST_SETUP.md").read_text(encod
 
 def test_version_manifest_is_single_bounded_source():
     assert MANIFEST["installer_version"].count(".")==3
-    assert MANIFEST["schema_baseline"]=="0018"
+    assert MANIFEST["schema_baseline"]=="0019"
     assert MANIFEST["status"]=="Release Candidate / External Qualification Pending"
     assert "product-version.json" in BUILD
     assert "ProductVersion" in NSIS and "InstallerVersion" in NSIS
@@ -144,8 +144,10 @@ def test_v021_postgres_discovery_is_systemic_and_validated():
 
 def test_v021_mediamtx_is_bundled_and_install_path_is_offline():
     assert '$mediaName="mediamtx_v$($mediaVersion)_windows_amd64.zip"' in BUILD
-    assert "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23" in BUILD
+    assert "4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046" in BUILD
     assert "build-inputs" in BUILD
+    assert "tools\\build_mediamtx.py" in BUILD
+    assert "github.com/bluenviron/mediamtx/releases" not in BUILD
     assert "deploy\\windows\\runtime" in BUILD
     assert "Bundled MediaMTX runtime is missing from the installer payload." in SERVER_INSTALL
     assert "Bundled MediaMTX checksum mismatch." in SERVER_INSTALL

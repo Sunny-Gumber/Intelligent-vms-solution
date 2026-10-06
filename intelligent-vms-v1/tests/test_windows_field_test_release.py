@@ -168,7 +168,7 @@ def test_windows_installer_is_non_docker_pins_media_and_protects_paths():
     lower = INSTALL.lower()
     assert "docker.exe" not in lower and "docker compose" not in lower
     assert "wsl.exe" not in lower and "wsl --" not in lower
-    assert "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23" in INSTALL
+    assert "4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046" in INSTALL
     assert "function Get-Sha256Hex" in INSTALL
     assert "[Security.Cryptography.SHA256]::Create()" in INSTALL
     assert "$actual = Get-Sha256Hex $mediaZip" in INSTALL
@@ -342,7 +342,7 @@ def test_windows_service_event_log_failure_cannot_kill_service_host():
 def test_windows_mediamtx_integrity_does_not_depend_on_powershell_module_autoload():
     assert "function Get-Sha256Hex" in INSTALL
     assert "Get-FileHash -Algorithm SHA256 -LiteralPath $mediaZip" not in INSTALL
-    assert "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23" in INSTALL
+    assert "4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046" in INSTALL
 
 
 def test_windows_pywin32_layout_probe_avoids_powershell5_inline_python_quoting():

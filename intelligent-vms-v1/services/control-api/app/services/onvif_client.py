@@ -2,13 +2,14 @@ import base64
 import hashlib
 import os
 from datetime import datetime, timezone
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 from xml.sax.saxutils import escape
 
 import httpx
 from defusedxml import ElementTree as DET
 
 from app.core.config import settings
+from app.services.rtsp import build_rtsp_uri, validate_source_path
 from app.services.network_policy import (
     pin_site_http_xaddr,
     pin_site_rtsp_uri,
@@ -345,13 +346,9 @@ def inject_rtsp_credentials(uri: str, username: str | None, password: str | None
     validate_rtsp_uri(uri)
     p = urlsplit(uri)
     host = p.hostname or ""
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    auth = ""
-    if username is not None:
-        auth = f"{quote(username, safe='')}:{quote(password or '', safe='')}@"
-    port = f":{p.port}" if p.port else ""
-    return urlunsplit((p.scheme, f"{auth}{host}{port}", p.path, p.query, ""))
+    path = (p.path or "/") + ("?" + p.query if p.query else "")
+    return build_rtsp_uri(host, p.port or (322 if p.scheme == "rtsps" else 554), path,
+                          username, password, source_protocol=p.scheme)
 
 
 def stream_parts(uri: str) -> tuple[str, int, str]:
@@ -372,6 +369,7 @@ def stream_parts(uri: str) -> tuple[str, int, str]:
     path = p.path or "/"
     if p.query:
         path += "?" + p.query
+    validate_source_path(path)
     default_port = 322 if p.scheme == "rtsps" else 554
     return p.hostname or "", p.port or default_port, path
 

@@ -52,6 +52,10 @@ jobs:
         with:
           python-version: '3.12'
           architecture: 'x64'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache: false
       - name: Install pinned NSIS compiler
         shell: pwsh
         run: |
@@ -389,6 +393,10 @@ jobs:
         working-directory: intelligent-vms-v1
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: fd7167d7915185d440913d7c10c38d03aaec89c6
+          path: accepted-baseline
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
@@ -408,7 +416,8 @@ jobs:
           $record=Join-Path $env:RUNNER_TEMP "IntelligentVMS-Upgrade-Recordings"
           New-Item -ItemType Directory -Force -Path $record|Out-Null
           "upgrade-sentinel"|Set-Content (Join-Path $record "preserve.me")
-          $runtime=Join-Path $PWD "deploy\windows\runtime"
+          $baseline=Join-Path $env:GITHUB_WORKSPACE "accepted-baseline\intelligent-vms-v1"
+          $runtime=Join-Path $baseline "deploy\windows\runtime"
           New-Item -ItemType Directory -Force -Path $runtime|Out-Null
           $media=Join-Path $runtime "mediamtx_v1.21.1_windows_amd64.zip"
           $url="https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/mediamtx_v1.21.1_windows_amd64.zip"
@@ -416,7 +425,7 @@ jobs:
           if($LASTEXITCODE -ne 0 -or -not (Test-Path $media)){throw "Legacy upgrade fixture MediaMTX download failed"}
           $mediaHash=(Get-FileHash -Algorithm SHA256 $media).Hash.ToLowerInvariant()
           if($mediaHash -ne "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"){throw "Legacy upgrade fixture MediaMTX hash mismatch"}
-          .\deploy\windows\Install-WindowsFieldTest.ps1 -RecordingRoot $record -CameraCidr "127.0.0.1/32"
+          & (Join-Path $baseline "deploy\windows\Install-WindowsFieldTest.ps1") -RecordingRoot $record -CameraCidr "127.0.0.1/32"
           .\clients\windows\packaging\Publish-Client.ps1 -Version "0.1.0" -OutputRoot "$env:RUNNER_TEMP\old-client"
           $old=Get-ChildItem "$env:RUNNER_TEMP\old-client\stage" -Directory|Select-Object -First 1
           New-Item -ItemType Directory -Force -Path "$env:ProgramFiles\Intelligent VMS\Client"|Out-Null
@@ -432,6 +441,8 @@ jobs:
           }
           $after=(Get-FileHash "$env:ProgramData\IntelligentVMS\config\vms.env").Hash
           if($before -ne $after){throw "Upgrade replaced protected configuration"}
+          $installedMedia="$env:ProgramData\IntelligentVMS\runtime\mediamtx\mediamtx.exe"
+          if((Get-FileHash -Algorithm SHA256 $installedMedia).Hash.ToLowerInvariant() -ne "bde9af1cdf4d0d662dc93d881ea4e62c3e8b35c019b62bf68de5df9b442561ed"){throw "Upgrade did not replace the accepted-baseline media runtime"}
           if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Upgrade lost recording data"}
           & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Health
           if(-not $?){throw "Upgrade server health failed"}

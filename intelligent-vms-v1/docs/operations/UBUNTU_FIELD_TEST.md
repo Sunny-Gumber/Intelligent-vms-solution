@@ -109,3 +109,7 @@ downgrade.
 Uninstall removes containers/network only; named database volumes, recordings, .env
 and backups are preserved. Follow docs/testing/UBUNTU_FIELD_TEST_SMOKE.md for the
 complete field workflow.
+
+## Secure source configuration
+
+See [RTSP/RTSPS source and certificate trust](../operations/SECURE_CAMERA_SOURCES.md). Existing sources default to RTSP; select RTSPS explicitly for a secure camera. Recording uses MAIN; normal browser live prefers SUB. Real-camera qualification remains external.
