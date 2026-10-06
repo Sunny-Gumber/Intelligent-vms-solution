@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, require_roles, require_scope
+from app.services.rtsp import source_trust_options
 from app.core.config import settings
 from app.core.security import encrypt_secret, decrypt_secret
 from app.db.session import get_session
@@ -315,7 +317,7 @@ async def _apply_managed_profile(
                 },
             )
         host, port, path = stream_parts(profile["_raw_stream_uri"])
-        if (host, port) != (camera.host, camera.rtsp_port):
+        if (host, port, urlsplit(profile["_raw_stream_uri"]).scheme) != (camera.host, camera.rtsp_port, camera.source_protocol or "rtsp"):
             raise HTTPException(
                 422,
                 {
@@ -711,17 +713,18 @@ async def onboard_device(
                 )
 
         main_host, main_port, main_path = stream_parts(main["_raw_stream_uri"])
+        source_protocol = urlsplit(main["_raw_stream_uri"]).scheme
         sub_path = None
         third_path = None
         view_profile = sub if sub and sub.get("_raw_stream_uri") else main
         if sub and sub.get("_raw_stream_uri"):
             sub_host, sub_port, sub_path = stream_parts(sub["_raw_stream_uri"])
-            if (sub_host, sub_port) != (main_host, main_port):
+            if (sub_host, sub_port, urlsplit(sub["_raw_stream_uri"]).scheme) != (main_host, main_port, source_protocol):
                 sub_path = None
                 view_profile = main
         if third and third.get("_raw_stream_uri"):
             third_host, third_port, third_path = stream_parts(third["_raw_stream_uri"])
-            if (third_host, third_port) != (main_host, main_port):
+            if (third_host, third_port, urlsplit(third["_raw_stream_uri"]).scheme) != (main_host, main_port, source_protocol):
                 raise HTTPException(
                     422,
                     {
@@ -737,6 +740,7 @@ async def onboard_device(
             name=payload.name,
             host=main_host,
             rtsp_port=main_port,
+            source_protocol=source_protocol,
             main_path=main_path,
             sub_path=sub_path,
             third_path=third_path,
@@ -773,11 +777,11 @@ async def onboard_device(
                     view_profile["_raw_stream_uri"], payload.username, payload.password
                 )
                 provisioned_keys.append(entity.stream_key)
-                await mediamtx.add_or_replace_path(entity.stream_key, source)
+                await mediamtx.add_or_replace_path(entity.stream_key, source, **source_trust_options(entity))
                 if entity.sub_path:
                     main_key = main_live_stream_key(entity)
                     provisioned_keys.append(main_key)
-                    await mediamtx.add_or_replace_path(main_key, main_live_source(entity))
+                    await mediamtx.add_or_replace_path(main_key, main_live_source(entity), **source_trust_options(entity))
                 if third and entity.third_stream_key:
                     third_source = inject_rtsp_credentials(
                         third["_raw_stream_uri"],
@@ -788,6 +792,7 @@ async def onboard_device(
                     await mediamtx.add_or_replace_path(
                         entity.third_stream_key,
                         third_source,
+                        **source_trust_options(entity),
                     )
             await session.commit()
         except Exception:

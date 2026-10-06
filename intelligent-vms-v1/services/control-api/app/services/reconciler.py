@@ -16,7 +16,7 @@ from app.models.placement import InfrastructureNodeEntity, PlacementAssignmentEn
 from app.services.mediamtx import mediamtx
 from app.services.node_media import NodeEndpointError, node_clients
 from app.services.recording import provision_recording
-from app.services.rtsp import build_rtsp_uri
+from app.services.rtsp import build_rtsp_uri, source_trust_options
 from app.services.stream_keys import make_role_stream_key
 
 log = logging.getLogger(__name__)
@@ -69,6 +69,7 @@ def source_for_camera(camera: CameraEntity) -> str:
         path,
         decrypt_secret(camera.username_enc),
         decrypt_secret(camera.password_enc),
+        source_protocol=getattr(camera, "source_protocol", None) or "rtsp",
     )
 
 
@@ -154,7 +155,7 @@ async def reconcile_batch(
         third_key = camera.third_stream_key or make_role_stream_key(camera.stream_key, "third")
         if _live_path_needs_apply(present, reader_limits, camera.stream_key):
             try:
-                await mediamtx.add_or_replace_path(camera.stream_key, source_for_camera(camera))
+                await mediamtx.add_or_replace_path(camera.stream_key, source_for_camera(camera), **source_trust_options(camera))
                 present.add(camera.stream_key)
                 camera.desired_state = "provisioned"
                 changed += 1
@@ -170,7 +171,7 @@ async def reconcile_batch(
             main_key = main_live_stream_key(camera)
             if _live_path_needs_apply(present, reader_limits, main_key):
                 try:
-                    await mediamtx.add_or_replace_path(main_key, main_live_source(camera))
+                    await mediamtx.add_or_replace_path(main_key, main_live_source(camera), **source_trust_options(camera))
                     present.add(main_key)
                     changed += 1
                 except Exception:
@@ -196,7 +197,7 @@ async def reconcile_batch(
             try:
                 source = third_source(camera)
                 if source is not None:
-                    await mediamtx.add_or_replace_path(camera.third_stream_key, source)
+                    await mediamtx.add_or_replace_path(camera.third_stream_key, source, **source_trust_options(camera))
                     present.add(camera.third_stream_key)
                     changed += 1
             except Exception:
@@ -278,7 +279,7 @@ async def _legacy_reconcile(
         third_key = camera.third_stream_key or make_role_stream_key(camera.stream_key, "third")
         if _live_path_needs_apply(present, reader_limits, camera.stream_key):
             try:
-                await mediamtx.add_or_replace_path(camera.stream_key, source_for_camera(camera))
+                await mediamtx.add_or_replace_path(camera.stream_key, source_for_camera(camera), **source_trust_options(camera))
                 present.add(camera.stream_key)
                 camera.desired_state = "provisioned"
                 changed += 1
@@ -290,7 +291,7 @@ async def _legacy_reconcile(
             main_key = main_live_stream_key(camera)
             if _live_path_needs_apply(present, reader_limits, main_key):
                 try:
-                    await mediamtx.add_or_replace_path(main_key, main_live_source(camera))
+                    await mediamtx.add_or_replace_path(main_key, main_live_source(camera), **source_trust_options(camera))
                     present.add(main_key)
                     changed += 1
                 except Exception:
@@ -316,7 +317,7 @@ async def _legacy_reconcile(
             try:
                 source = third_source(camera)
                 if source is not None:
-                    await mediamtx.add_or_replace_path(camera.third_stream_key, source)
+                    await mediamtx.add_or_replace_path(camera.third_stream_key, source, **source_trust_options(camera))
                     present.add(camera.third_stream_key)
                     changed += 1
             except Exception as exc:
@@ -502,6 +503,7 @@ async def _distributed_reconcile(
                         await client.add_or_replace_path(
                             camera.stream_key,
                             source_for_camera(camera),
+                            **source_trust_options(camera),
                         )
                         present.add(camera.stream_key)
                         main_ready = True
@@ -537,6 +539,7 @@ async def _distributed_reconcile(
                         await client.add_or_replace_path(
                             explicit_main_key,
                             main_live_source(camera),
+                            **source_trust_options(camera),
                         )
                         present.add(explicit_main_key)
                         explicit_main_ready = True
@@ -561,6 +564,7 @@ async def _distributed_reconcile(
                                 await client.add_or_replace_path(
                                     camera.third_stream_key,
                                     source,
+                                    **source_trust_options(camera),
                                 )
                                 present.add(camera.third_stream_key)
                                 third_apply_ok = True

@@ -52,6 +52,10 @@ jobs:
         with:
           python-version: '3.12'
           architecture: 'x64'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache: false
       - name: Install pinned NSIS compiler
         shell: pwsh
         run: |

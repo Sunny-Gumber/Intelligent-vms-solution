@@ -50,6 +50,14 @@ jobs:
         run: |
           docker compose --env-file .env up -d --wait postgres redpanda clickhouse
           docker compose --env-file .env run --rm --no-deps control-api alembic upgrade head
+      - name: Validate actual media runtime transport and redirect boundaries
+        run: |
+          python3 -m pip install -r services/control-api/requirements.txt
+          id=$(docker create "$(docker compose --env-file .env images -q mediamtx)")
+          docker cp "$id:/mediamtx" "$RUNNER_TEMP/mediamtx"
+          docker rm "$id"
+          chmod +x "$RUNNER_TEMP/mediamtx"
+          python3 tools/check_camera_transport_runtime.py --binary "$RUNNER_TEMP/mediamtx"
       - name: Start API before JWT-protected media, then web
         run: |
           docker compose --env-file .env up -d --wait control-api

@@ -1,5 +1,6 @@
 import asyncio
 import shlex
+import re
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -9,6 +10,31 @@ from app.core.config import settings
 
 class MediaMTXError(RuntimeError):
     """Raised when a MediaMTX configuration or API operation cannot be completed."""
+
+
+def source_options(source_uri: str, source_fingerprint: str | None) -> dict:
+    """Validate internal source transport and explicit device certificate trust.
+
+    Args:
+        source_uri: Credential-bearing internal RTSP/RTSPS URI, never returned publicly.
+        source_fingerprint: Optional operator-approved SHA-256 leaf certificate hash.
+
+    Returns:
+        MediaMTX source options, including an empty pin to clear stale configuration.
+
+    Raises:
+        MediaMTXError: If protocol or fingerprint is invalid; input is never echoed.
+    """
+    try:
+        parsed = urlsplit(source_uri)
+        valid = parsed.scheme in {"rtsp", "rtsps"} and bool(parsed.hostname) and (parsed.port is None or 1 <= parsed.port <= 65535)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise MediaMTXError("Invalid camera source transport")
+    if source_fingerprint and (parsed.scheme != "rtsps" or not re.fullmatch(r"[0-9a-fA-F]{64}", source_fingerprint)):
+        raise MediaMTXError("Invalid camera source certificate fingerprint")
+    return {"source": source_uri, "sourceFingerprint": (source_fingerprint or "").lower()}
 
 
 class MediaMTXClient:
@@ -36,12 +62,15 @@ class MediaMTXClient:
                         f"Media node rejected path config: add={add.status_code}, patch={patch.status_code}"
                     )
 
-    async def add_or_replace_path(self, stream_key: str, source_uri: str) -> None:
+    async def add_or_replace_path(
+        self, stream_key: str, source_uri: str, *, source_fingerprint: str | None = None,
+    ) -> None:
         """Create or update one on-demand live stream path.
 
         Args:
             stream_key: MediaMTX path key exposed by the VMS.
             source_uri: Camera/source RTSP URI used by MediaMTX.
+            source_fingerprint: Optional approved RTSPS leaf certificate hash.
 
         Returns:
             None after the path configuration is accepted.
@@ -53,7 +82,7 @@ class MediaMTXClient:
         await self._upsert(
             stream_key,
             {
-                "source": source_uri,
+                **source_options(source_uri, source_fingerprint),
                 "sourceOnDemand": True,
                 "rtspTransport": "tcp",
                 "record": False,
@@ -72,6 +101,7 @@ class MediaMTXClient:
         max_part_size_mb: int,
         recording_node_id: str | None = None,
         assignment_generation: int | None = None,
+        source_fingerprint: str | None = None,
     ) -> None:
         """Create or update one continuous recording path and completion hook.
 
@@ -84,6 +114,7 @@ class MediaMTXClient:
             max_part_size_mb: Maximum fMP4 part size in megabytes.
             recording_node_id: Optional distributed recorder identity included in hooks.
             assignment_generation: Optional fencing generation included in hooks.
+            source_fingerprint: Optional approved RTSPS leaf certificate hash.
 
         Returns:
             None after the recording path configuration is accepted.
@@ -126,7 +157,7 @@ class MediaMTXClient:
         await self._upsert(
             stream_key,
             {
-                "source": source_uri,
+                **source_options(source_uri, source_fingerprint),
                 "sourceOnDemand": False,
                 "rtspTransport": "tcp",
                 "record": True,

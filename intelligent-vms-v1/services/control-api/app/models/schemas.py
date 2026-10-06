@@ -17,11 +17,20 @@ class CameraCreate(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     host: str = Field(min_length=1, max_length=255)
     rtsp_port: int = Field(default=554, ge=1, le=65535)
+    source_protocol: Literal["rtsp", "rtsps"] = "rtsp"
+    source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     main_path: str = Field(min_length=1, max_length=2048)
     sub_path: str | None = Field(default=None, max_length=2048)
     third_path: str | None = Field(default=None, max_length=2048)
     username: str | None = Field(default=None, max_length=512)
     password: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def require_secure_pin(self):
+        """Require explicit RTSPS when approving a device certificate fingerprint."""
+        if self.source_fingerprint and self.source_protocol != "rtsps":
+            raise ValueError("certificate fingerprint requires RTSPS")
+        return self
 
     @field_validator("main_path", "sub_path", "third_path")
     @classmethod
@@ -54,6 +63,8 @@ class CameraRead(BaseModel):
     group_id: str | None = None
     host: str
     rtsp_port: int
+    source_protocol: Literal["rtsp", "rtsps"] = "rtsp"
+    source_fingerprint: str | None = None
     stream_key: str
     third_stream_key: str | None = None
     available_live_roles: list[Literal["main", "sub", "third"]] = Field(default_factory=list)
@@ -129,11 +140,20 @@ class CameraReplacement(BaseModel):
 
     host: str = Field(min_length=1, max_length=255)
     rtsp_port: int = Field(default=554, ge=1, le=65535)
+    source_protocol: Literal["rtsp", "rtsps"] = "rtsp"
+    source_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     main_path: str = Field(min_length=1, max_length=2048)
     sub_path: str | None = Field(default=None, max_length=2048)
     third_path: str | None = Field(default=None, max_length=2048)
     username: str | None = Field(default=None, max_length=512)
     password: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def require_secure_replacement_pin(self):
+        """Require explicit RTSPS when approving the replacement certificate."""
+        if self.source_fingerprint and self.source_protocol != "rtsps":
+            raise ValueError("certificate fingerprint requires RTSPS")
+        return self
 
     @field_validator("main_path", "sub_path", "third_path")
     @classmethod

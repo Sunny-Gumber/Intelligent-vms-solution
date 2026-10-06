@@ -43,7 +43,11 @@ class CameraEntity(TimestampMixin, Base):
     """
 
     __tablename__ = "cameras"
-    __table_args__ = (UniqueConstraint("stream_key", name="uq_camera_stream_key"),)
+    __table_args__ = (
+        UniqueConstraint("stream_key", name="uq_camera_stream_key"),
+        CheckConstraint("source_protocol IN ('rtsp', 'rtsps')", name="ck_camera_source_protocol"),
+        CheckConstraint("source_fingerprint IS NULL OR (source_protocol = 'rtsps' AND length(source_fingerprint) = 64)", name="ck_camera_source_fingerprint"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id: Mapped[str] = mapped_column(String(128), default="default")
@@ -58,6 +62,8 @@ class CameraEntity(TimestampMixin, Base):
     )
     host: Mapped[str] = mapped_column(String(255))
     rtsp_port: Mapped[int] = mapped_column(Integer, default=554)
+    source_protocol: Mapped[str] = mapped_column(String(5), default="rtsp", server_default="rtsp")
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     main_path: Mapped[str] = mapped_column(Text)
     sub_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     third_path: Mapped[str | None] = mapped_column(Text, nullable=True)

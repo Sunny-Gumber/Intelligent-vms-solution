@@ -1,7 +1,7 @@
 from app.core.security import decrypt_secret
 from app.models.entities import CameraEntity, RecordingPolicyEntity
 from app.services.mediamtx import MediaMTXClient, mediamtx
-from app.services.rtsp import build_rtsp_uri
+from app.services.rtsp import build_rtsp_uri, source_trust_options
 
 
 def make_record_stream_key(live_stream_key: str) -> str:
@@ -35,6 +35,7 @@ def recording_source(camera: CameraEntity) -> str:
         camera.main_path,
         decrypt_secret(camera.username_enc),
         decrypt_secret(camera.password_enc),
+        source_protocol=getattr(camera, "source_protocol", None) or "rtsp",
     )
 
 
@@ -75,4 +76,5 @@ async def provision_recording(
         max_part_size_mb=policy.max_part_size_mb,
         recording_node_id=recording_node_id,
         assignment_generation=assignment_generation,
+        **source_trust_options(camera),
     )

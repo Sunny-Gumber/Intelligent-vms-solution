@@ -54,7 +54,9 @@ services:
       start_period: 15s
 
   mediamtx:
-    build: ./infra/mediamtx
+    build:
+      context: .
+      dockerfile: infra/mediamtx/Dockerfile
     restart: "${VMS_RESTART_POLICY:-no}"
     environment:
       RECORDING_HOOK_TOKEN: ${RECORDING_HOOK_TOKEN}

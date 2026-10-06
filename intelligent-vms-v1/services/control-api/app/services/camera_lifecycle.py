@@ -10,7 +10,7 @@ from app.models.entities import CameraEntity, RecordingPolicyEntity
 from app.models.placement import PlacementAssignmentEntity
 from app.services.mediamtx import mediamtx
 from app.services.recording import provision_recording
-from app.services.rtsp import build_rtsp_uri
+from app.services.rtsp import build_rtsp_uri, source_trust_options
 from app.services.stream_keys import make_role_stream_key
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,7 @@ def live_source(camera: CameraEntity) -> str:
         camera.sub_path or camera.main_path,
         decrypt_secret(camera.username_enc),
         decrypt_secret(camera.password_enc),
+        source_protocol=getattr(camera, "source_protocol", None) or "rtsp",
     )
 
 
@@ -61,6 +62,7 @@ def main_live_source(camera: CameraEntity) -> str:
         camera.main_path,
         decrypt_secret(camera.username_enc),
         decrypt_secret(camera.password_enc),
+        source_protocol=getattr(camera, "source_protocol", None) or "rtsp",
     )
 
 
@@ -85,6 +87,7 @@ def third_source(camera: CameraEntity) -> str | None:
         camera.third_path,
         decrypt_secret(camera.username_enc),
         decrypt_secret(camera.password_enc),
+        source_protocol=getattr(camera, "source_protocol", None) or "rtsp",
     )
 
 
@@ -100,6 +103,8 @@ def source_snapshot(camera: CameraEntity) -> dict[str, object]:
     return {
         "host": camera.host,
         "rtsp_port": camera.rtsp_port,
+        "source_protocol": camera.source_protocol or "rtsp",
+        "source_fingerprint": camera.source_fingerprint,
         "main_path": camera.main_path,
         "sub_path": camera.sub_path,
         "third_path": camera.third_path,
@@ -122,6 +127,8 @@ def restore_source_snapshot(camera: CameraEntity, snapshot: dict[str, object]) -
     """
     camera.host = str(snapshot["host"])
     camera.rtsp_port = int(snapshot["rtsp_port"])
+    camera.source_protocol = str(snapshot["source_protocol"])
+    camera.source_fingerprint = snapshot["source_fingerprint"]
     camera.main_path = str(snapshot["main_path"])
     camera.sub_path = snapshot["sub_path"] if snapshot["sub_path"] is None else str(snapshot["sub_path"])
     camera.third_path = (
@@ -185,15 +192,15 @@ async def apply_single_node_source(
     Raises:
         Exception: Propagates MediaMTX, URI, credential-decryption or recording errors.
     """
-    await mediamtx.add_or_replace_path(camera.stream_key, live_source(camera))
+    await mediamtx.add_or_replace_path(camera.stream_key, live_source(camera), **source_trust_options(camera))
     explicit_main_key = make_role_stream_key(camera.stream_key, "main")
     if camera.sub_path:
-        await mediamtx.add_or_replace_path(explicit_main_key, main_live_source(camera))
+        await mediamtx.add_or_replace_path(explicit_main_key, main_live_source(camera), **source_trust_options(camera))
     else:
         await mediamtx.delete_path(explicit_main_key)
     third = third_source(camera)
     if third is not None and camera.third_stream_key:
-        await mediamtx.add_or_replace_path(camera.third_stream_key, third)
+        await mediamtx.add_or_replace_path(camera.third_stream_key, third, **source_trust_options(camera))
     elif camera.third_stream_key:
         await mediamtx.delete_path(camera.third_stream_key)
     if policy is not None and policy.enabled and policy.mode == "continuous":
@@ -265,9 +272,11 @@ async def mark_distributed_source_dirty(
 
 
 def _recording_source_changed(camera: CameraEntity, snapshot: dict[str, object]) -> bool:
+    if (camera.source_protocol or "rtsp") != snapshot["source_protocol"]:
+        return True
     return any(
         getattr(camera, field) != snapshot[field]
-        for field in ("host", "rtsp_port", "main_path", "username_enc", "password_enc")
+        for field in ("host", "rtsp_port", "source_fingerprint", "main_path", "username_enc", "password_enc")
     )
 
 

@@ -51,17 +51,24 @@ jobs:
           if (-not $pg) { throw "Hosted runner PostgreSQL service not found" }
           Write-Host "PostgreSQL service: $($pg.Name)"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache: false
       - name: Prepare pinned MediaMTX direct-script fixture
         shell: pwsh
         run: |
           $runtime=Join-Path $PWD "deploy\windows\runtime"
           New-Item -ItemType Directory -Force -Path $runtime|Out-Null
-          $zip=Join-Path $runtime "mediamtx_v1.21.1_windows_amd64.zip"
-          $url="https://github.com/bluenviron/mediamtx/releases/download/v1.21.1/mediamtx_v1.21.1_windows_amd64.zip"
-          & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 240 -o $zip $url
-          if($LASTEXITCODE -ne 0 -or -not (Test-Path $zip)){throw "Pinned MediaMTX direct-script fixture download failed"}
+          $zip=Join-Path $runtime "mediamtx_v1.21.1-vms.1_windows_amd64.zip"
+          python tools/build_mediamtx.py --work "$env:RUNNER_TEMP/mediamtx-source" --output $zip --target-os windows
+          if($LASTEXITCODE -ne 0){throw "Pinned MediaMTX source build failed"}
           $hash=(Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-          if($hash -ne "faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"){throw "Pinned MediaMTX direct-script fixture hash mismatch"}
+          if($hash -ne "4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046"){throw "Pinned MediaMTX direct-script fixture hash mismatch"}
+          python -m pip install -r services/control-api/requirements.txt
+          Expand-Archive -LiteralPath $zip -DestinationPath "$env:RUNNER_TEMP/media-transport-check" -Force
+          python tools/check_camera_transport_runtime.py --binary "$env:RUNNER_TEMP/media-transport-check/mediamtx.exe"
+          if($LASTEXITCODE -ne 0){throw "Camera transport security runtime test failed"}
 
       - name: Install native VMS field-test profile
         shell: pwsh

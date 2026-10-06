@@ -4,6 +4,7 @@ import socket
 from urllib.parse import urlsplit
 
 from app.core.config import settings
+from app.services.rtsp import validate_source_path
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 
@@ -251,6 +252,10 @@ def validate_camera_rtsp_target(host: str, port: int, path: str) -> tuple[str, i
         TargetNotAllowed: If host, port or path is invalid or disallowed.
         OSError: If DNS resolution fails.
     """
+    try:
+        validate_source_path(path)
+    except ValueError:
+        raise TargetNotAllowed("invalid camera source path") from None
     if not 1 <= port <= 65535:
         raise TargetNotAllowed("invalid RTSP port")
     if not path.startswith("/") or len(path) > 2048:
@@ -285,6 +290,10 @@ def validate_site_camera_rtsp_target(
         TargetNotAllowed: If target fields or site network policy are invalid.
         OSError: If DNS resolution fails.
     """
+    try:
+        validate_source_path(path)
+    except ValueError:
+        raise TargetNotAllowed("invalid camera source path") from None
     if not 1 <= port <= 65535:
         raise TargetNotAllowed("invalid RTSP port")
     if not path.startswith("/") or len(path) > 2048:

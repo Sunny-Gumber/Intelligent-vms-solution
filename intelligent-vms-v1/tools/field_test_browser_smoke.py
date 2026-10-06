@@ -115,7 +115,8 @@ def run_smoke(base_url: str, env_file: Path) -> None:
                 expect(page.locator("#identity")).to_contain_text("field-test")
 
                 payload = {"tenant_id": "field-test", "site_id": "site-01", "name": "Browser CI Loopback Camera",
-                           "host": "127.0.0.1", "rtsp_port": 8554, "main_path": "/browser-ci-main"}
+                           "host": "127.0.0.1", "rtsp_port": 8554, "main_path": "/browser-ci-main",
+                           "source_protocol": "rtsps"}
                 camera_url = base_url + "/api/v1/cameras"
                 for headers in ({}, {"X-VMS-CSRF": "mismatch"}):
                     response = context.request.post(camera_url, data=payload, headers=headers)
@@ -127,6 +128,8 @@ def run_smoke(base_url: str, env_file: Path) -> None:
 
                 page.get_by_role("button", name="Add IP camera", exact=True).click()
                 expect(page.locator("#cameraSetup")).to_be_visible()
+                expect(page.locator("#camProtocol")).to_have_value("rtsp")
+                page.locator("#camProtocol").select_option("rtsps")
                 for field, value in (("camName", payload["name"]), ("camHost", payload["host"]),
                                      ("camPort", "8554"), ("camMain", payload["main_path"])):
                     page.locator("#" + field).fill(value)
@@ -148,6 +151,27 @@ def run_smoke(base_url: str, env_file: Path) -> None:
                 expect(page.locator(".camera-picker").first).to_contain_text(payload["name"])
                 _require(camera_password not in response.text(), "camera API does not expose credentials")
                 camera_id = response.json()["id"]
+                _require(response.json()["source_protocol"] == "rtsps", "public protocol representation")
+                invalid_protocol = context.request.post(camera_url, data={**payload, "source_protocol": "http"}, headers=headers)
+                _require(invalid_protocol.status == 422, "API rejects unsupported source protocol")
+                page.locator("#camOperation").select_option("replace")
+                page.locator("#camExisting").select_option(camera_id)
+                page.locator("#camProtocol").select_option("rtsp")
+                page.locator("#camMain").fill("/browser-ci-replacement-main")
+                page.locator("#camSub").fill("/browser-ci-replacement-sub")
+                with page.expect_response(lambda r: r.url == camera_url + "/" + camera_id + "/replace"
+                                          and r.request.method == "POST") as replaced:
+                    page.get_by_role("button", name="Replace source", exact=True).click()
+                replacement = replaced.value
+                _require(replacement.status == 200 and replacement.json()["id"] == camera_id,
+                         "source replacement preserves identity")
+                _require(replacement.json()["source_protocol"] == "rtsp", "explicit protocol replacement")
+                replacement_body = replacement.request.post_data_json
+                _require("password" not in replacement_body and "username" not in replacement_body,
+                         "replacement keeps encrypted credentials")
+                _require(camera_password not in replacement.text() and all(camera_password not in v for v in [*urls, *console_messages]),
+                         "camera credential browser boundary")
+                expect(page.locator("#camPassword")).to_have_value("")
                 _require(context.request.delete(camera_url + "/" + camera_id, headers=headers).status == 204,
                          "disposable camera cleanup")
 

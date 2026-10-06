@@ -6,7 +6,7 @@
 <title>Intelligent VMS</title>
 <style>
 :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif}
-*{box-sizing:border-box}body{margin:0;background:#090d12;color:#e8eef6}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#090d12;color:#e8eef6}
 header{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;background:#101720;border-bottom:1px solid #26313d;position:sticky;top:0;z-index:5}
 h1,h2{margin:0}h1{font-size:18px}h2{font-size:15px}.sub,.muted{color:#8fa1b3;font-size:12px}
 main{padding:18px}.toolbar,.summary{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
@@ -64,19 +64,24 @@ code{color:#9cdcfe}@media(max-width:720px){.event{grid-template-columns:1fr 1fr}
  <span id="manualStatus" class="muted">No active manual recording</span>
 </div>
 <section id="cameraSetup" class="panel auth-card" style="display:none">
- <div class="pbhead"><div><strong>Add IP / RTSP camera</strong><div class="muted">Uses the existing authorized camera-create API and server-side target validation.</div></div><button onclick="closeCameraSetup()">Close</button></div>
+ <div class="pbhead"><div><strong>IP camera source</strong><div class="muted">RTSPS verifies the device certificate. An optional approved SHA-256 certificate fingerprint trusts that exact device certificate.</div></div><button onclick="closeCameraSetup()">Close</button></div>
  <form class="camera-form" onsubmit="saveCamera(event)">
+  <label><span class="muted">Operation</span><select id="camOperation" onchange="cameraSetupMode()"><option value="create">Add camera</option><option value="replace">Replace existing source</option></select></label>
+  <label id="camExistingLabel" hidden><span class="muted">Existing camera</span><select id="camExisting" onchange="cameraSetupMode()"></select></label>
   <label><span class="muted">Tenant</span><input id="camTenant" value="field-test" required maxlength="128"></label>
   <label><span class="muted">Site</span><input id="camSite" value="site-01" required maxlength="128"></label>
   <label><span class="muted">Name</span><input id="camName" required maxlength="256"></label>
+  <label><span class="muted">Protocol</span><select id="camProtocol"><option value="rtsp">RTSP</option><option value="rtsps">RTSPS</option></select></label>
   <label><span class="muted">Camera host/IP</span><input id="camHost" required maxlength="255"></label>
-  <label><span class="muted">RTSP port</span><input id="camPort" type="number" value="554" min="1" max="65535"></label>
+  <label><span class="muted">RTSP/RTSPS port</span><input id="camPort" type="number" value="554" min="1" max="65535"></label>
+  <label><span class="muted">Approved RTSPS certificate SHA-256 (optional)</span><input id="camFingerprint" maxlength="64" pattern="[0-9a-fA-F]{64}" autocomplete="off"></label>
   <label><span class="muted">MAIN path</span><input id="camMain" required maxlength="2048"></label>
   <label><span class="muted">SUB path</span><input id="camSub" maxlength="2048"></label>
   <label><span class="muted">THIRD path</span><input id="camThird" maxlength="2048"></label>
   <label><span class="muted">Username</span><input id="camUser" autocomplete="username" maxlength="512"></label>
   <label><span class="muted">Password</span><input id="camPassword" type="password" autocomplete="new-password" maxlength="512"></label>
-  <button class="primary" type="submit">Add camera</button>
+  <label id="camKeepLabel" hidden><span class="muted">Keep encrypted credentials on replacement</span><input id="camKeepCredentials" type="checkbox" checked></label>
+  <button id="camSubmit" class="primary" type="submit">Add camera</button>
   <span id="cameraSetupMessage" class="muted"></span>
  </form>
 </section>
@@ -200,7 +205,26 @@ async function signOut(){
  await stopLiveSessions();closePlayback(false);closeCameraSetup();setAuthenticated(false);
  document.getElementById('authMessage').textContent='Signed out. Paste a valid VMS access token to continue.';
 }
-function openCameraSetup(){document.getElementById('cameraSetup').style.display='block';document.getElementById('cameraSetupMessage').textContent=''}
+function openCameraSetup(){
+ document.getElementById('cameraSetup').style.display='block';document.getElementById('cameraSetupMessage').textContent='';
+ document.getElementById('camOperation').value='create';document.getElementById('camProtocol').value='rtsp';
+ document.getElementById('camKeepCredentials').checked=true;document.getElementById('camUser').value='';
+ document.getElementById('camFingerprint').value='';document.getElementById('camPassword').value='';cameraSetupMode();
+}
+function cameraSetupMode(){
+ const replace=document.getElementById('camOperation').value==='replace';
+ for(const id of ['camTenant','camSite','camName'])document.getElementById(id).disabled=replace;
+ document.getElementById('camExistingLabel').hidden=!replace;document.getElementById('camKeepLabel').hidden=!replace;
+ document.getElementById('camSubmit').textContent=replace?'Replace source':'Add camera';
+ if(replace){
+  for(const id of ['camMain','camSub','camThird','camUser','camPassword'])document.getElementById(id).value='';
+  const camera=cameraCache.find(c=>c.id===document.getElementById('camExisting').value);
+  if(camera){
+   for(const [id,value] of [['camTenant',camera.tenant_id],['camSite',camera.site_id],['camName',camera.name],['camHost',camera.host],['camPort',camera.rtsp_port],['camProtocol',camera.source_protocol],['camFingerprint',camera.source_fingerprint||'']])document.getElementById(id).value=value;
+  }
+ }
+ if(replace){document.getElementById('cameraSetupMessage').textContent='Re-enter MAIN/SUB/THIRD paths for this source. Logical identity and recordings are preserved.'}
+}
 function closeCameraSetup(){document.getElementById('cameraSetup').style.display='none';document.getElementById('camPassword').value=''}
 async function saveCamera(event){
  event.preventDefault();
@@ -212,15 +236,26 @@ async function saveCamera(event){
   name:document.getElementById('camName').value.trim(),
   host:document.getElementById('camHost').value.trim(),
   rtsp_port:Number(document.getElementById('camPort').value),
+  source_protocol:document.getElementById('camProtocol').value,
+  source_fingerprint:optional('camFingerprint'),
   main_path:document.getElementById('camMain').value.trim(),
   sub_path:optional('camSub'),third_path:optional('camThird'),
   username:optional('camUser'),password:password.value||null
  };
- message.textContent='Adding camera…';
+ const replace=document.getElementById('camOperation').value==='replace',cameraId=document.getElementById('camExisting').value;
+ if(!['rtsp','rtsps'].includes(payload.source_protocol)){password.value='';message.textContent='Select RTSP or RTSPS.';return}
+ if(payload.source_protocol==='rtsp'&&payload.source_fingerprint){password.value='';message.textContent='Certificate fingerprints require RTSPS.';return}
+ if(replace){
+  if(!cameraId){password.value='';message.textContent='Select an existing camera.';return}
+  delete payload.tenant_id;delete payload.site_id;delete payload.name;
+  if(document.getElementById('camKeepCredentials').checked){delete payload.username;delete payload.password}
+ }
+ message.textContent=replace?'Replacing source…':'Adding camera…';
  try{
-  await jsonFetch(`${API}/cameras`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  message.textContent='Camera added. Select it in an active live tile.';await refreshCameras();
- }catch(e){message.textContent='Camera add failed: '+String(e.message||'request failed')}
+  const url=replace?`${API}/cameras/${encodeURIComponent(cameraId)}/replace`:`${API}/cameras`;
+  await jsonFetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  message.textContent=replace?'Camera source replaced.':'Camera added. Select it in an active live tile.';await refreshCameras();
+ }catch{message.textContent='Camera source request failed. Check target policy, protocol and certificate trust.'}
  finally{password.value=''}
 }
 async function refreshCapabilities(){
@@ -456,6 +491,8 @@ async function setLayout(count){
 async function refreshCameras(){
  try{
   cameraCache=await jsonFetch(`${API}/cameras`);
+  const existing=document.getElementById('camExisting'),selected=existing.value;
+  existing.replaceChildren(new Option('Select camera',''),...cameraCache.map(c=>new Option(c.name,c.id)));existing.value=selected;
   const authorizedIds=new Set(cameraCache.map(c=>c.id));
   for(let i=0;i<liveWorkspace.assignments.length;i++){if(liveWorkspace.assignments[i]&&!authorizedIds.has(liveWorkspace.assignments[i])){await cleanupTile(i);liveWorkspace.assignments[i]=null;liveWorkspace.roles[i]=null}}
   renderLiveGrid();refreshRecordingControls();
