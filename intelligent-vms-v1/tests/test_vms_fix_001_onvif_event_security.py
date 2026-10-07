@@ -694,7 +694,7 @@ def test_digest_small_challenge_then_authenticated_soap_succeeds(monkeypatch):
             )
         return httpx.Response(200, stream=success)
 
-    _install_real_httpx_mock_transport(monkeypatch, handler)
+    clients = _install_real_httpx_mock_transport(monkeypatch, handler)
 
     root = asyncio.run(_soap_call())
     assert root.tag == "Envelope"
@@ -703,6 +703,51 @@ def test_digest_small_challenge_then_authenticated_soap_succeeds(monkeypatch):
     assert requests[1].startswith("Digest ")
     assert challenge.yielded == 1 and challenge.closed is True
     assert success.yielded == 1 and success.closed is True
+    assert clients and all(client.is_closed for client in clients)
+
+
+@pytest.mark.parametrize(
+    "challenge_header",
+    [
+        'Digest realm="synthetic", nonce',
+        'Digest nonce="nonce-1"',
+        'Digest realm="synthetic"',
+        'Digest realm="synthetic", nonce="nonce-1", algorithm=BOGUS',
+        'Digest realm="synthetic", nonce="nonce-1", qop="auth-int"',
+        'Digest realm="synthetic", nonce="nonce-1", qop="bogus"',
+    ],
+)
+def test_digest_invalid_challenge_maps_to_safe_device_error(
+    monkeypatch,
+    caplog,
+    challenge_header,
+):
+    """Normalize pinned HTTPX Digest parser failures without consuming the body."""
+    challenge = _TrackingAsyncByteStream([b"must-not-be-read"])
+    requests = []
+
+    def handler(request):
+        requests.append(request.headers.get("authorization"))
+        return httpx.Response(
+            401,
+            headers={"WWW-Authenticate": challenge_header},
+            stream=challenge,
+        )
+
+    clients = _install_real_httpx_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(OnvifError) as error:
+        asyncio.run(_soap_call())
+
+    assert error.value.code == "DEVICE_SERVICE_INVALID"
+    assert error.value.status_code == 502
+    assert str(error.value) == "Camera returned an invalid HTTP Digest challenge"
+    assert "synthetic-password" not in str(error.value)
+    assert "synthetic-password" not in caplog.text
+    assert requests == [None]
+    assert challenge.yielded == 0
+    assert challenge.closed is True
+    assert clients and all(client.is_closed for client in clients)
 
 
 def test_digest_rejected_credentials_map_auth_failure_and_close(monkeypatch):
