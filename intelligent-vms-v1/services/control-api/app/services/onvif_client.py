@@ -129,6 +129,8 @@ async def _read_bounded_response(response: httpx.Response, max_bytes: int) -> by
     Args:
         response: Open streamed HTTP response.
         max_bytes: Maximum cumulative identity-coded response bytes to retain.
+            Because non-identity content coding is rejected, raw entity bytes and
+            parsed SOAP bytes have the same size.
 
     Returns:
         Response payload bytes when the stream completes within the cap.
@@ -159,8 +161,7 @@ async def _read_bounded_response(response: httpx.Response, max_bytes: int) -> by
             )
 
     payload = bytearray()
-    chunk_size = min(64 * 1024, max(1, max_bytes + 1))
-    async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+    async for chunk in response.aiter_raw():
         if len(payload) + len(chunk) > max_bytes:
             raise OnvifError(
                 "DEVICE_SERVICE_INVALID",
