@@ -47,6 +47,7 @@ jobs:
         env:
           VMS_SECRET_KEY: qa-test-key
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/vmsqa
+          PYTHONPATH: services/control-api
         run: |
           python - <<'PY'
           import asyncio
