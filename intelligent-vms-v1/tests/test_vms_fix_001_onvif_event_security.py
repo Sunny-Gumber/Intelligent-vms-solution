@@ -94,6 +94,10 @@ class _FakeResponse:
         if self.stream_error is not None:
             raise self.stream_error
 
+    async def aiter_raw(self, chunk_size=None):
+        async for chunk in self.aiter_bytes(chunk_size=chunk_size):
+            yield chunk
+
 
 class _FakeClient:
     def __init__(self, response, client_options, requests, **kwargs):
