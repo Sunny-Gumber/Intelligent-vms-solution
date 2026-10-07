@@ -77,7 +77,7 @@ Mutation validates the rule tenant first, then its complete matching target:
   are preserved without granting any new role-based global exemption.
 
 PATCH authorizes both persisted scope and the complete proposed result before
-assigning any ORM field. Omission retains values, duplicate camera IDs normalize
+issuing a conditional database write. Omission retains values, duplicate camera IDs normalize
 to a set, and clearing a null-site camera filter requires all-site authority.
 Explicit nulls for mutable PATCH fields return 422; null is not a reset operation.
 Missing/moved/inconsistent cameras fail closed, including metadata-only changes
@@ -86,15 +86,54 @@ bound or containing malformed identifiers also fail closed before a camera query
 Out-of-scope access uses the existing 404 convention; invalid camera references
 and tenant/site inconsistency use the existing 422 convention.
 
-Concurrency limitation: these checks validate the current transaction's observed
-rule/camera state. No row locking, optimistic version check or serializable
-transaction is added. Concurrent camera moves or rule updates can race validation
-and commit; this fix does not claim isolation across those operations. A later
-camera move also changes effective camera-rule coverage until reconciliation or
-the next mutation check. The matcher continues to treat empty filters as wildcard.
+PATCH (including metadata/enabled changes) and admin soft-delete use the same
+atomic conditional UPDATE: ID, authorized tenant/site/camera filter and observed
+`updated_at` must still match. The UPDATE changes `updated_at` explicitly and
+returns the written row; zero matching rows returns HTTP 409 after rollback.
+Each API write advances the revision by at least one microsecond, including when
+the wall clock repeats or moves backwards; no new version column is necessary.
+No ORM field is dirtied before the comparison, and the response describes this
+write rather than a post-commit refresh that could observe a subsequent writer.
+The scope predicate is explicit, so scope safety does not rely on timestamp
+uniqueness. The timestamp additionally detects ordinary same-scope edits.
+POST creates a new row and cannot invalidate an existing rule's authorization.
+These are all supported rule writers; the alarm worker only reads rules.
+
+PostgreSQL's READ COMMITTED UPDATE rechecks the predicate after a competing
+writer commits. Camera JSON is compared as JSONB (the persisted column remains
+JSON); SQLite compares normalized JSON and its serialized writers either
+recheck the predicate or reject a stale read transaction. Busy/locked,
+serialization/deadlock and statement-deadline failures return 409 after rollback.
+There are no server retries: the caller must retry the entire request, including
+authorization. PostgreSQL transaction-local lock/statement deadlines are 2/5
+seconds; SQLite's connection busy deadline is 2 seconds. Other database dialects
+fail closed with 503. Cancellation propagates and request-session closure rolls
+back unfinished work. No schema/version migration or new endpoint is required.
+
+Validation takes no application row locks. Each write updates exactly one rule,
+so there is no multi-rule/camera lock ordering and no application-wide mutex;
+unrelated PostgreSQL rows proceed independently. SQLite inherently has a single
+database writer, with bounded contention. A stale site-limited mutation after
+all-site broadening conflicts with 409; its fresh retry returns 404, preserving
+the broadening writer's complete persisted row.
+
+Camera tenant/site relocation is not exposed by ordinary camera PATCH. Direct
+database camera relocation/deletion and future lifecycle operations are outside
+this rule-writer transaction guarantee: they must preserve camera identity/scope
+or add their own coordinated validation before being supported. A later camera
+move changes effective matching until reconciliation; this is not a waiver of
+supported concurrent rule writes. Direct SQL that changes rule scope is detected
+by the explicit scope comparison, but arbitrary SQL bypassing revision updates
+does not receive the API's same-scope lost-update guarantee. The matcher continues
+to treat empty filters as wildcard. Existing malformed/stale filters fail closed.
 
 Executable HTTP/persistence matrix: `tests/test_alarm_write_scope.py`. It substitutes
 synthetic identity acquisition only, retaining real role and scope authorization.
+`tests/test_alarm_write_transactions.py` runs independent-session HTTP races and
+persisted-state checks on SQLite and explicitly configured PostgreSQL. Independent
+QA retains its original token-auth/race ordering and security assertion, then
+also executes that matrix and `tests/postgres/alarm_rule_write_contention.py`
+against PostgreSQL 17, including actual lock waits, 409 cleanup and cancellation.
 
 ## Diagnostics
 

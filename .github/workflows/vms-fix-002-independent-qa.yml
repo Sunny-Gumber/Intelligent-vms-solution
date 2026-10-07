@@ -7,6 +7,8 @@ on:
       - 'intelligent-vms-v1/services/control-api/app/routers/alarms.py'
       - 'intelligent-vms-v1/services/control-api/app/models/schemas.py'
       - 'intelligent-vms-v1/tests/test_alarm_write_scope.py'
+      - 'intelligent-vms-v1/tests/test_alarm_write_transactions.py'
+      - 'intelligent-vms-v1/tests/postgres/alarm_rule_write_contention.py'
       - 'intelligent-vms-v1/docs/architecture/PHASE5_EVENTS_ALARMS_DESIGN.md'
       - '.github/workflows/vms-fix-002-independent-qa.yml'
 
@@ -308,3 +310,9 @@ jobs:
 
           asyncio.run(main())
           PY
+      - name: Run independent-session PostgreSQL mutation and contention matrix
+        env:
+          VMS_SECRET_KEY: qa-test-key
+          VMS_ALARM_TRANSACTION_TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/vmsqa
+        run: |
+          pytest -v -s tests/test_alarm_write_transactions.py tests/postgres/alarm_rule_write_contention.py

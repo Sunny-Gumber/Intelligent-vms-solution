@@ -1,7 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import bindparam, cast, func, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, require_roles, require_scope
@@ -28,6 +30,10 @@ router = APIRouter(
 )
 
 _MAX_RULE_CAMERAS = 1000
+_RULE_LOCK_TIMEOUT = "2000ms"
+_RULE_STATEMENT_TIMEOUT = "5000ms"
+_SQLITE_RULE_BUSY_TIMEOUT_MS = 2000
+_RULE_CONFLICT_SQLSTATES = {"55P03", "40P01", "40001", "57014"}
 
 
 def rule_read(row: AlarmRuleEntity) -> AlarmRuleRead:
@@ -223,6 +229,79 @@ async def _authorized_rule(
     return row
 
 
+async def _persist_rule_change(
+    session: AsyncSession, row: AlarmRuleEntity, changes: dict[str, object]
+) -> AlarmRuleRead:
+    """Compare authorized scope and revision atomically with the persisted row.
+
+    No ORM field is assigned before this conditional UPDATE. PostgreSQL
+    rechecks its predicate after a competing writer commits; SQLite serializes
+    writes and either rechecks or rejects a stale read transaction as busy.
+    Returning zero rows is a conflict, never permission to retry blindly.
+    """
+    dialect = session.get_bind().dialect.name
+    expected = bindparam("authorized_cameras", row.camera_ids_json,
+                         type_=AlarmRuleEntity.camera_ids_json.type)
+    if dialect == "postgresql":
+        cameras_match = func.coalesce(
+            cast(AlarmRuleEntity.camera_ids_json, JSONB), cast("null", JSONB)
+        ) == cast(expected, JSONB)
+    elif dialect == "sqlite":
+        cameras_match = func.coalesce(
+            func.json(AlarmRuleEntity.camera_ids_json), "null"
+        ) == func.json(expected)
+    else:
+        # Supported deployments use PostgreSQL or SQLite. Do not silently
+        # substitute an unprotected ORM write on another database.
+        await session.rollback()
+        raise HTTPException(503, "Alarm-rule transactional writes unavailable")
+
+    # SQLite returns naive timestamps. Advance strictly even if the clock steps
+    # backwards or two calls share a microsecond: every API write changes revision.
+    observed_revision = row.updated_at.replace(tzinfo=timezone.utc) if row.updated_at.tzinfo is None else row.updated_at
+    next_revision = max(datetime.now(timezone.utc), observed_revision + timedelta(microseconds=1))
+    statement = (
+        update(AlarmRuleEntity)
+        .where(
+            AlarmRuleEntity.id == row.id,
+            AlarmRuleEntity.tenant_id == row.tenant_id,
+            AlarmRuleEntity.site_id.is_not_distinct_from(row.site_id),
+            cameras_match,
+            AlarmRuleEntity.updated_at == row.updated_at,
+        )
+        .values(**changes, updated_at=next_revision)
+        .returning(AlarmRuleEntity)
+        .execution_options(synchronize_session=False, populate_existing=True)
+    )
+    try:
+        if dialect == "postgresql":
+            # Transaction-local settings also bound table-lock contention and
+            # do not leak into a pooled connection's next request.
+            await session.execute(select(func.set_config("lock_timeout", _RULE_LOCK_TIMEOUT, True)))
+            await session.execute(select(func.set_config("statement_timeout", _RULE_STATEMENT_TIMEOUT, True)))
+        else:
+            # SQLite has database-level writer locking, inherently bounded here.
+            await session.execute(text(f"PRAGMA busy_timeout = {_SQLITE_RULE_BUSY_TIMEOUT_MS}"))
+        written = (await session.execute(statement)).scalar_one_or_none()
+        if written is None:
+            raise HTTPException(409, "Alarm rule changed; retry request")
+        response = rule_read(written)
+        await session.commit()
+        return response
+    except DBAPIError as error:
+        await session.rollback()
+        state = getattr(error.orig, "sqlstate", None)
+        code = getattr(error.orig, "sqlite_errorcode", 0)
+        if state in _RULE_CONFLICT_SQLSTATES or code & 255 in {5, 6}:
+            raise HTTPException(409, "Alarm rule changed or busy; retry request") from None
+        raise
+    except BaseException:
+        # Includes validation/conflict and request cancellation. The dependency
+        # context additionally closes the session on every exit.
+        await session.rollback()
+        raise
+
+
 @router.patch("/rules/{rule_id}", response_model=AlarmRuleRead)
 async def update_rule(
     rule_id: str,
@@ -251,24 +330,13 @@ async def update_rule(
     # scope was independently authorized above; narrowing cannot take it over.
     await _require_rule_write_scope(session, row.tenant_id, row.site_id, camera_ids, principal)
 
-    if "name" in values:
-        row.name = values["name"]
-    if "enabled" in values:
-        row.enabled = values["enabled"]
-    if "event_types" in values:
-        row.event_types_json = sorted(set(values["event_types"]))
-    if "severities" in values:
-        row.severities_json = sorted(set(values["severities"]))
-    if "camera_ids" in values:
-        row.camera_ids_json = sorted(set(values["camera_ids"]))
-    if "alarm_severity" in values:
-        row.alarm_severity = values["alarm_severity"]
-    if "cooldown_seconds" in values:
-        row.cooldown_seconds = values["cooldown_seconds"]
-
-    await session.commit()
-    await session.refresh(row)
-    return rule_read(row)
+    changes = {}
+    for key, value in values.items():
+        if key in {"event_types", "severities", "camera_ids"}:
+            changes[f"{key}_json"] = sorted(set(value))
+        else:
+            changes[key] = value
+    return await _persist_rule_change(session, row, changes)
 
 
 @router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -293,8 +361,7 @@ async def delete_rule(
     row = await _authorized_rule(session, rule_id, principal)
     # Rules are soft-disabled so historical alarm instances retain their
     # referential/audit context.
-    row.enabled = False
-    await session.commit()
+    await _persist_rule_change(session, row, {"enabled": False})
 
 
 @router.get("", response_model=list[AlarmInstanceRead])
