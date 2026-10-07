@@ -892,6 +892,7 @@ def test_worker_exception_log_does_not_expose_digest_parser_challenge(
             stream=challenge,
         )
 
+    worker = _load_onvif_event_worker()
     clients = _install_real_httpx_mock_transport(monkeypatch, handler)
 
     original_async_auth_flow = httpx.DigestAuth.async_auth_flow
@@ -920,7 +921,6 @@ def test_worker_exception_log_does_not_expose_digest_parser_challenge(
         tracked_async_auth_flow,
     )
 
-    worker = _load_onvif_event_worker()
     target = worker.Target(
         camera_id="camera-log-test",
         tenant_id="tenant-a",
