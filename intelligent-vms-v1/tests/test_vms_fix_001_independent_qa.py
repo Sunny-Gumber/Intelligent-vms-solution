@@ -407,3 +407,45 @@ def test_qa_real_tls_handshake_uses_logical_sni_and_host(monkeypatch, tmp_path):
 
     assert root.tag == "Envelope"
     assert seen_hosts == [f"camera-a.example:{port}"]
+
+
+def test_qa_absent_site_policy_fails_closed_for_event_service(monkeypatch):
+    """Reject an event service when its exact tenant/site CIDR policy is absent."""
+    monkeypatch.setattr(settings, "onvif_site_allowed_cidrs_json", "{}")
+    services = [
+        {
+            "namespace": "http://www.onvif.org/ver10/events/wsdl",
+            "xaddr": "http://10.1.0.8/onvif/events",
+        }
+    ]
+    with pytest.raises(TargetNotAllowed):
+        onvif_events.event_service_xaddr(
+            services,
+            tenant_id="tenant-a",
+            site_id="site-a",
+        )
+
+
+def test_qa_real_wait_for_bounds_active_digest_challenge(monkeypatch):
+    """Prove the real scheduler deadline also bounds challenge-body processing."""
+    monkeypatch.setattr(settings, "onvif_max_response_bytes", 1_000_000)
+    challenge = _TrackingStream(active=True)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            401,
+            headers={"WWW-Authenticate": _DIGEST_CHALLENGE},
+            stream=challenge,
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(OnvifError) as error:
+        asyncio.run(_soap_call(operation_timeout_seconds=0.05))
+
+    assert error.value.code == "NETWORK_UNREACHABLE"
+    assert challenge.yielded > 1
+    assert challenge.closed is True
+    assert len(requests) == 1
