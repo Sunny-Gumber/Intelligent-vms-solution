@@ -79,6 +79,9 @@ class _FakeResponse:
     async def __aexit__(self, *_args):
         self.closed = True
 
+    async def aclose(self):
+        self.closed = True
+
     async def aiter_bytes(self, chunk_size=None):
         del chunk_size
         self.started.set()
@@ -104,8 +107,19 @@ class _FakeClient:
     async def __aexit__(self, *_args):
         return None
 
-    def stream(self, method, url, **kwargs):
-        self.requests.append({"method": method, "url": url, **kwargs})
+    def build_request(self, method, url, **kwargs):
+        return httpx.Request(method, url, **kwargs)
+
+    async def send(self, request, **_kwargs):
+        self.requests.append(
+            {
+                "method": request.method,
+                "url": str(request.url),
+                "content": request.content,
+                "headers": request.headers,
+                "extensions": request.extensions,
+            }
+        )
         return self.response
 
 
@@ -759,3 +773,26 @@ def test_digest_challenge_cancellation_closes_real_httpx_stream(monkeypatch):
 
     asyncio.run(scenario())
     assert challenge.closed is True
+
+
+def test_soap_requests_identity_content_coding_and_rejects_encoded_body(monkeypatch):
+    """Prevent hidden content-decoder expansion outside the configured body cap."""
+    encoded = _TrackingAsyncByteStream([b"synthetic-compressed-body"])
+    observed_accept_encoding = []
+
+    def handler(request):
+        observed_accept_encoding.append(request.headers.get("accept-encoding"))
+        return httpx.Response(
+            200,
+            headers={"Content-Encoding": "gzip"},
+            stream=encoded,
+        )
+
+    _install_real_httpx_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(OnvifError) as error:
+        asyncio.run(_soap_call())
+    assert error.value.code == "DEVICE_SERVICE_INVALID"
+    assert observed_accept_encoding == ["identity"]
+    assert encoded.yielded == 0
+    assert encoded.closed is True

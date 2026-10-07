@@ -32,8 +32,9 @@ Default developer density is 200 persistent camera subscriptions/worker. This is
 - Camera-returned PullPoint addresses are stored as pinned destinations, while their original logical authority is retained for WS-Addressing, HTTP Host and HTTPS SNI/certificate verification.
 - Scoped SOAP requests re-apply site pinning at the final network boundary; a DNS change outside the site is rejected before the HTTP client receives credentials, and missing event scope fails closed rather than falling back to the global allowlist.
 - XML is parsed by defusedxml.
-- SOAP responses are streamed under a cumulative byte cap, including chunked responses without Content-Length.
-- The whole SOAP operation has a bounded deadline; PullMessages keeps explicit headroom over the requested long-poll interval.
+- Every consumed HTTP response in an HTTP Digest exchange is streamed under the configured cumulative byte cap before any authenticated retry can be sent; this includes chunked 401 challenges without Content-Length and the final SOAP response. Terminal 401/403 bodies are closed without consumption.
+- Credential-bearing ONVIF requests explicitly request `Accept-Encoding: identity`; non-identity Content-Encoding is rejected before body consumption so HTTP content-decoder expansion cannot bypass the application byte cap. The retained application payload is therefore at most the configured cap per consumed response; the transport may still materialize one transport-delivered chunk before the iterator returns control.
+- The whole SOAP operation, including Digest challenge/retry processing and final response streaming, has a bounded deadline; PullMessages keeps explicit headroom over the requested long-poll interval.
 - exponential retry backoff avoids reconnect storms.
 - WS-Addressing ReferenceParameters returned by the device are preserved.
 - SetSynchronizationPoint is best-effort because vendor behavior varies.

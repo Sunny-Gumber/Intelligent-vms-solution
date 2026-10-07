@@ -128,16 +128,24 @@ async def _read_bounded_response(response: httpx.Response, max_bytes: int) -> by
 
     Args:
         response: Open streamed HTTP response.
-        max_bytes: Maximum cumulative decoded response bytes to retain.
+        max_bytes: Maximum cumulative identity-coded response bytes to retain.
 
     Returns:
         Response payload bytes when the stream completes within the cap.
 
     Raises:
-        OnvifError: If the declared or streamed response exceeds max_bytes.
+        OnvifError: If content coding is not identity or the declared/streamed
+            response exceeds max_bytes.
         httpx.HTTPError: If response streaming fails.
         asyncio.CancelledError: If the surrounding operation is cancelled.
     """
+    content_encoding = response.headers.get("content-encoding")
+    if content_encoding and content_encoding.strip().lower() != "identity":
+        raise OnvifError(
+            "DEVICE_SERVICE_INVALID",
+            "ONVIF response used unsupported content encoding",
+        )
+
     declared = response.headers.get("content-length")
     if declared is not None:
         try:
@@ -160,6 +168,71 @@ async def _read_bounded_response(response: httpx.Response, max_bytes: int) -> by
             )
         payload.extend(chunk)
     return bytes(payload)
+
+
+async def _send_bounded_digest_exchange(
+    client: httpx.AsyncClient,
+    request: httpx.Request,
+    auth: httpx.DigestAuth | None,
+    max_bytes: int,
+) -> tuple[int, bytes]:
+    """Run one HTTP/Digest exchange while bounding every consumed response body.
+
+    Args:
+        client: Open HTTPX client with redirects disabled and normal TLS verification.
+        request: Prepared credential-bearing ONVIF request.
+        auth: Optional HTTP Digest authentication flow for camera credentials.
+        max_bytes: Maximum bytes consumed from each challenge or terminal response.
+
+    Returns:
+        Final HTTP status code and bounded response content. Terminal 401/403 bodies
+        are not consumed, so their application body-read bound is zero bytes.
+
+    Raises:
+        OnvifError: If any consumed challenge or terminal response exceeds max_bytes.
+        httpx.HTTPError: If request, authentication or response streaming fails.
+        asyncio.CancelledError: If the surrounding operation is cancelled.
+
+    Notes:
+        HTTPX 0.28.x reads intermediate authentication responses inside its normal
+        client auth loop. Driving DigestAuth.async_auth_flow here lets the caller
+        bound a 401 challenge before the authenticated retry is sent. The auth flow
+        inspects only status/headers; response bodies remain under this function's
+        control.
+    """
+    auth_flow = auth.async_auth_flow(request) if auth is not None else None
+    try:
+        next_request = await auth_flow.__anext__() if auth_flow is not None else request
+        while True:
+            response = await client.send(
+                next_request,
+                stream=True,
+                auth=None,
+                follow_redirects=False,
+            )
+            try:
+                status_code = response.status_code
+                if auth_flow is None:
+                    if status_code in {401, 403}:
+                        return status_code, b""
+                    content = await _read_bounded_response(response, max_bytes)
+                    return status_code, content
+
+                try:
+                    following_request = await auth_flow.asend(response)
+                except StopAsyncIteration:
+                    if status_code in {401, 403}:
+                        return status_code, b""
+                    content = await _read_bounded_response(response, max_bytes)
+                    return status_code, content
+
+                await _read_bounded_response(response, max_bytes)
+                next_request = following_request
+            finally:
+                await response.aclose()
+    finally:
+        if auth_flow is not None:
+            await auth_flow.aclose()
 
 
 async def _soap(
@@ -215,6 +288,7 @@ async def _soap(
     request_headers = {
         "Content-Type": f'application/soap+xml; charset=utf-8; action="{action}"',
         "Accept": "application/soap+xml, text/xml",
+        "Accept-Encoding": "identity",
     }
     if request_host_header:
         request_headers["Host"] = request_host_header
@@ -235,26 +309,27 @@ async def _soap(
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=False,
-            auth=auth,
         ) as soap_client:
-            async with soap_client.stream(
+            request = soap_client.build_request(
                 "POST",
                 xaddr,
                 content=_envelope(body, username, password, extra_header_xml),
                 headers=request_headers,
                 extensions=request_extensions,
-            ) as response:
-                if response.status_code in {401, 403}:
-                    raise OnvifError(
-                        "AUTH_FAILED",
-                        "Camera rejected ONVIF credentials",
-                        401,
-                    )
-                content = await _read_bounded_response(
-                    response,
-                    settings.onvif_max_response_bytes,
+            )
+            status_code, content = await _send_bounded_digest_exchange(
+                soap_client,
+                request,
+                auth,
+                settings.onvif_max_response_bytes,
+            )
+            if status_code in {401, 403}:
+                raise OnvifError(
+                    "AUTH_FAILED",
+                    "Camera rejected ONVIF credentials",
+                    401,
                 )
-                return response.status_code, content
+            return status_code, content
 
     try:
         status_code, content = await asyncio.wait_for(
