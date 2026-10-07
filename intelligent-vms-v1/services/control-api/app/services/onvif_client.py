@@ -231,12 +231,12 @@ async def _send_bounded_digest_exchange(
                     ValueError,
                     KeyError,
                     NotImplementedError,
-                ) as exc:
+                ):
                     raise OnvifError(
                         "DEVICE_SERVICE_INVALID",
                         "Camera returned an invalid HTTP Digest challenge",
                         502,
-                    ) from exc
+                    ) from None
 
                 await _read_bounded_response(response, max_bytes)
                 next_request = following_request
