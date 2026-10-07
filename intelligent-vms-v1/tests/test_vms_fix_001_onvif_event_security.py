@@ -681,8 +681,8 @@ def test_digest_small_challenge_then_authenticated_soap_succeeds(monkeypatch):
     requests = []
 
     def handler(request):
-        requests.append(request)
-        if "authorization" not in request.headers:
+        requests.append(request.headers.get("authorization"))
+        if request.headers.get("authorization") is None:
             return httpx.Response(
                 401,
                 headers={"WWW-Authenticate": _DIGEST_CHALLENGE},
@@ -695,8 +695,8 @@ def test_digest_small_challenge_then_authenticated_soap_succeeds(monkeypatch):
     root = asyncio.run(_soap_call())
     assert root.tag == "Envelope"
     assert len(requests) == 2
-    assert "authorization" not in requests[0].headers
-    assert requests[1].headers["authorization"].startswith("Digest ")
+    assert requests[0] is None
+    assert requests[1].startswith("Digest ")
     assert challenge.yielded == 1 and challenge.closed is True
     assert success.yielded == 1 and success.closed is True
 
