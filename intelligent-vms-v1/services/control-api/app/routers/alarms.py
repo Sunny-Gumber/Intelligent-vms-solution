@@ -1,10 +1,12 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import bindparam, cast, func, select, text, update
+from sqlalchemy import bindparam, cast, func, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
+from sqlalchemy.sql.dml import Update
 
 from app.core.auth import Principal, require_roles, require_scope
 from app.core.config import settings
@@ -33,6 +35,7 @@ _MAX_RULE_CAMERAS = 1000
 _RULE_LOCK_TIMEOUT = "2000ms"
 _RULE_STATEMENT_TIMEOUT = "5000ms"
 _SQLITE_RULE_BUSY_TIMEOUT_MS = 2000
+_SQLITE_POLICY_CLEANUP_SECONDS = 5
 _RULE_CONFLICT_SQLSTATES = {"55P03", "40P01", "40001", "57014"}
 
 
@@ -105,11 +108,16 @@ async def _validate_cameras(
     if not camera_ids:
         return
     unique = sorted(set(camera_ids))
-    rows = (
-        await session.execute(select(CameraEntity).where(CameraEntity.id.in_(unique)))
-    ).scalars().all()
+    # Resolve only references visible to this caller. A missing or inaccessible
+    # ID has the same outward denial, including mixed batches and legacy filters.
+    query = select(CameraEntity).where(CameraEntity.id.in_(unique))
+    if principal.tenant_id != "*":
+        query = query.where(CameraEntity.tenant_id == principal.tenant_id)
+    if "*" not in principal.site_ids:
+        query = query.where(CameraEntity.site_id.is_(None) | CameraEntity.site_id.in_(principal.site_ids))
+    rows = (await session.execute(query)).scalars().all()
     if len(rows) != len(unique):
-        raise HTTPException(422, "One or more alarm-rule camera IDs do not exist")
+        raise HTTPException(404, "Resource not found")
     for camera in rows:
         require_scope(principal, camera.tenant_id, camera.site_id)
         if camera.tenant_id != tenant_id:
@@ -229,6 +237,69 @@ async def _authorized_rule(
     return row
 
 
+async def _restore_sqlite_policy(connection: AsyncConnection, previous_timeout: int) -> None:
+    """Finish cleanup on the owned connection before it can return to the pool.
+
+    Shield one bounded cleanup task, including repeated request cancellation.
+    Restoration failure invalidates the physical connection; an already
+    invalidated connection must never trigger a fresh checkout for restoration.
+    """
+    async def restore() -> None:
+        try:
+            async with asyncio.timeout(_SQLITE_POLICY_CLEANUP_SECONDS):
+                await connection.rollback()
+                if not connection.invalidated:
+                    await connection.exec_driver_sql(f"PRAGMA busy_timeout = {previous_timeout}")
+                    await connection.rollback()
+        except BaseException:
+            await connection.invalidate()
+            raise
+
+    cleanup = asyncio.create_task(restore())
+    cancellation = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as error:
+            cancellation = error
+    cleanup.result()
+    if cancellation is not None:
+        raise cancellation
+
+
+async def _commit_rule_change(session: AsyncSession, statement: Update) -> AlarmRuleRead:
+    """Execute the conditional statement and construct the response before commit."""
+    written = (await session.execute(statement)).scalar_one_or_none()
+    if written is None:
+        raise HTTPException(409, "Alarm rule changed; retry request")
+    response = rule_read(written)
+    await session.commit()
+    return response
+
+
+async def _sqlite_rule_change(session: AsyncSession, statement: Update) -> AlarmRuleRead:
+    """Own the SQLite connection across transaction end and policy restoration."""
+    engine = session.bind
+    if not isinstance(engine, AsyncEngine):
+        # Repository request sessions are engine-bound. Do not acquire an
+        # arbitrary second connection for externally owned transaction sessions.
+        raise HTTPException(503, "Alarm-rule transactional writes unavailable")
+    # The conditional statement already captured every authorized value. Release
+    # the read transaction before owning a write checkout, including pool_size=1.
+    await session.rollback()
+    async with engine.connect() as connection:
+        previous_timeout = (await connection.exec_driver_sql("PRAGMA busy_timeout")).scalar_one()
+        try:
+            await connection.exec_driver_sql(f"PRAGMA busy_timeout = {_SQLITE_RULE_BUSY_TIMEOUT_MS}")
+            # Connection ownership stays here even when the bound session commits
+            # or rolls back. control_fully includes the PRAGMA's autobegun transaction.
+            async with AsyncSession(bind=connection, expire_on_commit=False,
+                                    join_transaction_mode="control_fully") as writer:
+                return await _commit_rule_change(writer, statement)
+        finally:
+            await _restore_sqlite_policy(connection, previous_timeout)
+
+
 async def _persist_rule_change(
     session: AsyncSession, row: AlarmRuleEntity, changes: dict[str, object]
 ) -> AlarmRuleRead:
@@ -279,15 +350,8 @@ async def _persist_rule_change(
             # do not leak into a pooled connection's next request.
             await session.execute(select(func.set_config("lock_timeout", _RULE_LOCK_TIMEOUT, True)))
             await session.execute(select(func.set_config("statement_timeout", _RULE_STATEMENT_TIMEOUT, True)))
-        else:
-            # SQLite has database-level writer locking, inherently bounded here.
-            await session.execute(text(f"PRAGMA busy_timeout = {_SQLITE_RULE_BUSY_TIMEOUT_MS}"))
-        written = (await session.execute(statement)).scalar_one_or_none()
-        if written is None:
-            raise HTTPException(409, "Alarm rule changed; retry request")
-        response = rule_read(written)
-        await session.commit()
-        return response
+            return await _commit_rule_change(session, statement)
+        return await _sqlite_rule_change(session, statement)
     except DBAPIError as error:
         await session.rollback()
         state = getattr(error.orig, "sqlstate", None)

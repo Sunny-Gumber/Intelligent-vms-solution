@@ -112,7 +112,8 @@ def test_entire_existing_scope_required_and_denials_preserve_rows(role, method, 
             async with sessions() as session:
                 before = _state(await session.get(AlarmRuleEntity, "rule"))
             response = await client.request(method, "/api/v1/alarms/rules/rule", json=changes)
-            assert response.status_code in {404, 422}
+            assert response.status_code == 404
+            assert response.json() == {"detail": "Resource not found"}
             async with sessions() as session:
                 assert _state(await session.get(AlarmRuleEntity, "rule")) == before
     asyncio.run(scenario())
@@ -150,11 +151,13 @@ def test_invalid_camera_sets_reject_create_and_patch_without_changes(camera_ids,
             created = await client.post(
                 "/api/v1/alarms/rules", json=_payload(site_id=site, camera_ids=camera_ids)
             )
-            assert created.status_code in {404, 422}
+            assert created.status_code == 404
+            assert created.json() == {"detail": "Resource not found"}
             updated = await client.patch(
                 "/api/v1/alarms/rules/rule", json={"name": "Changed", "camera_ids": camera_ids}
             )
-            assert updated.status_code in {404, 422}
+            assert updated.status_code == 404
+            assert updated.json() == {"detail": "Resource not found"}
             async with sessions() as session:
                 assert _state(await session.get(AlarmRuleEntity, "rule")) == before
                 assert len((await session.execute(select(AlarmRuleEntity))).scalars().all()) == 1
@@ -338,7 +341,10 @@ def test_all_site_identity_fails_closed_on_invalid_existing_references(cameras):
             async with sessions() as session:
                 before = _state(await session.get(AlarmRuleEntity, "rule"))
             response = await client.delete("/api/v1/alarms/rules/rule")
-            assert response.status_code in {404, 422}
+            malformed = len(cameras) > 1000 or any(not isinstance(camera, str) for camera in cameras)
+            assert response.status_code == (422 if malformed else 404)
+            assert response.json() == {"detail": (
+                "Invalid alarm-rule camera filter" if malformed else "Resource not found")}
             async with sessions() as session:
                 assert _state(await session.get(AlarmRuleEntity, "rule")) == before
     asyncio.run(scenario())

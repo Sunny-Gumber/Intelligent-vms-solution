@@ -83,8 +83,12 @@ Explicit nulls for mutable PATCH fields return 422; null is not a reset operatio
 Missing/moved/inconsistent cameras fail closed, including metadata-only changes
 and soft-delete. Persisted camera filters exceeding the current 1000-entry API
 bound or containing malformed identifiers also fail closed before a camera query.
-Out-of-scope access uses the existing 404 convention; invalid camera references
-and tenant/site inconsistency use the existing 422 convention.
+Camera IDs resolve through one query restricted to the caller's tenant/site scope.
+Well-formed unknown IDs and inaccessible IDs return the same HTTP 404
+`Resource not found`, including mixed batches, current rule references and proposed
+filters. No inaccessible ID is omitted or treated as success. Malformed input
+still returns 422; tenant/site inconsistency among cameras already visible to the
+caller also returns 422. Shared read visibility and role gates are unchanged.
 
 PATCH (including metadata/enabled changes) and admin soft-delete use the same
 atomic conditional UPDATE: ID, authorized tenant/site/camera filter and observed
@@ -106,9 +110,21 @@ recheck the predicate or reject a stale read transaction. Busy/locked,
 serialization/deadlock and statement-deadline failures return 409 after rollback.
 There are no server retries: the caller must retry the entire request, including
 authorization. PostgreSQL transaction-local lock/statement deadlines are 2/5
-seconds; SQLite's connection busy deadline is 2 seconds. Other database dialects
+seconds; SQLite's conditional PATCH/soft-delete busy deadline is 2 seconds. Other database dialects
 fail closed with 503. Cancellation propagates and request-session closure rolls
 back unfinished work. No schema/version migration or new endpoint is required.
+
+SQLite policy is contained to an explicitly owned write connection. The authorized
+scope/revision values are captured in the conditional statement before the read
+transaction is rolled back. A connection-bound write session then commits or rolls
+back while its external connection owner retains the physical checkout. The actual
+prior `busy_timeout` is restored on that connection before pool return. Restoration
+uses a shielded, bounded cleanup task; failures invalidate the physical connection
+instead of returning dirty state. Invalidated connections never trigger a fresh
+checkout just to restore policy. Unrelated routes keep their prior SQLite policy;
+no central timeout policy was changed. These are database busy/cleanup deadlines,
+not whole-request deadlines. Cleanup failure after commit can prevent delivery of
+the success response; it cannot undo an already committed transaction.
 
 Validation takes no application row locks. Each write updates exactly one rule,
 so there is no multi-rule/camera lock ordering and no application-wide mutex;
@@ -117,10 +133,14 @@ database writer, with bounded contention. A stale site-limited mutation after
 all-site broadening conflicts with 409; its fresh retry returns 404, preserving
 the broadening writer's complete persisted row.
 
-Camera tenant/site relocation is not exposed by ordinary camera PATCH. Direct
-database camera relocation/deletion and future lifecycle operations are outside
-this rule-writer transaction guarantee: they must preserve camera identity/scope
-or add their own coordinated validation before being supported. A later camera
+Ordinary camera PATCH does not relocate tenant/site. Supported camera DELETE can
+leave explicit alarm-rule references missing; it does not clear the nonempty
+filter or turn it into wildcard coverage. Subsequent rule mutation fails closed
+with the same 404 used for any inaccessible/unknown reference. No reference-repair
+bypass is provided. Concurrent deletion is not coordinated with rule validation.
+Direct database relocation and future scope-changing lifecycle operations are
+outside this rule-writer transaction guarantee: they must preserve camera identity/
+scope or add coordinated validation before being supported. A later camera
 move changes effective matching until reconciliation; this is not a waiver of
 supported concurrent rule writes. Direct SQL that changes rule scope is detected
 by the explicit scope comparison, but arbitrary SQL bypassing revision updates
@@ -134,6 +154,10 @@ persisted-state checks on SQLite and explicitly configured PostgreSQL. Independe
 QA retains its original token-auth/race ordering and security assertion, then
 also executes that matrix and `tests/postgres/alarm_rule_write_contention.py`
 against PostgreSQL 17, including actual lock waits, 409 cleanup and cancellation.
+`tests/test_alarm_reference_confidentiality.py` compares exact public status/body
+and persistence across unknown, other-tenant and unauthorized-site references.
+`tests/test_alarm_sqlite_connection_policy.py` exercises physical pool reuse on the
+pinned SQLAlchemy/aiosqlite stack, non-default prior policy, contention and cleanup.
 
 ## Diagnostics
 
