@@ -1,7 +1,11 @@
 """VMS-FIX-001 ONVIF event confinement and bounded-response regressions."""
 
 import asyncio
+import importlib.util
+import logging
+from pathlib import Path
 import socket
+import sys
 
 import httpx
 import pytest
@@ -845,3 +849,106 @@ def test_soap_requests_identity_content_coding_and_rejects_encoded_body(monkeypa
     assert observed_accept_encoding == ["identity"]
     assert encoded.yielded == 0
     assert encoded.closed is True
+
+
+_SENSITIVE_DIGEST_LOG_MARKER = "SYNTHETIC-PASSWORD-DO-NOT-LOG"
+
+
+def _load_onvif_event_worker():
+    """Load the real event-worker module for operational logging regressions."""
+    module_name = "vms_fix_001_onvif_event_worker"
+    worker_path = (
+        Path(__file__).resolve().parents[1]
+        / "services"
+        / "onvif-event-worker"
+        / "main.py"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, worker_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_worker_exception_log_does_not_expose_digest_parser_challenge(
+    monkeypatch,
+    caplog,
+):
+    """Keep camera-controlled Digest parser details out of worker traceback logs."""
+    challenge = _TrackingAsyncByteStream([b"must-not-be-read"])
+    requests = []
+
+    def handler(request):
+        requests.append(request.headers.get("authorization"))
+        return httpx.Response(
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    'Digest realm="synthetic", nonce="nonce-1", algorithm='
+                    f"{_SENSITIVE_DIGEST_LOG_MARKER}"
+                )
+            },
+            stream=challenge,
+        )
+
+    clients = _install_real_httpx_mock_transport(monkeypatch, handler)
+
+    original_async_auth_flow = httpx.DigestAuth.async_auth_flow
+    auth_flow_closed = []
+
+    def tracked_async_auth_flow(self, request):
+        inner = original_async_auth_flow(self, request)
+
+        async def proxy():
+            try:
+                outbound = await inner.__anext__()
+                while True:
+                    response = yield outbound
+                    outbound = await inner.asend(response)
+            except StopAsyncIteration:
+                return
+            finally:
+                await inner.aclose()
+                auth_flow_closed.append(True)
+
+        return proxy()
+
+    monkeypatch.setattr(
+        httpx.DigestAuth,
+        "async_auth_flow",
+        tracked_async_auth_flow,
+    )
+
+    worker = _load_onvif_event_worker()
+    target = worker.Target(
+        camera_id="camera-log-test",
+        tenant_id="tenant-a",
+        site_id="site-a",
+        media_node_id="node-a",
+        username="synthetic-user",
+        password="synthetic-password",
+        event_xaddr="http://10.1.0.8/onvif/events",
+    )
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(worker.camera_loop(target, stop))
+        for _ in range(100):
+            if challenge.closed:
+                break
+            await asyncio.sleep(0)
+        assert challenge.closed is True
+        stop.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    with caplog.at_level(logging.ERROR, logger=worker.log.name):
+        asyncio.run(scenario())
+
+    assert "subscription_failed camera_id=camera-log-test" in caplog.text
+    assert _SENSITIVE_DIGEST_LOG_MARKER not in caplog.text
+    assert requests == [None]
+    assert challenge.yielded == 0
+    assert challenge.closed is True
+    assert clients and all(client.is_closed for client in clients)
+    assert auth_flow_closed == [True]
