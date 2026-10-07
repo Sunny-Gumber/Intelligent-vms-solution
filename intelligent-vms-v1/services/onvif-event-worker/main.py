@@ -97,7 +97,11 @@ async def load_targets() -> list[Target]:
         if not features.get("events"):
             continue
         try:
-            xaddr = event_service_xaddr(capability.services_json or [])
+            xaddr = event_service_xaddr(
+                capability.services_json or [],
+                tenant_id=camera.tenant_id,
+                site_id=camera.site_id,
+            )
         except Exception:
             log.exception("invalid_event_service camera_id=%s", camera.id)
             continue
@@ -241,6 +245,8 @@ async def camera_loop(target: Target, stop: asyncio.Event):
                 target.event_xaddr,
                 target.username,
                 target.password,
+                tenant_id=target.tenant_id,
+                site_id=target.site_id,
             )
             try:
                 await set_synchronization_point(

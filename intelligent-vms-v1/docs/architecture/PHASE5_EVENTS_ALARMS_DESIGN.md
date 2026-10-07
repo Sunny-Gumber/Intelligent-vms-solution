@@ -28,10 +28,14 @@ Default developer density is 200 persistent camera subscriptions/worker. This is
 
 ## Event safety
 
-- XAddr and PullPoint addresses pass the same network allowlist used by camera onboarding.
+- Event XAddr and camera-returned PullPoint addresses require the exact tenant/site camera CIDR policy; every credential-bearing SOAP request connects to one freshly approved pinned IP.
+- Camera-returned PullPoint addresses are stored as pinned destinations, while their original logical authority is retained for WS-Addressing, HTTP Host and HTTPS SNI/certificate verification.
+- Scoped SOAP requests re-apply site pinning at the final network boundary; a DNS change outside the site is rejected before the HTTP client receives credentials, and missing event scope fails closed rather than falling back to the global allowlist.
 - XML is parsed by defusedxml.
-- response size is bounded.
-- long-poll operation timeout has explicit headroom.
+- Every consumed HTTP response in an HTTP Digest exchange is streamed under the configured cumulative byte cap before any authenticated retry can be sent; this includes chunked 401 challenges without Content-Length and the final SOAP response. Terminal 401/403 bodies are closed without consumption.
+- Malformed, incomplete or HTTPX-unsupported Digest challenge fields are normalized at the Digest auth-flow boundary to `DEVICE_SERVICE_INVALID` / HTTP 502 without consuming the challenge body or sending an authenticated retry. The raw parser/build cause is deliberately not exception-chained because challenge text is camera-controlled and worker `log.exception` output must not expose it. Credential rejection after a valid challenge remains `AUTH_FAILED` / HTTP 401.
+- Credential-bearing ONVIF requests explicitly request `Accept-Encoding: identity`; non-identity Content-Encoding is rejected before body consumption so HTTP content-decoder expansion cannot bypass the application byte cap. The retained application payload is therefore at most the configured cap per consumed response; the transport may still materialize one transport-delivered chunk before the iterator returns control.
+- The whole SOAP operation, including Digest challenge/retry processing and final response streaming, has a bounded deadline; PullMessages keeps explicit headroom over the requested long-poll interval.
 - exponential retry backoff avoids reconnect storms.
 - WS-Addressing ReferenceParameters returned by the device are preserved.
 - SetSynchronizationPoint is best-effort because vendor behavior varies.
