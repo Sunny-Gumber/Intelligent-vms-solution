@@ -579,7 +579,65 @@ def test_small_response_and_auth_failure_remain_usable(monkeypatch):
 
 
 _REAL_HTTPX_ASYNC_CLIENT = httpx.AsyncClient
+_REAL_HTTPX_DIGEST_AUTH = httpx.DigestAuth
 _DIGEST_CHALLENGE = 'Digest realm="synthetic", nonce="nonce-1", algorithm=MD5, qop="auth"'
+_REVIEWER_SENSITIVE_MARKER = "SYNTHETIC-PASSWORD-DO-NOT-LOG"
+
+_WORKER_PATH = (
+    Path(__file__).parents[1] / "services" / "onvif-event-worker" / "main.py"
+)
+_WORKER_SPEC = importlib.util.spec_from_file_location(
+    "vms_fix_001_onvif_event_worker",
+    _WORKER_PATH,
+)
+if _WORKER_SPEC is None or _WORKER_SPEC.loader is None:
+    raise RuntimeError("ONVIF event worker test module could not be loaded")
+_EVENT_WORKER = importlib.util.module_from_spec(_WORKER_SPEC)
+sys.modules[_WORKER_SPEC.name] = _EVENT_WORKER
+_WORKER_SPEC.loader.exec_module(_EVENT_WORKER)
+
+
+class _TrackingDigestAuth(_REAL_HTTPX_DIGEST_AUTH):
+    """Delegate to real HTTPX DigestAuth while recording auth-flow cleanup."""
+
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.flow_closed = False
+        self.__class__.instances.append(self)
+
+    async def async_auth_flow(self, request):
+        flow = super().async_auth_flow(request)
+        try:
+            next_request = await flow.__anext__()
+            while True:
+                response = yield next_request
+                try:
+                    next_request = await flow.asend(response)
+                except StopAsyncIteration:
+                    return
+        finally:
+            self.flow_closed = True
+            await flow.aclose()
+
+
+class _WorkerLogCapture(logging.Handler):
+    """Capture fully formatted worker exception logs and stop after first failure."""
+
+    def __init__(self, stop):
+        super().__init__()
+        self.stop = stop
+        self.messages = []
+        self.errors = []
+        self.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+
+    def emit(self, record):
+        self.messages.append(self.format(record))
+        if record.exc_info:
+            self.errors.append(record.exc_info[1])
+        if record.getMessage().startswith("subscription_failed"):
+            self.stop.set()
 
 
 class _TrackingAsyncByteStream(httpx.AsyncByteStream):
@@ -826,6 +884,68 @@ def test_digest_challenge_cancellation_closes_real_httpx_stream(monkeypatch):
 
     asyncio.run(scenario())
     assert challenge.closed is True
+
+
+def test_worker_digest_parser_failure_redacts_chained_camera_input(monkeypatch):
+    """Keep camera-controlled Digest parser details out of actual worker tracebacks."""
+    challenge = _TrackingAsyncByteStream([b"must-not-be-read"])
+    requests = []
+
+    def handler(request):
+        requests.append(request.headers.get("authorization"))
+        return httpx.Response(
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    'Digest realm="synthetic", nonce="nonce-1", '
+                    f"algorithm={_REVIEWER_SENSITIVE_MARKER}, qop=\"auth\""
+                )
+            },
+            stream=challenge,
+        )
+
+    clients = _install_real_httpx_mock_transport(monkeypatch, handler)
+    _TrackingDigestAuth.instances.clear()
+    monkeypatch.setattr(onvif_client.httpx, "DigestAuth", _TrackingDigestAuth)
+
+    target = _EVENT_WORKER.Target(
+        camera_id="camera-reviewer-001",
+        tenant_id="tenant-a",
+        site_id="site-a",
+        media_node_id="node-a",
+        username="qa-user",
+        password="qa-password",
+        event_xaddr="http://10.1.0.8/onvif/events",
+    )
+
+    async def scenario():
+        stop = asyncio.Event()
+        capture = _WorkerLogCapture(stop)
+        _EVENT_WORKER.log.addHandler(capture)
+        try:
+            await _EVENT_WORKER.camera_loop(target, stop)
+        finally:
+            _EVENT_WORKER.log.removeHandler(capture)
+        return capture
+
+    capture = asyncio.run(scenario())
+    formatted_logs = "\n".join(capture.messages)
+
+    assert len(capture.errors) == 1
+    error = capture.errors[0]
+    assert isinstance(error, OnvifError)
+    assert error.code == "DEVICE_SERVICE_INVALID"
+    assert error.status_code == 502
+    assert str(error) == "Camera returned an invalid HTTP Digest challenge"
+    assert "subscription_failed camera_id=camera-reviewer-001" in formatted_logs
+    assert _REVIEWER_SENSITIVE_MARKER not in formatted_logs
+    assert "qa-password" not in formatted_logs
+    assert requests == [None]
+    assert challenge.yielded == 0
+    assert challenge.closed is True
+    assert clients and all(client.is_closed for client in clients)
+    assert _TrackingDigestAuth.instances
+    assert all(auth.flow_closed for auth in _TrackingDigestAuth.instances)
 
 
 def test_soap_requests_identity_content_coding_and_rejects_encoded_body(monkeypatch):
