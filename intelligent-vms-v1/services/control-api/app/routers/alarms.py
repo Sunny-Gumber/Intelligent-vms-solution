@@ -27,6 +27,8 @@ router = APIRouter(
     dependencies=[Depends(_require_alarm_processing)],
 )
 
+_MAX_RULE_CAMERAS = 1000
+
 
 def rule_read(row: AlarmRuleEntity) -> AlarmRuleRead:
     """Convert an alarm-rule ORM row into its public response model.
@@ -87,6 +89,13 @@ async def _validate_cameras(
     site_id: str | None,
     principal: Principal,
 ) -> None:
+    # Persisted JSON can predate current API bounds; fail closed before querying.
+    if (
+        not isinstance(camera_ids, list)
+        or len(camera_ids) > _MAX_RULE_CAMERAS
+        or any(not isinstance(camera_id, str) or not camera_id for camera_id in camera_ids)
+    ):
+        raise HTTPException(422, "Invalid alarm-rule camera filter")
     if not camera_ids:
         return
     unique = sorted(set(camera_ids))
@@ -101,6 +110,26 @@ async def _validate_cameras(
             raise HTTPException(422, "Alarm-rule cameras must belong to the rule tenant")
         if site_id is not None and camera.site_id != site_id:
             raise HTTPException(422, "Alarm-rule cameras must belong to the rule site")
+
+
+async def _require_rule_write_scope(
+    session: AsyncSession,
+    tenant_id: str,
+    site_id: str | None,
+    camera_ids: list[str],
+    principal: Principal,
+) -> None:
+    """Authorize complete matching coverage separately from shared read visibility.
+
+    Empty camera filters are wildcard coverage. A null-site wildcard therefore
+    needs all-site entitlement, while explicit cameras must each be authorized.
+    Camera validation is batched and performed even for all-site identities so
+    missing/moved references cannot silently establish mutation authority.
+    """
+    require_scope(principal, tenant_id, site_id)
+    if site_id is None and not camera_ids and "*" not in principal.site_ids:
+        raise HTTPException(404, "Resource not found")
+    await _validate_cameras(session, camera_ids, tenant_id, site_id, principal)
 
 
 @router.post("/rules", response_model=AlarmRuleRead, status_code=status.HTTP_201_CREATED)
@@ -122,8 +151,9 @@ async def create_rule(
     Raises:
         HTTPException: If scope or referenced camera validation fails.
     """
-    require_scope(principal, payload.tenant_id, payload.site_id)
-    await _validate_cameras(session, payload.camera_ids, payload.tenant_id, payload.site_id, principal)
+    await _require_rule_write_scope(
+        session, payload.tenant_id, payload.site_id, payload.camera_ids, principal
+    )
     row = AlarmRuleEntity(
         tenant_id=payload.tenant_id,
         site_id=payload.site_id,
@@ -186,7 +216,10 @@ async def _authorized_rule(
     row = await session.get(AlarmRuleEntity, rule_id)
     if not row:
         raise HTTPException(404, "Alarm rule not found")
-    require_scope(principal, row.tenant_id, row.site_id)
+    await _require_rule_write_scope(
+        session, row.tenant_id, row.site_id,
+        row.camera_ids_json if row.camera_ids_json is not None else [], principal,
+    )
     return row
 
 
@@ -214,7 +247,9 @@ async def update_rule(
     row = await _authorized_rule(session, rule_id, principal)
     values = payload.model_dump(exclude_unset=True)
     camera_ids = values.get("camera_ids", list(row.camera_ids_json or []))
-    await _validate_cameras(session, camera_ids, row.tenant_id, row.site_id, principal)
+    # Validate the full proposed scope before assigning any ORM field. Existing
+    # scope was independently authorized above; narrowing cannot take it over.
+    await _require_rule_write_scope(session, row.tenant_id, row.site_id, camera_ids, principal)
 
     if "name" in values:
         row.name = values["name"]

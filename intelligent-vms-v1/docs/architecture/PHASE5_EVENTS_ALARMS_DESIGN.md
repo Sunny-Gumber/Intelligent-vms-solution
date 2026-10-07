@@ -57,6 +57,45 @@ Alarm deduplication uses a deterministic SHA-256 key of rule/camera/event-type/c
 
 Initialized ONVIF property events never open an alarm.
 
+### Alarm rule read and write scope
+
+Rule listing deliberately includes shared null-site rules in the caller's tenant.
+Visibility does not confer mutation authority. Create/update retain admin/operator
+role gates; DELETE remains admin-only and soft-disables the rule so historical
+alarm instances keep their references. An admin role does not bypass tenant/site
+scope. Alarm instance acknowledge/close retain their existing instance-site checks.
+
+Mutation validates the rule tenant first, then its complete matching target:
+
+- A site-specific rule requires authority over that site. Every explicit camera
+  must also exist, belong to the rule tenant/site and be authorized.
+- A null-site rule with a nonempty camera filter requires authority over every
+  referenced camera in the rule tenant, using one batched camera query per check.
+- A null-site rule with an empty or omitted camera filter is tenant-wide and
+  requires `site_ids:["*"]` in the authorized tenant. All-site scope alone gives
+  no cross-tenant authority. Existing explicitly trusted `tenant_id:"*"` semantics
+  are preserved without granting any new role-based global exemption.
+
+PATCH authorizes both persisted scope and the complete proposed result before
+assigning any ORM field. Omission retains values, duplicate camera IDs normalize
+to a set, and clearing a null-site camera filter requires all-site authority.
+Explicit nulls for mutable PATCH fields return 422; null is not a reset operation.
+Missing/moved/inconsistent cameras fail closed, including metadata-only changes
+and soft-delete. Persisted camera filters exceeding the current 1000-entry API
+bound or containing malformed identifiers also fail closed before a camera query.
+Out-of-scope access uses the existing 404 convention; invalid camera references
+and tenant/site inconsistency use the existing 422 convention.
+
+Concurrency limitation: these checks validate the current transaction's observed
+rule/camera state. No row locking, optimistic version check or serializable
+transaction is added. Concurrent camera moves or rule updates can race validation
+and commit; this fix does not claim isolation across those operations. A later
+camera move also changes effective camera-rule coverage until reconciliation or
+the next mutation check. The matcher continues to treat empty filters as wildcard.
+
+Executable HTTP/persistence matrix: `tests/test_alarm_write_scope.py`. It substitutes
+synthetic identity acquisition only, retaining real role and scope authorization.
+
 ## Diagnostics
 
 Current diagnostic API reads MediaMTX Prometheus text and exposes:
