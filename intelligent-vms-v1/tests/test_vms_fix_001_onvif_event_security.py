@@ -554,3 +554,208 @@ def test_small_response_and_auth_failure_remain_usable(monkeypatch):
     assert error.value.code == "AUTH_FAILED"
     assert denied.yielded == 0
     assert denied.closed is True
+
+
+_REAL_HTTPX_ASYNC_CLIENT = httpx.AsyncClient
+_DIGEST_CHALLENGE = 'Digest realm="synthetic", nonce="nonce-1", algorithm=MD5, qop="auth"'
+
+
+class _TrackingAsyncByteStream(httpx.AsyncByteStream):
+    """Track deterministic response-stream consumption and cleanup."""
+
+    def __init__(self, chunks=(), *, stream_error=None, block=False):
+        self.chunks = list(chunks)
+        self.stream_error = stream_error
+        self.block = block
+        self.closed = False
+        self.yielded = 0
+        self.started = asyncio.Event()
+
+    async def __aiter__(self):
+        self.started.set()
+        for chunk in self.chunks:
+            self.yielded += 1
+            yield chunk
+        if self.stream_error is not None:
+            raise self.stream_error
+        if self.block:
+            while True:
+                await asyncio.sleep(3600)
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _install_real_httpx_mock_transport(monkeypatch, handler):
+    """Inject only MockTransport while retaining real AsyncClient and DigestAuth."""
+    transport = httpx.MockTransport(handler)
+    clients = []
+
+    def factory(**kwargs):
+        kwargs["transport"] = transport
+        client = _REAL_HTTPX_ASYNC_CLIENT(**kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(onvif_client.httpx, "AsyncClient", factory)
+    return clients
+
+
+def test_digest_chunked_challenge_is_bounded_before_authenticated_retry(monkeypatch):
+    """Reject an oversized chunked Digest challenge before full body consumption."""
+    monkeypatch.setattr(settings, "onvif_max_response_bytes", 16)
+    challenge = _TrackingAsyncByteStream([b"x" * 32] * 6)
+    success = _TrackingAsyncByteStream([b"<Envelope/>"])
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if "authorization" not in request.headers:
+            return httpx.Response(
+                401,
+                headers={"WWW-Authenticate": _DIGEST_CHALLENGE},
+                stream=challenge,
+            )
+        return httpx.Response(200, stream=success)
+
+    _install_real_httpx_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(OnvifError) as error:
+        asyncio.run(_soap_call())
+    assert error.value.code == "DEVICE_SERVICE_INVALID"
+    assert challenge.yielded < 6
+    assert challenge.closed is True
+    assert success.yielded == 0
+    assert len(requests) == 1
+
+
+def test_digest_declared_oversized_challenge_is_rejected_without_body_read(monkeypatch):
+    """Reject an oversized declared Digest challenge before consuming its stream."""
+    monkeypatch.setattr(settings, "onvif_max_response_bytes", 16)
+    challenge = _TrackingAsyncByteStream([b"x" * 32] * 6)
+    success = _TrackingAsyncByteStream([b"<Envelope/>"])
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if "authorization" not in request.headers:
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": _DIGEST_CHALLENGE,
+                    "Content-Length": "192",
+                },
+                stream=challenge,
+            )
+        return httpx.Response(200, stream=success)
+
+    _install_real_httpx_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(OnvifError) as error:
+        asyncio.run(_soap_call())
+    assert error.value.code == "DEVICE_SERVICE_INVALID"
+    assert challenge.yielded == 0
+    assert challenge.closed is True
+    assert success.yielded == 0
+    assert len(requests) == 1
+
+
+def test_digest_small_challenge_then_authenticated_soap_succeeds(monkeypatch):
+    """Preserve real HTTPX Digest challenge/retry behavior for bounded responses."""
+    challenge = _TrackingAsyncByteStream([b"challenge"])
+    success = _TrackingAsyncByteStream([b"<Envelope/>"])
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if "authorization" not in request.headers:
+            return httpx.Response(
+                401,
+                headers={"WWW-Authenticate": _DIGEST_CHALLENGE},
+                stream=challenge,
+            )
+        return httpx.Response(200, stream=success)
+
+    _install_real_httpx_mock_transport(monkeypatch, handler)
+
+    root = asyncio.run(_soap_call())
+    assert root.tag == "Envelope"
+    assert len(requests) == 2
+    assert "authorization" not in requests[0].headers
+    assert requests[1].headers["authorization"].startswith("Digest ")
+    assert challenge.yielded == 1 and challenge.closed is True
+    assert success.yielded == 1 and success.closed is True
+
+
+def test_digest_rejected_credentials_map_auth_failure_and_close(monkeypatch):
+    """Keep rejected real Digest credentials safe and close both response streams."""
+    challenge = _TrackingAsyncByteStream([b"challenge"])
+    rejected = _TrackingAsyncByteStream([b"denied"])
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if "authorization" not in request.headers:
+            return httpx.Response(
+                401,
+                headers={"WWW-Authenticate": _DIGEST_CHALLENGE},
+                stream=challenge,
+            )
+        return httpx.Response(401, stream=rejected)
+
+    _install_real_httpx_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(OnvifError) as error:
+        asyncio.run(_soap_call())
+    assert error.value.code == "AUTH_FAILED"
+    assert len(requests) == 2
+    assert challenge.closed is True
+    assert rejected.closed is True
+    assert "synthetic-password" not in str(error.value)
+
+
+def test_digest_challenge_read_failure_closes_and_maps_safely(monkeypatch):
+    """Close an intermediate Digest challenge when its streamed body read fails."""
+    challenge = _TrackingAsyncByteStream(
+        [b"x"],
+        stream_error=httpx.ReadError("synthetic challenge read failure"),
+    )
+
+    def handler(_request):
+        return httpx.Response(
+            401,
+            headers={"WWW-Authenticate": _DIGEST_CHALLENGE},
+            stream=challenge,
+        )
+
+    _install_real_httpx_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(OnvifError) as error:
+        asyncio.run(_soap_call())
+    assert error.value.code == "NETWORK_UNREACHABLE"
+    assert "synthetic challenge read failure" not in str(error.value)
+    assert challenge.closed is True
+
+
+def test_digest_challenge_cancellation_closes_real_httpx_stream(monkeypatch):
+    """Propagate cancellation while closing a real HTTPX Digest challenge stream."""
+    challenge = _TrackingAsyncByteStream(block=True)
+
+    def handler(_request):
+        return httpx.Response(
+            401,
+            headers={"WWW-Authenticate": _DIGEST_CHALLENGE},
+            stream=challenge,
+        )
+
+    _install_real_httpx_mock_transport(monkeypatch, handler)
+
+    async def scenario():
+        task = asyncio.create_task(_soap_call(operation_timeout_seconds=60.0))
+        await challenge.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert challenge.closed is True
