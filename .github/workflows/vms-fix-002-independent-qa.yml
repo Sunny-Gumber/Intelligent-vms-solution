@@ -1,0 +1,309 @@
+name: VMS-FIX-002 Independent QA
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'intelligent-vms-v1/services/control-api/app/routers/alarms.py'
+      - 'intelligent-vms-v1/services/control-api/app/models/schemas.py'
+      - 'intelligent-vms-v1/tests/test_alarm_write_scope.py'
+      - 'intelligent-vms-v1/docs/architecture/PHASE5_EVENTS_ALARMS_DESIGN.md'
+      - '.github/workflows/vms-fix-002-independent-qa.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  stale-authorization-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vmsqa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vmsqa"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install control-api and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/control-api/requirements.txt
+          pip install -r tests/requirements.txt
+      - name: Run token-auth and stale-authorization QA
+        env:
+          VMS_SECRET_KEY: qa-test-key
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/vmsqa
+        run: |
+          python - <<'PY'
+          import asyncio
+          from datetime import datetime, timedelta, timezone
+
+          import httpx
+          import jwt
+          from fastapi import FastAPI, Request
+          from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+          from app.core.auth import Principal, get_principal
+          from app.core.config import settings
+          from app.db.base import Base
+          from app.db.session import get_session
+          from app.models.entities import AlarmRuleEntity, CameraEntity
+          from app.routers import alarms
+
+
+          DATABASE_URL = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/vmsqa"
+
+
+          def camera():
+              return CameraEntity(
+                  id="cam-a",
+                  tenant_id="tenant-a",
+                  site_id="site-a",
+                  name="cam-a",
+                  host="192.0.2.1",
+                  main_path="/synthetic",
+                  stream_key="cam-a",
+              )
+
+
+          def restricted_rule():
+              return AlarmRuleEntity(
+                  id="rule",
+                  tenant_id="tenant-a",
+                  site_id=None,
+                  name="Original",
+                  enabled=True,
+                  event_types_json=["motion"],
+                  camera_ids_json=["cam-a"],
+                  severities_json=[],
+                  alarm_severity="high",
+                  cooldown_seconds=60,
+              )
+
+
+          async def reset_database(engine, sessions):
+              async with engine.begin() as connection:
+                  await connection.run_sync(Base.metadata.drop_all)
+                  await connection.run_sync(Base.metadata.create_all)
+              async with sessions() as session:
+                  session.add(camera())
+                  session.add(restricted_rule())
+                  await session.commit()
+
+
+          async def token_authenticated_check(engine, sessions):
+              await reset_database(engine, sessions)
+              settings.alarm_processing_enabled = True
+              settings.auth_disabled = False
+              settings.auth_jwks_url = ""
+              settings.auth_issuer = ""
+              settings.auth_hs256_secret = "qa-hs256-secret"
+
+              app = FastAPI()
+              app.include_router(alarms.router)
+
+              async def session_dependency():
+                  async with sessions() as session:
+                      yield session
+
+              app.dependency_overrides[get_session] = session_dependency
+              claims = {
+                  "sub": "token-site-admin",
+                  "roles": ["admin"],
+                  "tenant_id": "tenant-a",
+                  "site_ids": ["site-a"],
+                  "aud": settings.auth_audience,
+                  "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+              }
+              token = jwt.encode(claims, settings.auth_hs256_secret, algorithm="HS256")
+              headers = {"Authorization": f"Bearer {token}"}
+
+              async with httpx.AsyncClient(
+                  transport=httpx.ASGITransport(app=app),
+                  base_url="http://qa",
+              ) as client:
+                  denied = await client.post(
+                      "/api/v1/alarms/rules",
+                      json={
+                          "tenant_id": "tenant-a",
+                          "name": "Token wildcard",
+                          "event_types": ["motion"],
+                      },
+                      headers=headers,
+                  )
+                  allowed = await client.post(
+                      "/api/v1/alarms/rules",
+                      json={
+                          "tenant_id": "tenant-a",
+                          "name": "Token restricted",
+                          "event_types": ["motion"],
+                          "camera_ids": ["cam-a"],
+                      },
+                      headers=headers,
+                  )
+
+              print(
+                  "TOKEN_AUTH_EVIDENCE",
+                  {
+                      "wildcard_status": denied.status_code,
+                      "restricted_status": allowed.status_code,
+                  },
+              )
+              assert denied.status_code == 404
+              assert allowed.status_code == 201
+
+
+          async def stale_authorization_race(engine, sessions):
+              await reset_database(engine, sessions)
+              settings.alarm_processing_enabled = True
+
+              principals = {
+                  "site": Principal(
+                      "site-admin",
+                      frozenset({"admin"}),
+                      "tenant-a",
+                      frozenset({"site-a"}),
+                  ),
+                  "all": Principal(
+                      "all-site-admin",
+                      frozenset({"admin"}),
+                      "tenant-a",
+                      frozenset({"*"}),
+                  ),
+              }
+
+              app = FastAPI()
+              app.include_router(alarms.router)
+
+              async def identity(request: Request):
+                  return principals[request.headers["x-qa-actor"]]
+
+              async def session_dependency():
+                  async with sessions() as session:
+                      yield session
+
+              app.dependency_overrides[get_principal] = identity
+              app.dependency_overrides[get_session] = session_dependency
+
+              original_scope = alarms._require_rule_write_scope
+              limited_validations = 0
+              limited_final_validation_done = asyncio.Event()
+              resume_limited = asyncio.Event()
+
+              async def synchronized_scope(
+                  session,
+                  tenant_id,
+                  site_id,
+                  camera_ids,
+                  principal,
+              ):
+                  nonlocal limited_validations
+                  await original_scope(
+                      session,
+                      tenant_id,
+                      site_id,
+                      camera_ids,
+                      principal,
+                  )
+                  if principal.subject == "site-admin":
+                      limited_validations += 1
+                      if limited_validations == 2:
+                          limited_final_validation_done.set()
+                          await resume_limited.wait()
+
+              alarms._require_rule_write_scope = synchronized_scope
+              try:
+                  async with httpx.AsyncClient(
+                      transport=httpx.ASGITransport(app=app),
+                      base_url="http://qa",
+                  ) as client:
+                      limited_task = asyncio.create_task(
+                          client.patch(
+                              "/api/v1/alarms/rules/rule",
+                              json={"name": "site-limited-stale-write"},
+                              headers={"X-QA-Actor": "site"},
+                          )
+                      )
+                      await asyncio.wait_for(
+                          limited_final_validation_done.wait(),
+                          timeout=5.0,
+                      )
+
+                      broaden = await client.patch(
+                          "/api/v1/alarms/rules/rule",
+                          json={"camera_ids": []},
+                          headers={"X-QA-Actor": "all"},
+                      )
+                      assert broaden.status_code == 200, broaden.text
+                      assert broaden.json()["camera_ids"] == []
+
+                      resume_limited.set()
+                      limited = await asyncio.wait_for(limited_task, timeout=5.0)
+              finally:
+                  alarms._require_rule_write_scope = original_scope
+                  resume_limited.set()
+
+              async with sessions() as session:
+                  final = await session.get(AlarmRuleEntity, "rule")
+                  evidence = {
+                      "limited_identity": {
+                          "subject": principals["site"].subject,
+                          "tenant": principals["site"].tenant_id,
+                          "sites": sorted(principals["site"].site_ids),
+                      },
+                      "broadening_identity": {
+                          "subject": principals["all"].subject,
+                          "tenant": principals["all"].tenant_id,
+                          "sites": sorted(principals["all"].site_ids),
+                      },
+                      "ordering": [
+                          "site actor existing-scope validation",
+                          "site actor proposed-scope validation",
+                          "all-site actor clears camera filter and commits",
+                          "site actor resumes metadata mutation and commits",
+                      ],
+                      "broadening_status": broaden.status_code,
+                      "limited_status": limited.status_code,
+                      "limited_response": limited.json() if limited.content else None,
+                      "final_name": final.name,
+                      "final_camera_ids": list(final.camera_ids_json or []),
+                  }
+                  print("STALE_AUTH_EVIDENCE", evidence)
+
+                  vulnerable = (
+                      limited.status_code == 200
+                      and final.name == "site-limited-stale-write"
+                      and list(final.camera_ids_json or []) == []
+                  )
+                  assert not vulnerable, (
+                      "stale authorization reproduced: site-limited actor "
+                      "mutated a rule after it became tenant-wide"
+                  )
+
+
+          async def main():
+              engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+              sessions = async_sessionmaker(engine, expire_on_commit=False)
+              try:
+                  await token_authenticated_check(engine, sessions)
+                  await stale_authorization_race(engine, sessions)
+              finally:
+                  await engine.dispose()
+
+
+          asyncio.run(main())
+          PY
