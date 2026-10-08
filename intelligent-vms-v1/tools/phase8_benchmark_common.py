@@ -48,52 +48,232 @@ def result_fingerprint(result: dict[str, Any]) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
-def content_fingerprint(result: dict[str, Any]) -> str:
-    """Hash measured benchmark content, ignoring run labels and clock stamps.
+_NON_FINITE_MEASUREMENT = "measured value is not a finite number"
 
-    build_result writes three fields that label a run without measuring it:
-    benchmark_id, environment.captured_at, and workload.started_at. Those are
-    omitted, as are underscore-prefixed internal fields. Every measured value
-    stays in the hash, including durations, result metrics, resource summaries,
-    and hardware descriptors. commit_sha stays because it is the measured
-    source revision, not a per-run label.
+# Explicit measured-result fields. Anything absent from these tuples is a label,
+# note, timestamp, or volatile host fact and must not affect independence.
+_RESULT_MEASURED_KEYS = (
+    "operations_ok",
+    "operations_failed",
+    "failure_rate",
+    "throughput_ops_s",
+    "observed_recording_mbps",
+    "aggregate_write_mbps",
+    "aggregate_write_MBps",
+    "observed_media_mbps",
+    "observed_ai_mpix_s",
+    "bytes_written",
+    "bytes_growth",
+    "new_files",
+)
+_LATENCY_KEYS = ("count", "p50_ms", "p95_ms", "p99_ms", "max_ms", "mean_ms")
+_RESOURCE_SUMMARY_KEYS = (
+    "cpu_pct",
+    "cpu_freq_mhz",
+    "cpu_freq_max_mhz",
+    "max_temperature_c",
+    "ram_used_bytes",
+    "ram_pct",
+    "net_rx_mbps",
+    "net_tx_mbps",
+    "disk_read_mbps",
+    "disk_write_mbps",
+)
+_GPU_USAGE_KEYS = ("utilization_pct", "memory_used_mib", "temperature_c")
+_SUMMARY_KEYS = ("mean", "p95", "max")
 
-    Two results whose remaining canonical JSON is byte-identical share this
-    fingerprint. Three genuine runs that aggregate to the same metrics,
-    resources, durations, and hardware descriptors are therefore not
-    independent repeats. That fail-closed outcome is accepted: the gate cannot
-    tell those runs from copies.
+
+def _canonical_number(value: Any) -> str:
+    """Render one measured number as a finite float with a fixed repr.
+
+    Args:
+        value: Boolean, integer, or float measurement. Booleans become 0 or 1.
+
+    Returns:
+        Fixed-precision decimal text. Negative zero is rendered as 0.
+
+    Raises:
+        ValueError: If the value is not a finite number.
+    """
+    if isinstance(value, bool):
+        value = 1 if value else 0
+    if not isinstance(value, (int, float)):
+        raise ValueError(_NON_FINITE_MEASUREMENT)
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(_NON_FINITE_MEASUREMENT)
+    if number == 0.0:
+        number = 0.0
+    return format(number, ".17g")
+
+
+def _descriptor(value: Any) -> str:
+    """Strip, collapse whitespace, and casefold a hardware descriptor string.
+
+    Args:
+        value: OS, CPU, or GPU descriptor.
+
+    Returns:
+        Canonical descriptor text.
+    """
+    return " ".join(str(value).split()).casefold()
+
+
+def _summary_numbers(block: Any) -> dict[str, str] | None:
+    if not isinstance(block, dict):
+        return None
+    summary = {
+        key: _canonical_number(block[key])
+        for key in _SUMMARY_KEYS
+        if key in block and block[key] is not None
+    }
+    return summary or None
+
+
+def _sorted_objects(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _put_number(target: dict[str, Any], key: str, value: Any) -> None:
+    if value is not None:
+        target[key] = _canonical_number(value)
+
+
+def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
+    """Collect the allowlisted measured content of one benchmark result.
 
     Args:
         result: Benchmark result dictionary.
 
     Returns:
-        Hexadecimal SHA-256 of the measured content.
+        Canonical measured content. Omitted keys are labels, timestamps, notes,
+        or volatile host state and therefore collide across copies.
+
+    Raises:
+        ValueError: If an allowlisted measured value is not a finite number.
     """
-    payload = {
-        key: value
-        for key, value in result.items()
-        if not str(key).startswith("_") and key != "benchmark_id"
+    workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
+    metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
+    resources = result.get("resources") if isinstance(result.get("resources"), dict) else {}
+    environment = result.get("environment") if isinstance(result.get("environment"), dict) else {}
+    hardware = environment.get("hardware") if isinstance(environment.get("hardware"), dict) else {}
+
+    content: dict[str, Any] = {}
+    durations: dict[str, str] = {}
+    _put_number(durations, "warmup_seconds", workload.get("warmup_seconds"))
+    _put_number(durations, "duration_seconds", workload.get("duration_seconds"))
+    if durations:
+        content["durations"] = durations
+
+    measured: dict[str, Any] = {}
+    for key in _RESULT_MEASURED_KEYS:
+        _put_number(measured, key, metrics.get(key))
+    latency = metrics.get("latency") if isinstance(metrics.get("latency"), dict) else {}
+    latency_numbers = {
+        key: _canonical_number(latency[key])
+        for key in _LATENCY_KEYS
+        if key in latency and latency[key] is not None
     }
-    environment = payload.get("environment")
-    if isinstance(environment, dict):
-        payload["environment"] = {
-            key: value
-            for key, value in environment.items()
-            if key != "captured_at"
-        }
-    workload = payload.get("workload")
-    if isinstance(workload, dict):
-        payload["workload"] = {
-            key: value
-            for key, value in workload.items()
-            if key != "started_at"
-        }
+    if latency_numbers:
+        measured["latency"] = latency_numbers
+    if measured:
+        content["result"] = measured
+
+    usage: dict[str, Any] = {}
+    _put_number(usage, "samples", resources.get("samples"))
+    for key in _RESOURCE_SUMMARY_KEYS:
+        summary = _summary_numbers(resources.get(key))
+        if summary:
+            usage[key] = summary
+    _put_number(usage, "cpu_freq_ratio_min", resources.get("cpu_freq_ratio_min"))
+    for key in ("thermal_measured", "thermal_limit_exceeded", "gpu_measured"):
+        if key in resources and resources[key] is not None:
+            usage[key] = _canonical_number(resources[key])
+    gpu_usage = []
+    for item in resources.get("gpu") or []:
+        if not isinstance(item, dict):
+            continue
+        canonical_gpu: dict[str, Any] = {}
+        for key in _GPU_USAGE_KEYS:
+            summary = _summary_numbers(item.get(key))
+            if summary:
+                canonical_gpu[key] = summary
+            elif item.get(key) is not None and not isinstance(item.get(key), dict):
+                canonical_gpu[key] = _canonical_number(item[key])
+        if canonical_gpu:
+            gpu_usage.append(canonical_gpu)
+    if gpu_usage:
+        usage["gpu"] = _sorted_objects(gpu_usage)
+    if usage:
+        content["resources"] = usage
+
+    identity: dict[str, Any] = {}
+    if hardware.get("cpu_model") is not None:
+        identity["cpu_model"] = _descriptor(hardware["cpu_model"])
+    # The benchmark schema records processor count as logical cores only.
+    _put_number(identity, "cpu_logical_cores", hardware.get("cpu_logical_cores"))
+    _put_number(identity, "ram_total_bytes", hardware.get("ram_total_bytes"))
+    gpu_models = []
+    for gpu in hardware.get("gpus") or []:
+        if isinstance(gpu, str):
+            gpu_models.append({"name": _descriptor(gpu)})
+            continue
+        if not isinstance(gpu, dict) or gpu.get("name") is None:
+            continue
+        model = {"name": _descriptor(gpu["name"])}
+        _put_number(model, "memory_total_mib", gpu.get("memory_total_mib"))
+        gpu_models.append(model)
+    if gpu_models:
+        identity["gpus"] = _sorted_objects(gpu_models)
+    if environment.get("os") is not None:
+        identity["os"] = _descriptor(environment["os"])
+    if environment.get("os_release") is not None:
+        identity["os_release"] = _descriptor(environment["os_release"])
+    if identity:
+        content["hardware"] = identity
+    return content
+
+
+def content_fingerprint(result: dict[str, Any]) -> str:
+    """Hash allowlisted measured content, not labels or volatile host state.
+
+    The fingerprint uses only durations, throughput and capacity figures,
+    latency figures, failure_rate and error counts, resource-usage summaries,
+    and a stable hardware identity: CPU model, logical processor count, total
+    memory, GPU models, and OS name/version. The schema stores that processor
+    count as cpu_logical_cores. Unknown fields, notes, labels, timestamps at
+    any depth, and volatile host state such as storage_free_bytes or uptime
+    are left out. Leaving them out is stricter: copies that differ only there
+    collide and cannot count as independent repeats.
+
+    Before hashing, every number becomes a finite float and -0.0 becomes 0.0.
+    NaN and infinity are rejected. Strings are stripped and internal whitespace
+    is collapsed. OS, CPU, and GPU descriptor strings are also casefolded.
+    Unordered GPU lists are sorted. Keys are sorted and floats use one fixed
+    repr, so 0, 0.0, and -0.0, or 1000 and 1000.0, are one measurement.
+
+    This gate defends against duplicated or relabeled evidence. It does not
+    defend against deliberately fabricated measurements; provenance or signing
+    is separate future work. Genuine runs with distinct measured values, such
+    as throughputs 1000, 980, and 1020, stay distinct. Byte-identical genuine
+    aggregates share this fingerprint and fail closed.
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        Hexadecimal SHA-256 of the canonical allowlisted content.
+
+    Raises:
+        ValueError: If an allowlisted measured value is not a finite number.
+    """
     material = json.dumps(
-        payload,
+        _measured_content(result),
         sort_keys=True,
         separators=(",", ":"),
-        default=str,
     ).encode("utf-8")
     return hashlib.sha256(material).hexdigest()
 

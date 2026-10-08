@@ -177,16 +177,26 @@ def review_group(
 
     Returns:
         PASS/FAIL group review with fingerprints, reasons, warnings and metrics.
-        Duplicate benchmark identities and duplicate measured-content fingerprints
-        fail the group. repeat_count is the number of unique content fingerprints,
-        not the number of submitted labels.
+        Duplicate benchmark identities and duplicate allowlisted content
+        fingerprints fail the group. repeat_count is the number of unique content
+        fingerprints, not the number of submitted labels. The fingerprint omits
+        unknown fields, notes, timestamps, and volatile host state, so copies
+        that differ only there collide. Non-finite measurements fail the group.
+        The check defends against duplicated or relabeled evidence, not against
+        deliberately fabricated measurements.
     """
     reasons: list[str] = []
     warnings: list[str] = []
 
     identities = [str(result["benchmark_id"]) for result in results]
     fingerprints = [result_fingerprint(result) for result in results]
-    measured = [content_fingerprint(result) for result in results]
+    measured: list[str] = []
+    for result in results:
+        try:
+            measured.append(content_fingerprint(result))
+        except ValueError as exc:
+            if str(exc) not in reasons:
+                reasons.append(str(exc))
     duplicate_identities = _repeated_values(identities)
     duplicate_content = _repeated_values(measured)
     # Independence is measured content. Relabeling one run cannot raise the count.
@@ -399,6 +409,9 @@ def build_report(
 
     Returns:
         Versioned reproducibility report with policy, summary and reviewed groups.
+        Uniqueness of allowlisted measured content is enforced here, not only by
+        a later CLI handoff. Duplicate or relabeled evidence fails closed.
+        Fabricated measurements with distinct values are outside this gate.
 
     Raises:
         ValueError: If policy or benchmark validation fails.

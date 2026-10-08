@@ -22,7 +22,8 @@ class Evidence:
 
     Attributes:
         benchmark_id: Source benchmark identifier.
-        content_fingerprint: Measured-content fingerprint, excluding run labels and clock stamps.
+        content_fingerprint: Allowlisted measured-content fingerprint. Unknown
+            fields, notes, timestamps, and volatile host state are omitted.
         commit_sha: Benchmarked source revision.
         hardware_key: Stable hardware/environment identity.
         hardware: Captured hardware metadata.
@@ -259,9 +260,14 @@ def extract_evidence(
         reasons.append(f"RAM p95 {ram_p95:.1f}% > allowed {max_ram_p95_pct:.1f}%")
 
     env = result["environment"]
+    try:
+        measured_fingerprint = content_fingerprint(result)
+    except ValueError as exc:
+        reasons.append(str(exc))
+        measured_fingerprint = "invalid-measured-evidence"
     return Evidence(
         benchmark_id=str(result["benchmark_id"]),
-        content_fingerprint=content_fingerprint(result),
+        content_fingerprint=measured_fingerprint,
         commit_sha=str(env["commit_sha"]),
         hardware_key=hardware_key(result),
         hardware=dict(env.get("hardware", {})),
@@ -319,10 +325,11 @@ def grouped_qualified_evidence(
 
     Returns:
         Best conservative qualified evidence row for each role/dimension pair.
-        Groups that reuse a benchmark identity or measured-content fingerprint are
-        omitted. repeat_count is the number of unique content fingerprints, so one
-        relabeled measurement cannot satisfy the independent-repeat minimum.
-        Byte-identical aggregated measurements fail closed and are not qualified.
+        Groups that reuse a benchmark identity or allowlisted content fingerprint
+        are omitted. repeat_count is the number of unique content fingerprints.
+        Copies that differ only by labels, notes, timestamps, number spelling, or
+        volatile host state collide and are not qualified. Byte-identical genuine
+        aggregates fail closed. Distinct fabricated numbers are outside this gate.
     """
     groups: dict[tuple[str, str, str, str], list[Evidence]] = {}
     for item in evidence:
@@ -375,10 +382,13 @@ def build_matrix(
 ) -> dict[str, Any]:
     """Build deployment node requirements strictly from qualified measured evidence.
 
-    Duplicate benchmark identities and duplicate measured-content fingerprints are
-    not independent repeats and cannot produce QUALIFIED_FROM_MEASURED_EVIDENCE.
-    repeat_count is the number of unique content fingerprints. Byte-identical
-    aggregated measurements fail closed even when their run labels differ.
+    Duplicate benchmark identities and duplicate allowlisted content fingerprints
+    are not independent repeats and cannot produce QUALIFIED_FROM_MEASURED_EVIDENCE.
+    That uniqueness is enforced in this function, including when no reproducibility
+    report is supplied. repeat_count is the number of unique content fingerprints.
+    The fingerprint omits unknown fields, notes, timestamps, and volatile host
+    state such as storage_free_bytes. Byte-identical aggregated measurements fail
+    closed. This gate does not defend against deliberately fabricated measurements.
 
     Args:
         results: Phase-8 benchmark results.

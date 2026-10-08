@@ -653,3 +653,191 @@ def test_three_distinct_benchmarks_still_qualify_hardware_matrix():
     assert role["observed_capacity_per_node_min"] == 900
     assert role["evidence"]["repeat_count"] == 3
     assert role["evidence"]["benchmark_ids"] == ["run-1", "run-2", "run-3"]
+
+
+def _spelled_copies(mutate):
+    base = fake_result(benchmark_id="physical-run", capacity=1000.0)
+    copies = []
+    for index in range(3):
+        item = copy.deepcopy(base)
+        item["benchmark_id"] = f"copy-{index}"
+        mutate(item, index)
+        copies.append(item)
+    return copies
+
+
+def _assert_allowlisted_copies_fail_both_gates(copies, *, single_group=True):
+    assert len({common.content_fingerprint(item) for item in copies}) == 1
+    report = reproducibility.build_report(results=copies)
+    assert report["summary"]["passed"] == 0
+    assert report["summary"]["failed"] == report["summary"]["groups"]
+    assert all(group["status"] == "FAIL" for group in report["groups"])
+    output = matrix.build_matrix(results=copies, demand=demand(1500))
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+    assert "nodes_required" not in role
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in role["status"]
+    if single_group:
+        assert report["summary"]["groups"] == 1
+        group = report["groups"][0]
+        assert group["repeat_count"] == 1
+        assert "duplicate benchmark content fingerprints" in " ".join(group["reasons"])
+        assert "duplicate benchmark content fingerprints" in role["reason"]
+
+
+def test_failure_rate_zero_spellings_are_not_independent_repeats():
+    rates = (0.0, 0, -0.0)
+    copies = _spelled_copies(lambda item, index: item["result"].__setitem__("failure_rate", rates[index]))
+    assert [type(item["result"]["failure_rate"]) for item in copies] == [float, int, float]
+    _assert_allowlisted_copies_fail_both_gates(copies)
+
+
+def test_throughput_integer_and_float_spellings_are_not_independent_repeats():
+    values = (1000.0, 1000, 1000.0)
+    copies = _spelled_copies(
+        lambda item, index: item["result"].__setitem__("throughput_ops_s", values[index])
+    )
+    _assert_allowlisted_copies_fail_both_gates(copies)
+
+
+def test_duration_integer_and_float_spellings_are_not_independent_repeats():
+    values = (600.0, 600, 600.0)
+    copies = _spelled_copies(
+        lambda item, index: item["workload"].__setitem__("duration_seconds", values[index])
+    )
+    _assert_allowlisted_copies_fail_both_gates(copies)
+
+
+def test_crossed_throughput_and_duration_spellings_are_not_independent_repeats():
+    def mutate(item, index):
+        if index == 1:
+            item["result"]["throughput_ops_s"] = 1000
+        if index == 2:
+            item["workload"]["duration_seconds"] = 600
+
+    copies = _spelled_copies(mutate)
+    assert copies[0]["result"]["throughput_ops_s"] == 1000.0
+    assert copies[0]["workload"]["duration_seconds"] == 600.0
+    assert copies[1]["result"]["throughput_ops_s"] == 1000
+    assert copies[2]["workload"]["duration_seconds"] == 600
+    _assert_allowlisted_copies_fail_both_gates(copies)
+
+
+def test_unknown_note_field_is_not_an_independent_repeat():
+    copies = _spelled_copies(lambda item, index: item.__setitem__("note", f"copy-{index}"))
+    _assert_allowlisted_copies_fail_both_gates(copies)
+
+
+def test_os_whitespace_and_case_are_not_independent_repeats():
+    names = ("Linux", " Linux ", "LINUX  ")
+    copies = _spelled_copies(
+        lambda item, index: item["environment"].__setitem__("os", names[index])
+    )
+    _assert_allowlisted_copies_fail_both_gates(copies)
+
+
+def test_nested_timestamps_outside_excluded_clocks_are_not_independent_repeats():
+    def mutate(item, index):
+        stamp = f"2026-09-26T00:00:0{index}+00:00"
+        item["result"]["finished_at"] = stamp
+        item["environment"]["hardware"]["captured_at"] = stamp
+        item["workload"]["finished_at"] = stamp
+
+    _assert_allowlisted_copies_fail_both_gates(_spelled_copies(mutate))
+
+
+def test_rotated_gpu_usage_list_is_not_an_independent_repeat():
+    gpus = [
+        {
+            "index": index,
+            "utilization_pct": {"mean": 10.0 + index, "p95": 20.0 + index, "max": 30.0 + index},
+            "memory_used_mib": {"mean": 100.0 + index, "p95": 110.0 + index, "max": 120.0 + index},
+            "temperature_c": {"mean": 40.0 + index, "p95": 50.0 + index, "max": 60.0 + index},
+        }
+        for index in range(3)
+    ]
+
+    def mutate(item, index):
+        item["resources"]["gpu"] = gpus[index:] + gpus[:index]
+        item["resources"]["gpu_measured"] = True
+
+    copies = _spelled_copies(mutate)
+    assert [gpu["index"] for gpu in copies[1]["resources"]["gpu"]] == [1, 2, 0]
+    _assert_allowlisted_copies_fail_both_gates(copies)
+
+
+def test_workload_config_started_at_cannot_qualify_bare_build_matrix():
+    def mutate(item, index):
+        item["benchmark_id"] = f"cfg-{index}"
+        item["workload"]["config"] = {"started_at": f"2026-09-26T00:00:0{index}+00:00"}
+
+    copies = _spelled_copies(mutate)
+    report = reproducibility.build_report(results=copies)
+    assert report["summary"]["passed"] == 0
+    assert report["summary"]["groups"] == 3
+    assert all(group["status"] == "FAIL" for group in report["groups"])
+    assert all(group["repeat_count"] == 1 for group in report["groups"])
+    output = matrix.build_matrix(results=copies, demand=demand(1500))
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+    assert "nodes_required" not in role
+    assert "duplicate benchmark content fingerprints" in role["reason"]
+    assert len({common.content_fingerprint(item) for item in copies}) == 1
+
+
+def test_storage_free_bytes_one_byte_change_is_not_an_independent_repeat():
+    base_free = 8 * 10**12
+
+    def mutate(item, index):
+        item["environment"]["hardware"]["storage_free_bytes"] = base_free + index
+
+    copies = _spelled_copies(mutate)
+    assert copies[1]["environment"]["hardware"]["storage_free_bytes"] == base_free + 1
+    _assert_allowlisted_copies_fail_both_gates(copies)
+
+
+def test_boolean_and_integer_resource_flags_are_not_independent_repeats():
+    def mutate(item, index):
+        item["resources"]["thermal_measured"] = (True, 1, True)[index]
+        item["resources"]["gpu_measured"] = (False, False, 0)[index]
+
+    _assert_allowlisted_copies_fail_both_gates(_spelled_copies(mutate))
+
+
+def test_non_finite_measured_values_are_invalid_evidence():
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        item = fake_result(benchmark_id="bad", capacity=1000.0)
+        item["result"]["failure_rate"] = bad
+        try:
+            common.content_fingerprint(item)
+        except ValueError as exc:
+            assert "finite" in str(exc)
+        else:
+            raise AssertionError("non-finite measured value was hashed")
+
+    copies = _spelled_copies(
+        lambda item, index: item["result"].__setitem__("failure_rate", float("nan"))
+    )
+    report = reproducibility.build_report(results=copies)
+    assert report["summary"]["passed"] == 0
+    assert report["groups"][0]["status"] == "FAIL"
+    assert "finite" in " ".join(report["groups"][0]["reasons"])
+    output = matrix.build_matrix(results=copies, demand=demand(1500))
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+    assert "nodes_required" not in role
+    assert any("finite" in reason for row in output["rejected_evidence"] for reason in row["reasons"])
+
+
+def test_failure_rate_zero_spellings_fail_cli_gates(tmp_path):
+    rates = (0.0, 0, -0.0)
+    copies = _spelled_copies(lambda item, index: item["result"].__setitem__("failure_rate", rates[index]))
+    _assert_cli_rejects_copies(tmp_path, copies)
+
+
+def test_unknown_note_field_fails_cli_gates(tmp_path):
+    copies = _spelled_copies(lambda item, index: item.__setitem__("note", f"copy-{index}"))
+    _assert_cli_rejects_copies(tmp_path, copies)
