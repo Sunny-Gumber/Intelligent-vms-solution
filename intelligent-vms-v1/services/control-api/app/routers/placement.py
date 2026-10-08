@@ -32,6 +32,7 @@ from app.services.fencing import (
     acknowledge_revocation,
     fence_snapshot,
 )
+from app.services.coordination import PlacementExecutionBusy, await_placement_execution_lock
 from app.services.placement import run_placement_once
 
 router = APIRouter(prefix="/api/v1/infrastructure", tags=["infrastructure"])
@@ -261,9 +262,17 @@ async def set_site_region(
         Persisted SiteRegionRead.
 
     Raises:
-        HTTPException: If tenant/site scope authorization fails.
+        HTTPException: If tenant/site scope authorization fails, or the placement
+            fence is still held when the bounded wait expires.
     """
     require_scope(principal, payload.tenant_id, payload.site_id)
+    try:
+        await await_placement_execution_lock(session)
+    except PlacementExecutionBusy as exc:
+        raise HTTPException(
+            409,
+            "Placement ownership is changing; retry site region update",
+        ) from exc
     row = (
         await session.execute(
             select(SiteRegionEntity).where(

@@ -2,7 +2,7 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.effective_authority import DEFAULT_FENCE_EXPIRY_GRACE_SECONDS
-from app.core.placement_renewal import assert_settings_renewal_budget
+from app.core.placement_renewal import PlacementRenewalBudgetError, assert_settings_renewal_budget
 
 
 class Settings(BaseSettings):
@@ -168,7 +168,9 @@ class Settings(BaseSettings):
     # 4s, not 2s: one PostgreSQL 16 sample of a 21000-row page on this host
     # finished in 1.743s. That is inside 2s and leaves no margin, so the
     # deadline the budget charges is 4s. The sample is this host only, not a
-    # capacity claim. 0 is accepted by the formula and arms no deadline.
+    # capacity claim. 0 is rejected here. It arms no deadline, so it is not a
+    # supported configuration. The budget formula still accepts 0 when a proof
+    # asks what reserving no run time would require.
     placement_renewal_max_run_seconds: float = Field(default=4.0, ge=0)
     placement_renewal_missed_lock_cycles: int = Field(default=1, ge=1)
     placement_renewal_fence_poll_seconds: float = Field(default=5.0, ge=1)
@@ -188,12 +190,19 @@ class Settings(BaseSettings):
             This settings instance when the conservative budget holds.
 
         Raises:
-            PlacementRenewalBudgetError: When pages, the retry sleep later cycles
-                may spend before they acquire, reserved missed cycles, the
-                revisit's own max run, fence poll, clock skew and the safety
-                margin do not fit before lease expiry. The lease is not reduced
-                and fence grace is not spent to fit.
+            PlacementRenewalBudgetError: When max run is not positive, or when
+                pages, the retry sleep later cycles may spend before they
+                acquire, reserved missed cycles, the revisit's own max run,
+                fence poll, clock skew and the safety margin do not fit before
+                lease expiry. The lease is not reduced and fence grace is not
+                spent to fit. A max run of 0 is rejected because it arms no
+                deadline.
         """
+        if float(self.placement_renewal_max_run_seconds) <= 0:
+            raise PlacementRenewalBudgetError(
+                "placement renewal max run must be > 0; "
+                "0 reserves no deadline and is not a supported configuration"
+            )
         assert_settings_renewal_budget(self)
         return self
 

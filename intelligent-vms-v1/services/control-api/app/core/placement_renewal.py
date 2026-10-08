@@ -25,11 +25,13 @@ Fence grace is not added to the lease and is not spent as extra budget: using
 it would loosen the node side to make the arithmetic fit. The lease duration
 is never reduced to force a pass.
 
-A max run of 0 is a legal budget input and reserves no run time. It does not
-arm a deadline: the placement attempt does not cancel a slow statement when
-the configured max run is 0. The shipped default is 4 seconds, and any
-positive max run is enforced as a deadline. Operators who need the deadline
-must set a positive max run that the formula still accepts.
+A max run of 0 reserves no run time in this formula. Settings rejects it.
+Loading 0 from the environment does not start the process, because a run with
+no deadline holds the placement fence for as long as its statements run. The
+shipped default is 4 seconds, and any positive max run is enforced as a
+deadline. A proof may still pass 0 to this formula to ask what reserving no
+run time would require. A test may set the live value to 0 after settings are
+loaded when it needs the fake clock to run without a wall-clock deadline.
 
 Fence poll and clock skew default to the node-agent's own defaults (5s and
 5s). This module does not change the node-agent. An operator who lengthens

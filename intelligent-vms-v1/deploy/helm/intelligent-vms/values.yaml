@@ -28,6 +28,7 @@ commonConfig:
   # placement-controller via this ConfigMap. Independent of the camera scan
   # batch. Not a measured capacity claim. The regional node-agent chart does
   # not read these keys and still does not read FENCE_EXPIRY_GRACE_SECONDS.
+  # PLACEMENT_RENEWAL_MAX_RUN_SECONDS must be greater than 0. 0 is rejected.
   PLACEMENT_INTERVAL_SECONDS: "10"
   PLACEMENT_RENEWAL_BATCH_SIZE: "21000"
   PLACEMENT_RENEWAL_MAX_ASSIGNMENTS: "21000"

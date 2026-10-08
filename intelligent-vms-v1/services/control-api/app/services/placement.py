@@ -810,53 +810,70 @@ def _cameras_for_authority(cameras: list[CameraEntity], candidates: list[_Renewa
     return ordered
 
 
-async def _load_committed_authority(cameras: list[CameraEntity]) -> dict[str, _CommittedAuthority]:
-    """Read site region and policy flags from a session with an empty identity map.
+def _memory_sqlite(session) -> bool:
+    """True when this session's database is a single shared SQLite connection.
 
-    The placement transaction can still be holding the renewal read's policy
-    objects, and a SQLite transaction does not see another connection's commit.
-    A new session sees that commit on both dialects.
+    ``sqlite:///:memory:`` uses one connection for every session. A second
+    session's rollback then undoes this transaction. A file database and
+    PostgreSQL check out a different connection, which is what makes another
+    transaction's commit visible.
 
     Args:
+        session: Open placement transaction.
+
+    Returns:
+        True when a second session would reuse this connection.
+    """
+    bind = session.get_bind()
+    url = getattr(bind, "url", None)
+    if url is None:
+        url = getattr(getattr(bind, "engine", None), "url", None)
+    if url is None or url.get_backend_name() != "sqlite":
+        return False
+    return (url.database or "") in {"", ":memory:"}
+
+
+async def _read_authority(reader, cameras: list[CameraEntity]) -> dict[str, _CommittedAuthority]:
+    """Load site region and policy flags through the given session.
+
+    Args:
+        reader: Session whose connection performs the read.
         cameras: Cameras whose current site and policies can authorize a lease.
 
     Returns:
-        One entry per camera. A missing policy is None, which the keep rule
-        treats as not required. A missing site row uses the default region.
+        One entry per camera. A missing policy is None. A missing site row
+        uses the default region.
     """
-    if not cameras:
-        return {}
     camera_ids = [camera.id for camera in cameras]
     site_ids = sorted({camera.site_id for camera in cameras})
     tenant_ids = sorted({camera.tenant_id for camera in cameras})
-    async with SessionLocal() as fresh:
-        regions = {
-            (region.tenant_id, region.site_id): region.region_id
-            for region in (
-                await fresh.execute(
-                    select(SiteRegionEntity).where(
-                        SiteRegionEntity.site_id.in_(site_ids),
-                        SiteRegionEntity.tenant_id.in_(tenant_ids),
-                    )
+    regions = {
+        (region.tenant_id, region.site_id): region.region_id
+        for region in (
+            await reader.execute(
+                select(SiteRegionEntity).where(
+                    SiteRegionEntity.site_id.in_(site_ids),
+                    SiteRegionEntity.tenant_id.in_(tenant_ids),
                 )
-            ).scalars().all()
-        }
-        recording = {
-            policy.camera_id: bool(policy.enabled)
-            for policy in (
-                await fresh.execute(
-                    select(RecordingPolicyEntity).where(RecordingPolicyEntity.camera_id.in_(camera_ids))
-                )
-            ).scalars().all()
-        }
-        ai_policies = {
-            policy.camera_id: bool(policy.enabled)
-            for policy in (
-                await fresh.execute(
-                    select(CameraAIPolicyEntity).where(CameraAIPolicyEntity.camera_id.in_(camera_ids))
-                )
-            ).scalars().all()
-        }
+            )
+        ).scalars().all()
+    }
+    recording = {
+        policy.camera_id: bool(policy.enabled)
+        for policy in (
+            await reader.execute(
+                select(RecordingPolicyEntity).where(RecordingPolicyEntity.camera_id.in_(camera_ids))
+            )
+        ).scalars().all()
+    }
+    ai_policies = {
+        policy.camera_id: bool(policy.enabled)
+        for policy in (
+            await reader.execute(
+                select(CameraAIPolicyEntity).where(CameraAIPolicyEntity.camera_id.in_(camera_ids))
+            )
+        ).scalars().all()
+    }
     return {
         camera.id: _CommittedAuthority(
             region_id=regions.get(
@@ -868,6 +885,32 @@ async def _load_committed_authority(cameras: list[CameraEntity]) -> dict[str, _C
         )
         for camera in cameras
     }
+
+
+async def _load_committed_authority(session, cameras: list[CameraEntity]) -> dict[str, _CommittedAuthority]:
+    """Read site region and policy flags that another transaction has committed.
+
+    The placement transaction can still be holding the renewal read's policy
+    objects. A new session has an empty identity map and, on a file database
+    or PostgreSQL, a different connection, so it sees that commit. SQLite
+    ``:memory:`` has only one connection. Reading it here would roll this
+    transaction back when that session closes, and the cursor update would
+    then match no row. That database is read on the open session.
+
+    Args:
+        session: Open placement transaction.
+        cameras: Cameras whose current site and policies can authorize a lease.
+
+    Returns:
+        One entry per camera. A missing policy is None, which the keep rule
+        treats as not required. A missing site row uses the default region.
+    """
+    if not cameras:
+        return {}
+    if _memory_sqlite(session):
+        return await _read_authority(session, cameras)
+    async with SessionLocal() as fresh:
+        return await _read_authority(fresh, cameras)
 
 
 async def _save_renewal_cursor(session, assignment_id: str | None) -> None:
@@ -1091,14 +1134,84 @@ async def _extend_lease_chunk(session, chunk, new_lease: datetime, autonomy) -> 
     return {row[0] for row in result.fetchall()}
 
 
+_AUTHORITY_LOCKS = (
+    """
+    SELECT sr.id
+    FROM site_regions AS sr
+    JOIN cameras AS c
+      ON c.tenant_id = sr.tenant_id
+     AND c.site_id = sr.site_id
+    JOIN placement_assignments AS a ON a.camera_id = c.id
+    WHERE a.id = ANY(CAST(:ids AS varchar[]))
+    ORDER BY sr.id
+    FOR SHARE OF sr
+    """,
+    """
+    SELECT rp.id
+    FROM recording_policies AS rp
+    JOIN placement_assignments AS a ON a.camera_id = rp.camera_id
+    WHERE a.id = ANY(CAST(:ids AS varchar[]))
+    ORDER BY rp.id
+    FOR SHARE OF rp
+    """,
+    """
+    SELECT ap.id
+    FROM camera_ai_policies AS ap
+    JOIN placement_assignments AS a ON a.camera_id = ap.camera_id
+    WHERE a.id = ANY(CAST(:ids AS varchar[]))
+    ORDER BY ap.id
+    FOR SHARE OF ap
+    """,
+)
+
+
+async def _lock_extended_authority(session, assignment_ids: list[str]) -> None:
+    """Hold the site and policy rows for this commit until the transaction ends.
+
+    The locks are taken after the chunk updates and before commit, in a fixed
+    order: site region, recording policy, AI policy, each by primary key.
+    A site move or a policy disable that has not committed yet waits. One that
+    already committed is visible to the stale check that follows. Taking the
+    locks before the chunks would make a between-chunk change wait and then
+    land after a successful renewal, which is the split this attempt rolls back.
+
+    Assignment rows this attempt updated are already locked by those updates.
+    A generation or owner change of those rows waits on that lock. SQLite has
+    no row share lock; its writer lock already stops a second connection.
+
+    Args:
+        session: Open placement transaction.
+        assignment_ids: Assignments whose leases this attempt has extended.
+
+    Raises:
+        PlacementRenewalRunExceeded: A lock wait would start after max run, or
+            PostgreSQL cancelled it for the statement timeout.
+    """
+    if not assignment_ids or not _session_is_postgresql(session):
+        return
+    ids = sorted(assignment_ids)
+    for statement in _AUTHORITY_LOCKS:
+        await _arm_statement_timeout(session)
+        _raise_if_over_deadline()
+        await session.execute(text(statement), {"ids": ids})
+
+
 async def _reject_stale_extended_leases(session) -> None:
     """Roll the attempt back when an extended lease no longer matches authority.
 
-    The check runs before commit. It sees a site move or a policy change that
-    landed after the statement that extended the row and that makes that row
-    fail its own predicate. A later chunk that does not extend every owner
-    raises before this check. Raising aborts the transaction, so an earlier
-    chunk is not committed.
+    The check locks the site and policy rows it depends on, then reads them.
+    Those locks are held until this transaction commits or rolls back, so a
+    region or policy change cannot commit in the gap after this check returns.
+    A change that committed before the lock is visible here. A later chunk that
+    does not extend every owner raises before this check. Raising aborts the
+    transaction, so an earlier chunk is not committed.
+
+    A lease that commits while these locks are held was granted under the
+    authority they protected. A move or a disable that was waiting then commits
+    after that lease. The owner keeps it until lease end plus fence grace.
+    Later runs do not extend an owner the new site or policy rejects. They
+    defer until that deadline, then fail over. They do not renew the stale
+    owner again, and the deferral is that one lease term, not an open wait.
 
     Args:
         session: Open placement transaction.
@@ -1111,6 +1224,7 @@ async def _reject_stale_extended_leases(session) -> None:
     found = _EXTENDED_LEASE_IDS.get()
     if not found:
         return
+    await _lock_extended_authority(session, list(found))
     await _arm_statement_timeout(session)
     _raise_if_over_deadline()
     site_region = (
@@ -1623,7 +1737,9 @@ async def _run_placement_once_locked() -> dict | None:
                     cameras = list((await session.execute(camera_query(None))).scalars().all())
                 if not cameras:
                     state.value_json = {"camera_id": None}
-                    committed = await _load_committed_authority(_cameras_for_authority([], candidates))
+                    committed = await _load_committed_authority(
+                        session, _cameras_for_authority([], candidates)
+                    )
                     renewed = await _apply_renewal_candidates(
                         session,
                         candidates,
@@ -1684,7 +1800,9 @@ async def _run_placement_once_locked() -> dict | None:
                         )
                     ).scalars().all()
                 }
-                committed = await _load_committed_authority(_cameras_for_authority(cameras, candidates))
+                committed = await _load_committed_authority(
+                    session, _cameras_for_authority(cameras, candidates)
+                )
                 renewed = await _apply_renewal_candidates(
                     session,
                     candidates,
