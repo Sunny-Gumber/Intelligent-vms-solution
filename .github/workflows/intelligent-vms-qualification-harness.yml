@@ -5,6 +5,8 @@ on:
     paths:
       - 'intelligent-vms-v1/qualification/**'
       - 'intelligent-vms-v1/tests/test_windows_qualification_harness.py'
+      - 'intelligent-vms-v1/tests/test_vms_fix_027_signature_status_map.py'
+      - 'intelligent-vms-v1/tests/test_vms_fix_045_expect_unsigned_fail_closed.py'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_CODE_SIGNING_READINESS.md'
       - '.github/workflows/intelligent-vms-qualification-harness.yml'
       - 'intelligent-vms-v1/docs/program/PROJECT_HANDOFF.md'
@@ -15,6 +17,8 @@ on:
     paths:
       - 'intelligent-vms-v1/qualification/**'
       - 'intelligent-vms-v1/tests/test_windows_qualification_harness.py'
+      - 'intelligent-vms-v1/tests/test_vms_fix_027_signature_status_map.py'
+      - 'intelligent-vms-v1/tests/test_vms_fix_045_expect_unsigned_fail_closed.py'
       - 'intelligent-vms-v1/docs/architecture/ADR_WINDOWS_CODE_SIGNING_READINESS.md'
       - '.github/workflows/intelligent-vms-qualification-harness.yml'
       - 'intelligent-vms-v1/docs/program/PROJECT_HANDOFF.md'
@@ -40,7 +44,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install -r tests/requirements.txt
-          python -m pytest -q tests/test_windows_qualification_harness.py
+          python -m pytest -q tests/test_windows_qualification_harness.py tests/test_vms_fix_027_signature_status_map.py tests/test_vms_fix_045_expect_unsigned_fail_closed.py
       - name: Generate simulated evidence and reports
         shell: pwsh
         run: |
@@ -60,6 +64,7 @@ jobs:
       - name: Unsigned field-test contract
         shell: pwsh
         run: |
+          # Zero-length placeholder only. A non-empty non-PE must not take this path.
           New-Item "$env:RUNNER_TEMP\unsigned.bin" -ItemType File|Out-Null
           python qualification/windows/scripts/qualify.py verify-signature --artifact "$env:RUNNER_TEMP\unsigned.bin" --expect-unsigned
       - name: Collector safety contract
