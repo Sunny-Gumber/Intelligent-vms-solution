@@ -5,9 +5,11 @@ service addresses and raw SOAP responses never cross the API boundary.
 """
 
 import asyncio
+import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from prometheus_client import Counter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +29,12 @@ from app.services.onvif_client import OnvifError
 from app.services import ptz as ptz_service
 
 router = APIRouter(prefix="/api/v1/ptz", tags=["ptz"])
+log = logging.getLogger(__name__)
+# Unlabeled on purpose: camera id and exception class stay in the log line.
+PTZ_COMPENSATING_STOP_FAILURES_TOTAL = Counter(
+    "intelligent_vms_ptz_compensating_stop_failures_total",
+    "Compensating PTZ STOP attempts that failed after a superseded move.",
+)
 
 _generation_lock = asyncio.Lock()
 _generations: dict[tuple[str, str, str], int] = {}
@@ -193,7 +201,15 @@ async def move_camera(
             principal, camera.id, payload.generation, str(payload.context_id)
         ):
             # A newer STOP/context command won while the device call was in flight.
-            # Compensate after late MOVE completion so motion cannot remain active.
+            # Compensate once after late MOVE completion so motion cannot remain active.
+            #
+            # Response semantics stay 409 STALE_PTZ_COMMAND whether this STOP
+            # succeeds or fails. The MOVE already lost the generation fence, and
+            # the caller must learn that it was superseded. Surfacing the STOP
+            # failure as the HTTP result would hide that outcome and can cause
+            # the client to retry motion while the camera may still be moving.
+            # The STOP is not retried: the winning client command already has
+            # stop priority, and another attempt would hold this request open.
             try:
                 await ptz_service.stop(
                     capability.services_json or [],
@@ -203,8 +219,16 @@ async def move_camera(
                     camera.tenant_id,
                     camera.site_id,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                # The camera may still be moving. Identifiers only: no exception
+                # text, device body, URL, or credential.
+                log.error(
+                    "ptz_compensating_stop_failed camera_id=%s operation=%s error_class=%s",
+                    camera.id,
+                    "compensating_stop",
+                    exc.__class__.__name__,
+                )
+                PTZ_COMPENSATING_STOP_FAILURES_TOTAL.inc()
             raise HTTPException(
                 409,
                 {"code": "STALE_PTZ_COMMAND", "message": "PTZ movement was superseded"},

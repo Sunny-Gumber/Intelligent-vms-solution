@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import hmac
 import re
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,11 +14,21 @@ from app.models.entities import EventHistoryEntity
 from app.models.schemas import EventCenterRead, EventHistoryPage, EventIn, EventRead
 from app.routers.cameras import authorized_camera
 from app.services.event_search import EventSearchError, event_search
+from app.services.search_page import apply_page_headers
 from app.services.local_event_store import persist_local_event_once
 from app.services.outbox import OutboxPayloadTooLarge, enqueue_event_once
 
 router = APIRouter(prefix="/api/v1/events", tags=["events"])
 internal_router = APIRouter(prefix="/internal/v1/events", tags=["internal-events"])
+
+
+class _EventRows(list):
+    """Event reads for one search, with malformed-row accounting attached."""
+
+    def __init__(self, items, *, skipped_rows: int = 0):
+        super().__init__(items)
+        self.skipped_rows = skipped_rows
+        self.partial = skipped_rows > 0
 
 
 def _validate_window(
@@ -139,7 +149,7 @@ async def _search_local(
     limit: int,
     before: datetime | None = None,
     before_id: str | None = None,
-) -> list[EventRead]:
+    ) -> _EventRows:
     q = select(EventHistoryEntity).where(
         EventHistoryEntity.timestamp >= start,
         EventHistoryEntity.timestamp < end,
@@ -150,7 +160,7 @@ async def _search_local(
         q = q.where(EventHistoryEntity.site_id == site_id)
     elif allowed_sites is not None:
         if not allowed_sites:
-            return []
+            return _EventRows([])
         q = q.where(EventHistoryEntity.site_id.in_(allowed_sites))
     if camera_id is not None:
         q = q.where(EventHistoryEntity.camera_id == camera_id)
@@ -175,7 +185,7 @@ async def _search_local(
         EventHistoryEntity.timestamp.desc(), EventHistoryEntity.event_id.desc()
     ).limit(limit)
     rows = (await session.execute(q)).scalars().all()
-    return [_read_local(row) for row in rows]
+    return _EventRows([_read_local(row) for row in rows])
 
 
 async def _search(
@@ -191,12 +201,12 @@ async def _search(
     limit: int,
     before: datetime | None = None,
     before_id: str | None = None,
-) -> list[EventRead]:
+) -> _EventRows:
     tenant, allowed_sites = await _authorize_filters(
         session, principal, site_id, camera_id
     )
     if tenant == "__none__":
-        return []
+        return _EventRows([])
     if settings.event_local_store_enabled:
         return await _search_local(
             session,
@@ -228,7 +238,10 @@ async def _search(
         )
     except EventSearchError as exc:
         raise HTTPException(503, str(exc)) from exc
-    return [EventRead.model_validate(row) for row in rows]
+    return _EventRows(
+        [EventRead.model_validate(row) for row in rows],
+        skipped_rows=int(getattr(rows, "skipped_rows", 0)),
+    )
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
@@ -248,6 +261,7 @@ async def ingest_event(
 
 @router.get("", response_model=list[EventRead])
 async def search_events(
+    response: Response,
     start: datetime | None = None,
     end: datetime | None = None,
     site_id: str | None = None,
@@ -260,12 +274,17 @@ async def search_events(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_roles("admin", "operator", "viewer")),
 ):
-    """Search a bounded authorized event window, preserving the legacy list contract."""
+    """Search a bounded authorized event window, preserving the legacy list contract.
+
+    The JSON body stays an array. Malformed-row accounting is carried on
+    ``X-VMS-Partial`` and ``X-VMS-Skipped-Rows`` so a skip cannot shorten the
+    array into a false end of results.
+    """
     if not settings.event_history_enabled:
         raise HTTPException(503, "Event history unavailable in deployment profile")
     start, end = _validate_window(start, end)
     limit = min(limit, max(1, settings.event_query_max_limit))
-    return await _search(
+    rows = await _search(
         session,
         principal,
         start=start,
@@ -276,10 +295,13 @@ async def search_events(
         severity=severity,
         limit=limit,
     )
+    apply_page_headers(response, rows)
+    return rows
 
 
 @router.get("/history", response_model=EventHistoryPage)
 async def event_history_page(
+    response: Response,
     start: datetime | None = None,
     end: datetime | None = None,
     site_id: str | None = None,
@@ -294,7 +316,11 @@ async def event_history_page(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_roles("admin", "operator", "viewer")),
 ):
-    """Return one deterministic bounded page for Event Center clients."""
+    """Return one deterministic bounded page for Event Center clients.
+
+    ``next_before`` is set only when more valid events exist. ``partial`` and
+    ``skipped_rows`` count malformed backend rows skipped while filling the page.
+    """
     if not settings.event_history_enabled:
         raise HTTPException(503, "Event history unavailable in deployment profile")
     start, end = _validate_window(start, end, before)
@@ -317,12 +343,19 @@ async def event_history_page(
     has_more = len(rows) > limit
     items = rows[:limit]
     safe_items = [_event_center_projection(item) for item in items]
+    skipped = int(getattr(rows, "skipped_rows", 0))
+    partial = bool(getattr(rows, "partial", False))
+    apply_page_headers(response, rows)
     if has_more and items:
         last = items[-1]
         return EventHistoryPage(
-            items=safe_items, next_before=last.timestamp, next_before_id=last.event_id
+            items=safe_items,
+            next_before=last.timestamp,
+            next_before_id=last.event_id,
+            partial=partial,
+            skipped_rows=skipped,
         )
-    return EventHistoryPage(items=safe_items)
+    return EventHistoryPage(items=safe_items, partial=partial, skipped_rows=skipped)
 
 
 @internal_router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)

@@ -51,6 +51,10 @@ coverage before playback begins.
 The server never constructs synthetic continuity across a recording gap or
 recording-node/failover boundary.
 
+The timeline body stays a JSON array. Malformed recording-index rows are
+skipped, counted, and reported with `X-VMS-Partial` and `X-VMS-Skipped-Rows`.
+See [Search and index page contract](../architecture/SEARCH_INDEX_PAGE_CONTRACT.md).
+
 ## Time and UI concurrency
 
 Browser date/time inputs represent operator-local time and are converted to
