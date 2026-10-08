@@ -1162,22 +1162,36 @@ _AUTHORITY_LOCKS = (
     ORDER BY ap.id
     FOR SHARE OF ap
     """,
+    """
+    SELECT n.id
+    FROM infrastructure_nodes AS n
+    WHERE n.id IN (
+        SELECT a.node_id
+        FROM placement_assignments AS a
+        WHERE a.id = ANY(CAST(:ids AS varchar[]))
+    )
+    ORDER BY n.id
+    FOR SHARE OF n
+    """,
 )
 
 
 async def _lock_extended_authority(session, assignment_ids: list[str]) -> None:
-    """Hold the site and policy rows for this commit until the transaction ends.
+    """Hold the site, policy, and node rows for this commit until the transaction ends.
 
     The locks are taken after the chunk updates and before commit, in a fixed
-    order: site region, recording policy, AI policy, each by primary key.
-    A site move or a policy disable that has not committed yet waits. One that
-    already committed is visible to the stale check that follows. Taking the
-    locks before the chunks would make a between-chunk change wait and then
-    land after a successful renewal, which is the split this attempt rolls back.
+    order: site region, recording policy, AI policy, then the owner node, each
+    by primary key. A site move, a policy disable, or a node region change that
+    has not committed yet waits. One that already committed is visible to the
+    stale check that follows. Taking the locks before the chunks would make a
+    between-chunk change wait and then land after a successful renewal, which
+    is the split this attempt rolls back.
 
     Assignment rows this attempt updated are already locked by those updates.
-    A generation or owner change of those rows waits on that lock. SQLite has
-    no row share lock; its writer lock already stops a second connection.
+    A generation or owner change of those rows waits on that lock. The
+    assignment foreign key only takes a key share on the node, which does not
+    block an update of region_id. The node share lock does. SQLite has no row
+    share lock; its writer lock already stops a second connection.
 
     Args:
         session: Open placement transaction.
@@ -1199,9 +1213,10 @@ async def _lock_extended_authority(session, assignment_ids: list[str]) -> None:
 async def _reject_stale_extended_leases(session) -> None:
     """Roll the attempt back when an extended lease no longer matches authority.
 
-    The check locks the site and policy rows it depends on, then reads them.
-    Those locks are held until this transaction commits or rolls back, so a
-    region or policy change cannot commit in the gap after this check returns.
+    The check locks the site, policy, and node rows it depends on, then reads
+    them. Those locks are held until this transaction commits or rolls back, so
+    a site move, a policy change, or a node region change cannot commit in the
+    gap after this check returns.
     A change that committed before the lock is visible here. A later chunk that
     does not extend every owner raises before this check. Raising aborts the
     transaction, so an earlier chunk is not committed.

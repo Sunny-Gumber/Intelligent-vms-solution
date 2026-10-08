@@ -85,9 +85,17 @@ async def upsert_node(
         Persisted NodeRead.
 
     Raises:
-        HTTPException: If the node identifier is invalid.
+        HTTPException: If the node identifier is invalid, or the placement fence
+            is still held when the bounded wait expires.
     """
     _validate_node_id(node_id)
+    try:
+        await await_placement_execution_lock(session)
+    except PlacementExecutionBusy as exc:
+        raise HTTPException(
+            409,
+            "Placement ownership is changing; retry node update",
+        ) from exc
     row = await session.get(InfrastructureNodeEntity, node_id)
     created = row is None
     if row is None:

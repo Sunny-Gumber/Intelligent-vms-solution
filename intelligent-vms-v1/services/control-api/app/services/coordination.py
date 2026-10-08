@@ -10,7 +10,7 @@ PLACEMENT_EXECUTION_LOCK_KEY = 0x564D5307
 
 # An authority change waits at most this long for a placement transaction that
 # already holds the fence. The wait is bounded so a stuck holder cannot pin the
-# request. Callers acquire this lock before they lock site, policy, or
+# request. Callers acquire this lock before they lock site, policy, node, or
 # assignment rows. Renewal acquires it first, then locks those rows.
 PLACEMENT_AUTHORITY_LOCK_WAIT_SECONDS = 30
 
@@ -71,10 +71,10 @@ async def await_placement_execution_lock(
 ) -> None:
     """Wait for the placement fence, then hold it until this transaction ends.
 
-    Site-region and policy writes call this before they lock their own rows.
-    A renewal that already holds the fence keeps its authority locks until it
-    commits, so this wait cannot commit a region or policy change underneath
-    that renewal. The lock timeout bounds the wait.
+    Site-region, node-region, and policy writes call this before they lock
+    their own rows. A renewal that already holds the fence keeps its authority
+    locks until it commits, so this wait cannot commit a region or policy
+    change underneath that renewal. The lock timeout bounds the wait.
 
     Args:
         session: SQLAlchemy session that will commit the authority change.

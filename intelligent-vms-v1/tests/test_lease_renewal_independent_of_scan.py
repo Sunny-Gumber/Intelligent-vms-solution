@@ -2944,3 +2944,155 @@ if _postgresql_database_urls():
                 await engine.dispose()
 
         asyncio.run(scenario())
+
+
+    @pytest.mark.parametrize("database_url", _postgresql_database_urls())
+    def test_recheck_window_cannot_commit_node_region(
+        tmp_path, monkeypatch, caplog, database_url
+    ):
+        """QA-014-601. A node region change cannot commit between recheck and commit.
+
+        The second session moves node-a to region-b after the pre-commit check
+        returns and before this transaction commits. Its wait is bounded by
+        PostgreSQL lock_timeout. On the head that share-locks site and policy
+        rows only, that update commits and the renewal stores a full lease.
+        With the node row share-locked through commit, the update waits, times
+        out, and the leases commit while node-a is still in region-a.
+
+        A lease granted that way stays until lease end plus fence grace. The
+        next run does not extend the owner the new node region rejects. After
+        the deadline it failovers to the node that is still in the site region.
+        """
+
+        async def scenario():
+            factory, engine = await _open_database(tmp_path, "window-node.db", database_url)
+            try:
+                lease = 60
+                _configure_budget(
+                    monkeypatch,
+                    lease=lease,
+                    interval=10,
+                    scan_batch=10,
+                    renewal_batch=10,
+                    max_assignments=10,
+                    max_run=4,
+                    lock_retry_limit=1,
+                )
+                monkeypatch.setattr(placement, "_RENEWAL_LEASE_WRITE_CHUNK", 2)
+                camera_ids = [f"cam-{index:02d}" for index in range(1, 5)]
+                original_lease = T0
+                await _seed(
+                    factory,
+                    [
+                        _node("node-a", T0, region_id="region-a"),
+                        _node("node-b", T0, region_id="region-a"),
+                        _site_region("site-a", "region-a"),
+                        *[_camera(camera_id) for camera_id in camera_ids],
+                        *[
+                            _assignment(
+                                camera_id,
+                                "node-a",
+                                original_lease,
+                                region_id="region-a",
+                                assignment_id=f"pa-{camera_id}",
+                            )
+                            for camera_id in camera_ids
+                        ],
+                    ],
+                )
+                monkeypatch.setattr(placement, "SessionLocal", factory)
+                monkeypatch.setattr(placement, "datetime", MutableClock)
+                original_recheck = placement._reject_stale_extended_leases
+                gate = asyncio.Event()
+                done = asyncio.Event()
+                outcome = {"committed": None, "error": None}
+
+                async def race_node_region():
+                    try:
+                        await asyncio.wait_for(gate.wait(), 5)
+                        async with factory() as other:
+                            try:
+                                async with other.begin():
+                                    await other.execute(
+                                        text("SELECT set_config('lock_timeout', '500', true)")
+                                    )
+                                    result = await other.execute(
+                                        text(
+                                            "UPDATE infrastructure_nodes SET region_id = 'region-b' "
+                                            "WHERE id = 'node-a'"
+                                        )
+                                    )
+                                    assert result.rowcount == 1
+                                outcome["committed"] = True
+                            except Exception as exc:
+                                outcome["committed"] = False
+                                outcome["error"] = exc
+                    finally:
+                        done.set()
+
+                async def recheck_then_race(session):
+                    await original_recheck(session)
+                    gate.set()
+                    await asyncio.wait_for(done.wait(), 2)
+
+                monkeypatch.setattr(placement, "_reject_stale_extended_leases", recheck_then_race)
+                caplog.set_level(logging.CRITICAL, logger="app.services.placement")
+                MutableClock.instant = T0 + timedelta(seconds=10)
+                await _touch_heartbeat(factory, "node-a", MutableClock.instant)
+                await _touch_heartbeat(factory, "node-b", MutableClock.instant)
+                racer = asyncio.create_task(race_node_region())
+                try:
+                    result = await placement.run_placement_once()
+                finally:
+                    if not racer.done():
+                        racer.cancel()
+                    await asyncio.wait_for(racer, 3)
+                fresh_lease = MutableClock.instant + timedelta(seconds=lease)
+                assert outcome["committed"] is False, (outcome, result)
+                assert outcome["error"] is not None
+                assert "lock timeout" in str(outcome["error"]).lower(), outcome["error"]
+                assert result["renewed"] == 4, result
+                assert result["renewal_invalidated"] is False, result
+                assert "placement_renewal_invalidated" not in caplog.text
+                stored = {row.camera_id: row for row in await _assignments(factory)}
+                for camera_id in camera_ids:
+                    assert stored[camera_id].node_id == "node-a"
+                    assert stored[camera_id].generation == 1
+                    assert _as_utc(stored[camera_id].lease_expires_at) == fresh_lease
+                async with factory() as check:
+                    node_a = await check.get(InfrastructureNodeEntity, "node-a")
+                    assert node_a.region_id == "region-a"
+
+                monkeypatch.setattr(placement, "_reject_stale_extended_leases", original_recheck)
+                async with factory() as other:
+                    async with other.begin():
+                        node_a = await other.get(InfrastructureNodeEntity, "node-a")
+                        node_a.region_id = "region-b"
+                MutableClock.instant = MutableClock.instant + timedelta(seconds=1)
+                await _touch_heartbeat(factory, "node-a", MutableClock.instant)
+                await _touch_heartbeat(factory, "node-b", MutableClock.instant)
+                follow = await placement.run_placement_once()
+                assert follow["renewed"] == 0, follow
+                assert follow["deferred_autonomy"] == 4, follow
+                assert follow["moved"] == 0, follow
+                follow_rows = {row.camera_id: row for row in await _assignments(factory)}
+                for camera_id in camera_ids:
+                    assert follow_rows[camera_id].node_id == "node-a"
+                    assert follow_rows[camera_id].generation == 1
+                    assert _as_utc(follow_rows[camera_id].lease_expires_at) == fresh_lease
+                grace = float(settings.placement_fence_expiry_grace_seconds)
+                MutableClock.instant = fresh_lease + timedelta(seconds=grace)
+                await _touch_heartbeat(factory, "node-a", MutableClock.instant)
+                await _touch_heartbeat(factory, "node-b", MutableClock.instant)
+                failover = await placement.run_placement_once()
+                assert failover["renewed"] == 0, failover
+                assert failover["deferred_autonomy"] == 0, failover
+                assert failover["moved"] == 4, failover
+                moved_rows = {row.camera_id: row for row in await _assignments(factory)}
+                for camera_id in camera_ids:
+                    assert moved_rows[camera_id].node_id == "node-b"
+                    assert moved_rows[camera_id].generation == 2
+            finally:
+                await engine.dispose()
+
+        asyncio.run(scenario())
