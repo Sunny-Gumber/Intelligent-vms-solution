@@ -430,16 +430,19 @@ def test_health_monitor_does_not_clear_path_present_on_truncation(monkeypatch):
     monkeypatch.setattr(health_monitor.settings, "event_local_store_enabled", False)
     engine, factory = _health_session_factory()
     before_errors = health_monitor.stats.media_errors
-    # SQLite returns naive timestamps. Keep the monitor clock naive too so this
-    # test does not depend on the observed_at comparison owned by VMS-FIX-016.
+    # The stored instant is naive, which is what SQLite returns. The clock
+    # honors the timezone argument so the FIX-016 comparison can subtract it
+    # from an aware now without this test editing that comparison.
     observed = datetime(2026, 10, 8, 12, 0, 0)
 
-    class NaiveClock(datetime):
+    class FixedClock(datetime):
         @classmethod
         def now(cls, tz=None):
-            return observed
+            if tz is None:
+                return observed
+            return observed.replace(tzinfo=tz)
 
-    monkeypatch.setattr(health_monitor, "datetime", NaiveClock)
+    monkeypatch.setattr(health_monitor, "datetime", FixedClock)
 
     async def scenario():
         async with engine.begin() as connection:
@@ -615,15 +618,17 @@ def _names(result):
     return [item["name"] for item in result["items"]]
 
 
-def _install_naive_clock(monkeypatch):
+def _install_fixed_clock(monkeypatch):
     observed = datetime(2026, 10, 8, 12, 0, 0)
 
-    class NaiveClock(datetime):
+    class FixedClock(datetime):
         @classmethod
         def now(cls, tz=None):
-            return observed
+            if tz is None:
+                return observed
+            return observed.replace(tzinfo=tz)
 
-    monkeypatch.setattr(health_monitor, "datetime", NaiveClock)
+    monkeypatch.setattr(health_monitor, "datetime", FixedClock)
     return observed
 
 
@@ -726,7 +731,7 @@ def test_qa_013_001_later_page_http_500_does_not_publish_spare_capacity(monkeypa
 def test_qa_013_002_later_page_error_keeps_previous_path_present(monkeypatch):
     """QA-013-002: HTTP 500 and timeout on a later page keep the previous flag."""
     _reset_failure_clients()
-    observed = _install_naive_clock(monkeypatch)
+    observed = _install_fixed_clock(monkeypatch)
     monkeypatch.setattr(health_monitor.settings, "placement_execution_enabled", False)
     monkeypatch.setattr(health_monitor.settings, "event_pipeline_enabled", False)
     monkeypatch.setattr(health_monitor.settings, "event_local_store_enabled", False)
@@ -765,7 +770,7 @@ def test_qa_013_002_later_page_error_keeps_previous_path_present(monkeypatch):
 
 
 def test_qa_013_002_distributed_node_error_keeps_previous_path_present(monkeypatch):
-    observed = _install_naive_clock(monkeypatch)
+    observed = _install_fixed_clock(monkeypatch)
     monkeypatch.setattr(health_monitor.settings, "placement_execution_enabled", True)
     monkeypatch.setattr(health_monitor.settings, "event_pipeline_enabled", False)
     monkeypatch.setattr(health_monitor.settings, "event_local_store_enabled", False)
