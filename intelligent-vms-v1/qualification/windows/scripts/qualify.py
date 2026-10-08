@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Safe stdlib-only qualification evidence tooling."""
 from __future__ import annotations
-import argparse, csv, datetime as dt, json, os, re, struct, subprocess
+import argparse, csv, datetime as dt, hashlib, json, os, re, struct, subprocess, sys
 from pathlib import Path
 
 STATES={"NOT_RUN","BLOCKED_EXTERNAL","PASS","FAIL","PASS_WITH_LIMITATION","NOT_APPLICABLE"}
@@ -18,6 +18,249 @@ def run_id(sequence:int, when:dt.date|None=None)->str:
     if not 1<=sequence<=999: raise ValueError("sequence must be 1..999")
     when=when or dt.datetime.now(dt.timezone.utc).date()
     return f"VMS-WIN-{when:%Y%m%d}-{sequence:03d}"
+
+PRODUCT_MANIFEST=Path("release/windows/product-version.json")
+RUNTIME_MANIFEST=Path("infra/mediamtx/runtime.json")
+SHA256_NOT_PROVIDED="NOT_PROVIDED"
+SHA256_COMPUTED="COMPUTED"
+PRODUCT_FIELDS=(
+ ("product","product"),
+ ("product_version","product_version"),
+ ("installer_version","installer_version"),
+ ("server_version","server_package_version"),
+ ("client_version","client_package_version"),
+ ("db_schema_revision","schema_baseline"),
+)
+SUPPLIED_IDENTITY_FIELDS=(
+ ("product_version","product_version"),
+ ("installer_version","installer_version"),
+ ("server_version","server_version"),
+ ("client_version","client_version"),
+ ("schema_revision","db_schema_revision"),
+ ("mediamtx_version","mediamtx_version"),
+)
+RUNTIME_PINS=("windows_zip_sha256","windows_exe_sha256")
+
+class QualificationIdentityError(ValueError):
+    """Canonical qualification identity could not be loaded or did not match."""
+
+def product_root_from(explicit:str|None)->Path:
+    """Resolve the product root that holds the canonical identity manifests.
+
+    Args:
+        explicit: Caller-supplied product root, or None for the repository root
+            that contains this script.
+
+    Returns:
+        Directory containing release/windows/product-version.json and
+        infra/mediamtx/runtime.json.
+
+    Raises:
+        QualificationIdentityError: The supplied root is blank or is not a directory.
+    """
+    if explicit is not None:
+        if not explicit.strip():
+            raise QualificationIdentityError("product root missing: blank path")
+        root=Path(explicit)
+        if not root.is_dir():
+            raise QualificationIdentityError(f"product root missing: {root}")
+        return root
+    return Path(__file__).resolve().parents[3]
+
+def read_manifest(path:Path)->dict:
+    """Load one canonical JSON manifest.
+
+    Args:
+        path: Manifest file to read.
+
+    Returns:
+        The manifest object.
+
+    Raises:
+        QualificationIdentityError: The file is missing, not JSON, or not an object.
+    """
+    if not path.is_file():
+        raise QualificationIdentityError(f"canonical manifest missing: {path}")
+    try:
+        data=json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise QualificationIdentityError(f"canonical manifest malformed: {path}: {exc}") from exc
+    if not isinstance(data,dict):
+        raise QualificationIdentityError(f"canonical manifest malformed: {path}: expected a JSON object")
+    return data
+
+def require_text(manifest:dict,key:str,path:Path)->str:
+    """Return a required non-empty string field from a manifest.
+
+    Args:
+        manifest: Parsed manifest object.
+        key: Required field name.
+        path: Manifest path included in the error.
+
+    Returns:
+        The field value with surrounding whitespace removed.
+
+    Raises:
+        QualificationIdentityError: The field is missing, not a string, or blank.
+    """
+    value=manifest.get(key)
+    if not isinstance(value,str) or not value.strip():
+        raise QualificationIdentityError(f"canonical manifest malformed: {path}: {key} must be a non-empty string")
+    return value.strip()
+
+def canonical_identity(root:Path)->dict:
+    """Load product, schema, and MediaMTX identity from the canonical manifests.
+
+    Args:
+        root: Product root.
+
+    Returns:
+        Identity fields used to stamp a qualification run. MediaMTX pins are the
+        Windows zip and exe digests from runtime.json. They are not copied into
+        a run unless an artifact is hashed and matches one of them.
+
+    Raises:
+        QualificationIdentityError: A manifest is missing or malformed.
+    """
+    product_path=root/PRODUCT_MANIFEST
+    runtime_path=root/RUNTIME_MANIFEST
+    product=read_manifest(product_path)
+    runtime=read_manifest(runtime_path)
+    identity={dest:require_text(product,source,product_path) for dest,source in PRODUCT_FIELDS}
+    identity["mediamtx_version"]=require_text(runtime,"runtime_version",runtime_path)
+    for pin in RUNTIME_PINS:
+        digest=require_text(runtime,pin,runtime_path)
+        if not re.fullmatch(r"[0-9a-f]{64}",digest):
+            raise QualificationIdentityError(
+                f"canonical manifest malformed: {runtime_path}: {pin} must be a lowercase SHA-256")
+        identity[pin]=digest
+    return identity
+
+def file_sha256(path:Path)->str:
+    """Hash a file with SHA-256.
+
+    Args:
+        path: File to read.
+
+    Returns:
+        Lowercase hexadecimal SHA-256 of the file contents.
+    """
+    digest=hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024*1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def mediamtx_stamp(identity:dict, artifact:str|None)->dict:
+    """Build the MediaMTX identity stamp for a run.
+
+    Args:
+        identity: Canonical identity, including runtime version and Windows pins.
+        artifact: Optional path to a MediaMTX zip or exe. When omitted, the
+            digest is marked not provided.
+
+    Returns:
+        MediaMTX version from the runtime manifest plus a computed digest, or
+        an explicit not-provided marker.
+
+    Raises:
+        QualificationIdentityError: The artifact is missing, or its digest does
+            not match windows_zip_sha256 or windows_exe_sha256.
+    """
+    version=identity["mediamtx_version"]
+    if artifact is None:
+        return {"version":version,"sha256":SHA256_NOT_PROVIDED,"sha256_status":SHA256_NOT_PROVIDED}
+    if not artifact.strip():
+        raise QualificationIdentityError("mediamtx artifact missing: blank path")
+    path=Path(artifact)
+    if not path.is_file():
+        raise QualificationIdentityError(f"mediamtx artifact missing: {path}")
+    digest=file_sha256(path)
+    if digest not in {identity[pin] for pin in RUNTIME_PINS}:
+        raise QualificationIdentityError(
+            "observed identity mismatch: mediamtx artifact sha256 "
+            f"{digest} does not match runtime manifest windows_zip_sha256 or windows_exe_sha256")
+    return {"version":version,"sha256":digest,"sha256_status":SHA256_COMPUTED}
+
+def reject_supplied_identity_mismatch(args, identity:dict)->None:
+    """Reject caller-supplied identity that disagrees with the manifests.
+
+    Args:
+        args: Parsed new-run arguments. Omitted optional fields are not checks.
+        identity: Canonical identity.
+
+    Raises:
+        QualificationIdentityError: One or more supplied values differ from the
+            manifest. The stamp is never taken from the supplied value.
+    """
+    mismatches=[]
+    for attr,field in SUPPLIED_IDENTITY_FIELDS:
+        value=getattr(args,attr)
+        if value is None:
+            continue
+        expected=identity[field]
+        if value!=expected:
+            mismatches.append(f"{field} {value!r} does not match manifest {expected!r}")
+    if mismatches:
+        raise QualificationIdentityError("supplied identity mismatch: "+"; ".join(mismatches))
+
+def build_new_run(args, root:Path)->dict:
+    """Stamp a simulated qualification run from the canonical manifests.
+
+    Args:
+        args: Parsed new-run arguments.
+        root: Product root containing the canonical manifests.
+
+    Returns:
+        Qualification result labeled SIMULATED. Product, installer, server,
+        client, schema, and MediaMTX version come from the manifests.
+
+    Raises:
+        QualificationIdentityError: A manifest is missing or malformed, or a
+            supplied or observed identity does not match the manifest.
+        ValueError: The run sequence is outside 1..999.
+    """
+    identity=canonical_identity(root)
+    reject_supplied_identity_mismatch(args, identity)
+    return {
+     "qualification_run_id":run_id(args.sequence),
+     "started_utc":dt.datetime.now(dt.timezone.utc).isoformat(),
+     "tester_id":"HOSTED_CI","machine_id":"HOSTED-CI","test_profile":"LAYER_A_SIMULATION",
+     "build":{
+      "git_sha":args.git_sha,
+      "installer":Path(args.installer).name,
+      "installer_version":identity["installer_version"],
+      "installer_sha256":args.installer_sha256,
+      "product":identity["product"],
+      "product_version":identity["product_version"],
+      "server_version":identity["server_version"],
+      "client_version":identity["client_version"],
+      "db_schema_revision":identity["db_schema_revision"],
+      "mediamtx":mediamtx_stamp(identity, args.mediamtx_artifact),
+     },
+     "evidence_source":"SIMULATED","overall_result":"NOT_RUN","signing_status":"UNSIGNED_EXPECTED",
+     "approval":{"automated_result":"NOT_RUN","tester_signoff":"NOT_RUN","independent_review":"NOT_RUN"},
+     "results":[],
+     "known_limitations":["External Windows 10/11, camera, soak, performance and production signing evidence pending"],
+    }
+
+def release_product(build:dict)->str:
+    """Return the product name carried by a run, or the canonical manifest name.
+
+    Args:
+        build: Build object from a qualification result.
+
+    Returns:
+        Product name to stamp on the release manifest.
+
+    Raises:
+        QualificationIdentityError: The result omitted product and the canonical
+            product manifest is missing or malformed.
+    """
+    product=build.get("product")
+    if isinstance(product,str) and product.strip():
+        return product
+    return canonical_identity(product_root_from(None))["product"]
 
 def load(path:str)->dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -71,8 +314,24 @@ def summary(d:dict)->str:
     return "\n".join(lines)+"\n"
 
 def release_manifest(d:dict)->dict:
+    """Build a release manifest from a qualification result.
+
+    The product name comes from the result when the run stamped one. Otherwise
+    it is loaded from the canonical product manifest.
+
+    Args:
+        d: Qualification result document.
+
+    Returns:
+        Release manifest bound to that result's build identity.
+
+    Raises:
+        QualificationIdentityError: The result has no product name and the
+            canonical product manifest is missing or malformed.
+        KeyError: The result has no build object.
+    """
     b=d["build"]
-    return {"product":"Intelligent VMS","product_version":b.get("product_version"),"git_sha":b.get("git_sha"),
+    return {"product":release_product(b),"product_version":b.get("product_version"),"git_sha":b.get("git_sha"),
       "installer":b.get("installer"),"installer_version":b.get("installer_version"),"installer_sha256":b.get("installer_sha256"),"server_version":b.get("server_version"),
       "client_version":b.get("client_version"),"db_schema_revision":b.get("db_schema_revision"),"mediamtx":b.get("mediamtx"),
       "installer_tool":"NSIS 3.13","qualification_run_id":d.get("qualification_run_id"),
@@ -119,8 +378,26 @@ def verify_signature(path:str, expect_unsigned:bool):
     return "FAIL",json.dumps(data,sort_keys=True)
 
 def main():
+    """Dispatch qualification harness commands.
+
+    Returns:
+        Process exit code. new-run returns 1 when canonical identity cannot be stamped.
+    """
     p=argparse.ArgumentParser(); sp=p.add_subparsers(dest="cmd",required=True)
-    n=sp.add_parser("new-run"); n.add_argument("--sequence",type=int,required=True); n.add_argument("--git-sha",required=True); n.add_argument("--installer",required=True); n.add_argument("--installer-sha256",required=True); n.add_argument("--output",required=True)
+    n=sp.add_parser("new-run")
+    n.add_argument("--sequence",type=int,required=True)
+    n.add_argument("--git-sha",required=True)
+    n.add_argument("--installer",required=True)
+    n.add_argument("--installer-sha256",required=True)
+    n.add_argument("--output",required=True)
+    n.add_argument("--product-root",help="Product root containing the canonical identity manifests")
+    n.add_argument("--product-version",help="Observed product version; must match the manifest")
+    n.add_argument("--installer-version",help="Observed installer version; must match the manifest")
+    n.add_argument("--server-version",help="Observed server version; must match the manifest")
+    n.add_argument("--client-version",help="Observed client version; must match the manifest")
+    n.add_argument("--schema-revision",help="Observed schema revision; must match the manifest")
+    n.add_argument("--mediamtx-version",help="Observed MediaMTX runtime version; must match the manifest")
+    n.add_argument("--mediamtx-artifact",help="MediaMTX zip or exe to hash; required to record a digest")
     v=sp.add_parser("validate"); v.add_argument("--result",required=True)
     s=sp.add_parser("summarize"); s.add_argument("--result",required=True); s.add_argument("--output",required=True)
     r=sp.add_parser("release-manifest"); r.add_argument("--result",required=True); r.add_argument("--output",required=True)
@@ -129,8 +406,12 @@ def main():
     perf=sp.add_parser("performance-template"); perf.add_argument("--output",required=True)
     args=p.parse_args()
     if args.cmd=="new-run":
-        d={"qualification_run_id":run_id(args.sequence),"started_utc":dt.datetime.now(dt.timezone.utc).isoformat(),"tester_id":"HOSTED_CI","machine_id":"HOSTED-CI","test_profile":"LAYER_A_SIMULATION","build":{"git_sha":args.git_sha,"installer":Path(args.installer).name,"installer_version":"0.2.0.0","installer_sha256":args.installer_sha256,"product_version":"0.2.0","server_version":"0.2.0","client_version":"0.2.0","db_schema_revision":"0018","mediamtx":{"version":"1.21.1","sha256":"faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23"}},"evidence_source":"SIMULATED","overall_result":"NOT_RUN","signing_status":"UNSIGNED_EXPECTED","approval":{"automated_result":"NOT_RUN","tester_signoff":"NOT_RUN","independent_review":"NOT_RUN"},"results":[],"known_limitations":["External Windows 10/11, camera, soak, performance and production signing evidence pending"]}
-        Path(args.output).write_text(json.dumps(d,indent=2)+"\n",encoding="utf-8"); return 0
+        try:
+            stamped=build_new_run(args, product_root_from(args.product_root))
+        except QualificationIdentityError as exc:
+            print(f"qualification_identity_error: {exc}", file=sys.stderr)
+            return 1
+        Path(args.output).write_text(json.dumps(stamped,indent=2)+"\n",encoding="utf-8"); return 0
     if args.cmd=="validate":
         e=validate_result(load(args.result)); print("\n".join(e) if e else "qualification_result_valid"); return 1 if e else 0
     if args.cmd=="summarize": Path(args.output).write_text(summary(load(args.result)),encoding="utf-8"); return 0
