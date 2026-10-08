@@ -84,9 +84,10 @@ _RESOURCE_SUMMARY_KEYS = (
 _GPU_USAGE_KEYS = ("utilization_pct", "memory_used_mib", "temperature_c")
 _SUMMARY_KEYS = ("mean", "p95", "max")
 # JSON null is accepted only for sensors the phase-8 writers set when the
-# hardware cannot measure them. A null here is omitted from the content
-# fingerprint, the same as a missing key. Every other present null in a
-# measured field is not evidence and cannot count as a repeat.
+# hardware cannot measure them. Those fields stay measurable. They are not
+# part of repeat distinctness: a null, a missing key, and a number share the
+# content fingerprint, the same way NIC speed_mbps already does. Every other
+# present null in a measured field is not evidence and cannot count as a repeat.
 #
 # resources.cpu_freq_max_mhz.{mean,p95,max}
 #   SystemSampler.sample writes None when cpu_freq.max is missing or 0:
@@ -98,7 +99,12 @@ _SUMMARY_KEYS = ("mean", "p95", "max")
 #   resource_summary: min(freq_ratios) if freq_ratios else None
 # environment.hardware.network_interfaces[].speed_mbps
 #   environment_metadata: int(stat.speed) if stat and stat.speed > 0 else None
+#   Speed is hardware identity, not measured content, so the fingerprint
+#   never includes it.
 _UNAVAILABLE_SENSOR_NULL_SUMMARIES = frozenset({"cpu_freq_max_mhz", "max_temperature_c"})
+_FINGERPRINT_IGNORED_SENSOR_FIELDS = _UNAVAILABLE_SENSOR_NULL_SUMMARIES | frozenset(
+    {"cpu_freq_ratio_min"}
+)
 
 
 def _canonical_number(value: Any) -> str:
@@ -557,10 +563,11 @@ def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
     usage: dict[str, Any] = {}
     _put_number(usage, "samples", resources.get("samples"))
     for key in _RESOURCE_SUMMARY_KEYS:
+        if key in _FINGERPRINT_IGNORED_SENSOR_FIELDS:
+            continue
         summary = _summary_numbers(resources.get(key))
         if summary:
             usage[key] = summary
-    _put_number(usage, "cpu_freq_ratio_min", resources.get("cpu_freq_ratio_min"))
     for key in ("thermal_measured", "thermal_limit_exceeded", "gpu_measured"):
         if key in resources and resources[key] is not None:
             usage[key] = _canonical_number(resources[key])
@@ -693,12 +700,11 @@ def content_fingerprint(result: dict[str, Any]) -> str:
     The fingerprint covers durations, throughput and capacity figures, latency
     figures, failure_rate and error counts, resource-usage summaries, and the
     workload type plus WORKLOAD_SHAPING_CONFIG_FIELDS. That same constant is
-    the workload key. Free-text config keys are ignored. JSON null on the
-    unavailable-sensor allowlist is omitted, the same as a missing key, so two
-    unavailable readings match. A number in that field is included, so null
-    and a number are different measured content. A null in any other measured
-    field is not evidence: the gates exclude that record from repeat_count, so
-    the omitted null cannot become a distinct qualifying fingerprint.
+    the workload key. Free-text config keys are ignored. Unavailable-sensor
+    fields are omitted entirely, including NIC speed_mbps, so a null, a missing
+    key, and a number in one of those fields are one fingerprint. A null in
+    any other measured field is not evidence: the gates exclude that record
+    from repeat_count, so it cannot become a distinct qualifying fingerprint.
     Descriptive identity
     text such as OS name and version, CPU model, and NIC or GPU inventory names
     is not included.

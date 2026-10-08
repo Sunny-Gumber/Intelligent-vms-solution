@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import subprocess
 import sys
 
@@ -270,6 +271,74 @@ def _gate_reasons(report):
     return " ".join(reason for group in report["groups"] for reason in group["reasons"])
 
 
+def _sensor_hook_env(directory, *, max_mhz, temp_c, nic_speed, current_mhz=1234.0):
+    """Return an environment that forces psutil sensor readings for writer CLIs.
+
+    The child process imports this sitecustomize before the benchmark driver.
+    max_mhz 0, temp_c None, and nic_speed 0 are the unavailable-sensor nulls.
+    """
+    hook = directory / "sensor-hook"
+    hook.mkdir()
+    temp_literal = "None" if temp_c is None else repr(float(temp_c))
+    (hook / "sitecustomize.py").write_text(
+        "\n".join(
+            [
+                "import psutil",
+                "",
+                "class _Freq:",
+                f"    current = {float(current_mhz)!r}",
+                "    min = 0.0",
+                f"    max = {float(max_mhz)!r}",
+                "",
+                "def _cpu_freq(*_args, **_kwargs):",
+                "    return _Freq()",
+                "",
+                "class _Reading:",
+                "    label = ''",
+                "    high = None",
+                "    critical = None",
+                f"    current = {temp_literal}",
+                "",
+                "def _temps(*_args, **_kwargs):",
+                "    if _Reading.current is None:",
+                "        return {}",
+                "    return {'cpu-thermal': [_Reading()]}",
+                "",
+                "class _Stat:",
+                "    def __init__(self, inner):",
+                "        self._inner = inner",
+                "    @property",
+                "    def speed(self):",
+                f"        return {int(nic_speed)!r}",
+                "    @property",
+                "    def mtu(self):",
+                "        return self._inner.mtu",
+                "    @property",
+                "    def isup(self):",
+                "        return self._inner.isup",
+                "    @property",
+                "    def duplex(self):",
+                "        return self._inner.duplex",
+                "",
+                "_real_stats = psutil.net_if_stats",
+                "",
+                "def _stats(*_args, **_kwargs):",
+                "    return {name: _Stat(stat) for name, stat in _real_stats().items()}",
+                "",
+                "psutil.cpu_freq = _cpu_freq",
+                "psutil.sensors_temperatures = _temps",
+                "psutil.net_if_stats = _stats",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    previous = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(hook) if not previous else str(hook) + os.pathsep + previous
+    return env
+
+
 @pytest.mark.parametrize("writer", ("storage", "recording", "reconnect", "event"))
 def test_phase8_driver_null_sensors_are_measurable(tmp_path, writer):
     output_json = tmp_path / f"{writer}.json"
@@ -279,12 +348,21 @@ def test_phase8_driver_null_sensors_are_measurable(tmp_path, writer):
         check=False,
         capture_output=True,
         text=True,
+        env=_sensor_hook_env(tmp_path, max_mhz=0.0, temp_c=None, nic_speed=0),
     )
     assert completed.returncode == 0, completed.stderr
     assert output_json.is_file()
     payload = json.loads(output_json.read_text(encoding="utf-8"))
     nulls = _null_paths(payload)
     assert any(marker in path for path in nulls for marker in _SENSOR_NULL_MARKERS)
+    resources = payload["resources"]
+    assert resources["cpu_freq_mhz"]["mean"] == 1234.0
+    assert resources["cpu_freq_max_mhz"]["mean"] is None
+    assert resources["max_temperature_c"]["mean"] is None
+    assert resources["cpu_freq_ratio_min"] is None
+    for nic in payload["environment"]["hardware"]["network_interfaces"]:
+        if isinstance(nic, dict):
+            assert nic["speed_mbps"] is None
     parsed = common.parse_benchmark_record(payload)
     assert not isinstance(parsed, common.Rejection), getattr(parsed, "reason", "")
     report = reproducibility.build_report(
@@ -326,7 +404,7 @@ def test_phase8_driver_null_sensors_are_measurable(tmp_path, writer):
     assert len({common.content_fingerprint(item) for item in copies}) == 1
     numbered = copy.deepcopy(copies[0])
     numbered["resources"]["cpu_freq_ratio_min"] = 0.5
-    assert common.content_fingerprint(numbered) != common.content_fingerprint(copies[0])
+    assert common.content_fingerprint(numbered) == common.content_fingerprint(copies[0])
     repeat_report = reproducibility.build_report(
         results=copies,
         min_duration_seconds=0,
@@ -592,7 +670,7 @@ def test_allowlisted_sensor_null_matches_missing_key_and_not_a_number():
     assert common.content_fingerprint(base) == common.content_fingerprint(missing)
     numbered = copy.deepcopy(base)
     numbered["resources"]["cpu_freq_ratio_min"] = 0.5
-    assert common.content_fingerprint(numbered) != common.content_fingerprint(base)
+    assert common.content_fingerprint(numbered) == common.content_fingerprint(base)
     parsed = common.parse_benchmark_record(base)
     assert not isinstance(parsed, common.Rejection)
     report = reproducibility.build_report(
@@ -697,3 +775,252 @@ def test_recording_driver_null_metrics_do_not_qualify(tmp_path):
         min_warmup_seconds=0,
     )
     assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in json.dumps(output)
+
+
+_ALLOWLISTED_SENSOR_FIELDS = (
+    "cpu_freq_max_mhz.mean",
+    "cpu_freq_max_mhz.p95",
+    "cpu_freq_max_mhz.max",
+    "cpu_freq_max_mhz",
+    "max_temperature_c.mean",
+    "max_temperature_c.p95",
+    "max_temperature_c.max",
+    "max_temperature_c",
+    "cpu_freq_ratio_min",
+    "speed_mbps",
+)
+
+
+def _numbered_sensor_base():
+    """Storage-shaped result with every allowlisted sensor present as a number.
+
+    Duration and warmup meet the default 300s and 30s floors. Capacity is the
+    same on every copy so a sensor null is the only edit.
+    """
+    result = common.build_result(
+        workload_type="synthetic-storage-write",
+        workload_config={
+            "path": "/tmp/qa701",
+            "streams": 1,
+            "mib_per_stream": 1,
+            "chunk_mib": 0.25,
+            "fsync_each_chunk": False,
+        },
+        started_at="2026-10-08T00:00:00+00:00",
+        duration_seconds=600.0,
+        warmup_seconds=60.0,
+        operations_ok=4,
+        operations_failed=0,
+        latencies_seconds=[0.001, 0.002, 0.003, 0.004],
+        samples=[
+            {
+                "cpu_pct": 10.0,
+                "cpu_freq_mhz": 2400.0,
+                "cpu_freq_max_mhz": 5000.0,
+                "max_temperature_c": 55.0,
+                "ram_used_bytes": 1024,
+                "ram_pct": 40.0,
+                "net_rx_mbps": 0.0,
+                "net_tx_mbps": 0.0,
+                "disk_read_mbps": 0.0,
+                "disk_write_mbps": 0.0,
+                "gpu": [],
+            }
+        ],
+        extra_metrics={
+            "bytes_written": 1048576,
+            "aggregate_write_mbps": 20000.0,
+            "aggregate_write_MBps": 2500.0,
+        },
+    )
+    resources = result["resources"]
+    resources["cpu_pct"] = {"mean": 10.0, "p95": 20.0, "max": 30.0}
+    resources["ram_pct"] = {"mean": 40.0, "p95": 50.0, "max": 60.0}
+    resources["cpu_freq_mhz"] = {"mean": 2400.0, "p95": 2400.0, "max": 2400.0}
+    resources["cpu_freq_max_mhz"] = {"mean": 5000.0, "p95": 5000.0, "max": 5000.0}
+    resources["max_temperature_c"] = {"mean": 55.0, "p95": 55.0, "max": 55.0}
+    resources["cpu_freq_ratio_min"] = 0.48
+    hardware = result["environment"]["hardware"]
+    interfaces = list(hardware.get("network_interfaces") or [])
+    if not interfaces:
+        interfaces = [{"name": "eth0", "is_up": True, "mtu": 1500}]
+    for nic in interfaces:
+        nic["speed_mbps"] = 1000
+    hardware["network_interfaces"] = interfaces
+    return result
+
+
+def _null_allowlisted_sensor(item, field):
+    if field == "speed_mbps":
+        for nic in item["environment"]["hardware"]["network_interfaces"]:
+            nic["speed_mbps"] = None
+        return
+    if field == "cpu_freq_ratio_min":
+        item["resources"]["cpu_freq_ratio_min"] = None
+        return
+    if "." not in field:
+        item["resources"][field] = {"mean": None, "p95": None, "max": None}
+        return
+    summary, component = field.split(".", 1)
+    item["resources"][summary][component] = None
+
+
+def _assert_sensor_copies_do_not_qualify(tmp_path, copies, *, min_repeats, min_duration, min_warmup):
+    report = reproducibility.build_report(
+        results=copies,
+        min_repeats=min_repeats,
+        min_duration_seconds=min_duration,
+        min_warmup_seconds=min_warmup,
+    )
+    assert report["summary"]["passed"] == 0
+    assert all(group["repeat_count"] < min_repeats for group in report["groups"])
+    output = matrix.build_matrix(
+        results=copies,
+        demand=_storage_demand(),
+        min_repeats=min_repeats,
+        min_duration_seconds=min_duration,
+        min_warmup_seconds=min_warmup,
+    )
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in json.dumps(output)
+    result_dir = tmp_path / "results"
+    result_dir.mkdir(parents=True)
+    paths = []
+    for index, item in enumerate(copies):
+        path = result_dir / f"{index}.json"
+        path.write_text(json.dumps(item), encoding="utf-8")
+        paths.append(str(path))
+    report_path = tmp_path / "reproducibility.json"
+    matrix_path = tmp_path / "hardware-matrix.json"
+    demand_path = tmp_path / "demand.json"
+    demand_path.write_text(json.dumps(_storage_demand()), encoding="utf-8")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_reproducibility.py"),
+            "--results",
+            *paths,
+            "--output",
+            str(report_path),
+            "--fail-on-rejected-groups",
+            "--min-repeats",
+            str(min_repeats),
+            "--min-duration-seconds",
+            str(min_duration),
+            "--min-warmup-seconds",
+            str(min_warmup),
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert report_path.is_file(), completed.stderr
+    assert "Traceback" not in completed.stderr
+    assert completed.returncode != 0
+    matrix_cli = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_hardware_matrix.py"),
+            "--results",
+            *paths,
+            "--demand",
+            str(demand_path),
+            "--reproducibility-report",
+            str(report_path),
+            "--output",
+            str(matrix_path),
+            "--min-repeats",
+            str(min_repeats),
+            "--min-duration-seconds",
+            str(min_duration),
+            "--min-warmup-seconds",
+            str(min_warmup),
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert matrix_path.is_file(), matrix_cli.stderr
+    assert "Traceback" not in matrix_cli.stderr
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in matrix_path.read_text(encoding="utf-8")
+    return report
+
+
+def test_qa_012_701_storage_driver_sensor_nulls_are_not_repeats(tmp_path):
+    output_json = tmp_path / "storage.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_storage_benchmark.py"),
+            *_writer_command("storage", tmp_path, output_json),
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_sensor_hook_env(tmp_path, max_mhz=5000.0, temp_c=55.0, nic_speed=1000, current_mhz=2400.0),
+    )
+    assert completed.returncode == 0, completed.stderr
+    base = json.loads(output_json.read_text(encoding="utf-8"))
+    assert base["resources"]["cpu_freq_max_mhz"]["mean"] == 5000.0
+    assert isinstance(base["resources"]["cpu_freq_ratio_min"], float)
+    copies = []
+    for name, field in (
+        ("a", None),
+        ("b", "cpu_freq_max_mhz.mean"),
+        ("c", "cpu_freq_ratio_min"),
+    ):
+        item = copy.deepcopy(base)
+        item["benchmark_id"] = f"sensor-null-{name}"
+        if field is not None:
+            _null_allowlisted_sensor(item, field)
+        copies.append(item)
+    assert len({common.content_fingerprint(item) for item in copies}) == 1
+    _assert_sensor_copies_do_not_qualify(
+        tmp_path / "gate",
+        copies,
+        min_repeats=3,
+        min_duration=0,
+        min_warmup=0,
+    )
+
+
+def test_qa_012_701_default_floors_reject_nulled_sensor_numbers(tmp_path):
+    base = _numbered_sensor_base()
+    copies = []
+    for name, field in (
+        ("orig", None),
+        ("freq-mean-null", "cpu_freq_max_mhz.mean"),
+        ("freq-p95-null", "cpu_freq_max_mhz.p95"),
+    ):
+        item = copy.deepcopy(base)
+        item["benchmark_id"] = name
+        if field is not None:
+            _null_allowlisted_sensor(item, field)
+        copies.append(item)
+    assert len({common.content_fingerprint(item) for item in copies}) == 1
+    _assert_sensor_copies_do_not_qualify(
+        tmp_path,
+        copies,
+        min_repeats=3,
+        min_duration=300,
+        min_warmup=30,
+    )
+
+
+@pytest.mark.parametrize("field", _ALLOWLISTED_SENSOR_FIELDS)
+def test_qa_012_701_each_allowlisted_sensor_null_is_not_distinct(tmp_path, field):
+    base = _numbered_sensor_base()
+    nulled = copy.deepcopy(base)
+    nulled["benchmark_id"] = f"null-{field}"
+    _null_allowlisted_sensor(nulled, field)
+    base["benchmark_id"] = f"number-{field}"
+    assert common.content_fingerprint(base) == common.content_fingerprint(nulled)
+    _assert_sensor_copies_do_not_qualify(
+        tmp_path,
+        [base, nulled],
+        min_repeats=2,
+        min_duration=300,
+        min_warmup=30,
+    )
