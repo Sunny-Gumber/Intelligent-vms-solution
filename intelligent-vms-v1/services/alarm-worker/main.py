@@ -23,6 +23,9 @@ BATCH_POLL_TIMEOUT_MS = 500
 BATCH_MAX_RECORDS = 1000
 BATCH_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_POISON_RETRY_LIMIT = 3
+# Kafka offsets fit in a signed 64-bit integer. Unreadable offsets sort after
+# those so a malformed record does not block earlier records in the same fetch.
+_UNREADABLE_OFFSET_SORT_KEY = 2**63
 
 
 def _parse_poison_retry_limit(raw):
@@ -174,7 +177,7 @@ def _sort_offset(message):
     try:
         return int(message.offset)
     except (AttributeError, TypeError, ValueError):
-        return 2**63
+        return _UNREADABLE_OFFSET_SORT_KEY
 
 
 def _record_identity(message):
