@@ -220,8 +220,10 @@ class PlacementRead(BaseModel):
 class PlacementRunRead(BaseModel):
     """Serialize the outcome of one bounded placement-controller run.
 
-    Fields report scanned, moved, unplaced and autonomy-deferred counts plus the
-    continuation cursor. Validation may raise for incompatible input types.
+    Fields report scanned, moved, unplaced and effective-authority deferrals
+    plus the continuation cursor. deferred_autonomy counts assignments that
+    stayed put because lease plus grace, or a later autonomy deadline, was
+    still live. Validation may raise for incompatible input types.
     """
 
     scanned: int

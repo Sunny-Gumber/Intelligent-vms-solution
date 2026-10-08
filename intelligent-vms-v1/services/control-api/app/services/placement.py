@@ -7,6 +7,10 @@ from typing import Iterable
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.effective_authority import (
+    effective_authority_active,
+    effective_authority_deadline,
+)
 from app.db.session import SessionLocal
 from app.services.stream_keys import make_role_stream_key
 from app.services.coordination import try_placement_execution_lock
@@ -248,16 +252,12 @@ async def _assign(
             ownership_changed = old_node_id != node.id
 
             if session is not None and ownership_changed:
-                valid_until = row.lease_expires_at
-                if row.autonomy_expires_at is not None:
-                    autonomy_until = row.autonomy_expires_at
-                    if autonomy_until.tzinfo is None:
-                        autonomy_until = autonomy_until.replace(tzinfo=timezone.utc)
-                    lease_until = valid_until
-                    if lease_until.tzinfo is None:
-                        lease_until = lease_until.replace(tzinfo=timezone.utc)
-                    if autonomy_until > lease_until:
-                        valid_until = autonomy_until
+                # Record the same boundary the node was allowed to execute.
+                valid_until = effective_authority_deadline(
+                    row.lease_expires_at,
+                    row.autonomy_expires_at,
+                    settings.placement_fence_expiry_grace_seconds,
+                )
 
                 session.add(
                     PlacementRevocationEntity(
@@ -332,8 +332,10 @@ async def run_placement_once() -> dict:
     """Run one bounded placement-controller iteration under the execution fence.
 
     Returns:
-        Dictionary containing scanned, moved, unplaced, deferred-autonomy counts
-        and the persisted pagination cursor.
+        Dictionary containing scanned, moved, unplaced, and deferred counts
+        plus the persisted pagination cursor. Deferred counts are assignments
+        whose previous effective authority (lease plus grace, or a later
+        autonomy deadline) is still live.
 
     Raises:
         Exception: Database, fencing or placement mutation failures propagate.
@@ -476,11 +478,18 @@ async def run_placement_once() -> dict:
                             recording[camera.id].recording_node_id = current_node.id
                         continue
 
-                    # A disconnected owner may keep only the generation for which
-                    # central authority explicitly pre-granted an offline window.
-                    # Central failover is deferred until that window ends; otherwise
-                    # old and new owners could both be valid during a WAN partition.
-                    if autonomy_active(existing, now):
+                    # A partitioned owner keeps executing until lease plus fence
+                    # grace, or until a later pre-granted autonomy deadline.
+                    # There is no revocation acknowledgement for a generation
+                    # that is still the active owner, so control must wait for
+                    # that shared boundary. Authorizing a successor earlier
+                    # overlaps the old lease.
+                    if existing is not None and effective_authority_active(
+                        existing.lease_expires_at,
+                        existing.autonomy_expires_at,
+                        now,
+                        settings.placement_fence_expiry_grace_seconds,
+                    ):
                         deferred_autonomy += 1
                         continue
 

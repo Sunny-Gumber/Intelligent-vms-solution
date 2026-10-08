@@ -26,6 +26,40 @@ LOG = logging.getLogger("node_agent")
 MIN_BACKOFF_SLEEP_SECONDS = 0.001
 
 
+def _load_effective_authority():
+    """Load the single effective-authority boundary implementation.
+
+    Control imports app.core.effective_authority. This process loads that same
+    file from the repository tree, or the copy placed beside main.py in the
+    node-agent image. There is no second formula.
+
+    Returns:
+        The loaded effective-authority module.
+
+    Raises:
+        ImportError: If the shared module is not available.
+    """
+    import importlib.util
+
+    candidates = (
+        Path(__file__).resolve().parents[1] / "control-api" / "app" / "core" / "effective_authority.py",
+        Path(__file__).resolve().with_name("effective_authority.py"),
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location("vms_effective_authority", path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    raise ImportError("shared effective authority boundary module is not available")
+
+
+_AUTHORITY = _load_effective_authority()
+
+
 def _safe_number(value: object) -> float:
     try:
         number = float(value)
@@ -101,7 +135,10 @@ class NodeAgentSettings(BaseSettings):
     heartbeat_spool_url: str | None = Field(default=None, validation_alias="HEARTBEAT_SPOOL_URL")
     node_fencing_enabled: bool = Field(default=False, validation_alias="NODE_FENCING_ENABLED")
     fence_poll_interval_seconds: float = Field(default=5.0, validation_alias="FENCE_POLL_INTERVAL_SECONDS")
-    fence_expiry_grace_seconds: float = Field(default=2.0, validation_alias="FENCE_EXPIRY_GRACE_SECONDS")
+    fence_expiry_grace_seconds: float = Field(
+        default=_AUTHORITY.DEFAULT_FENCE_EXPIRY_GRACE_SECONDS,
+        validation_alias="FENCE_EXPIRY_GRACE_SECONDS",
+    )
     fence_clock_skew_warn_seconds: float = Field(default=5.0, validation_alias="FENCE_CLOCK_SKEW_WARN_SECONDS")
     fence_state_path: str = Field(
         default="/var/lib/vms-node/fence-state.json",
@@ -563,7 +600,16 @@ class NodeAgent:
         for key, item in list(assignments.items()):
             revoked = bool(item.get("revoked"))
             expired = False
-            if not revoked:
+            if revoked:
+                # Acknowledged fencing ends authority even if the lease remains.
+                expired = not _AUTHORITY.effective_authority_active(
+                    None,
+                    None,
+                    now,
+                    self.settings.fence_expiry_grace_seconds,
+                    acknowledged_fenced=True,
+                )
+            else:
                 try:
                     expiry = datetime.fromisoformat(
                         str(item["lease_expires_at"]).replace("Z", "+00:00")
@@ -571,20 +617,22 @@ class NodeAgent:
                 except Exception:
                     LOG.warning("fence_invalid_cached_lease key=%s", key)
                     continue
-                deadline = expiry + timedelta(
-                    seconds=self.settings.fence_expiry_grace_seconds
-                )
+                autonomy_deadline = None
                 autonomy_raw = item.get("autonomy_expires_at")
                 if autonomy_raw:
                     try:
                         autonomy_deadline = datetime.fromisoformat(
                             str(autonomy_raw).replace("Z", "+00:00")
                         )
-                        if autonomy_deadline > deadline:
-                            deadline = autonomy_deadline
                     except Exception:
                         LOG.warning("fence_invalid_autonomy_deadline key=%s", key)
-                expired = now >= deadline
+                # Same boundary control uses before it may authorize a successor.
+                expired = not _AUTHORITY.effective_authority_active(
+                    expiry,
+                    autonomy_deadline,
+                    now,
+                    self.settings.fence_expiry_grace_seconds,
+                )
 
             if not revoked and not expired:
                 continue

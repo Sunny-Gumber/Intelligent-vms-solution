@@ -6,6 +6,7 @@ RUN groupadd --gid 10001 vms && useradd --uid 10001 --gid 10001 --no-create-home
 WORKDIR /app
 COPY services/node-agent/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
+COPY services/control-api/app/core/effective_authority.py /app/effective_authority.py
 COPY services/node-agent/main.py /app/main.py
 RUN mkdir -p /var/lib/vms-node /recordings && chown -R 10001:10001 /app /var/lib/vms-node /recordings
 USER 10001:10001
