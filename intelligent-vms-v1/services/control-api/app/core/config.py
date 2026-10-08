@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     mediamtx_playback_internal_url: str = "http://mediamtx:9996"
     mediamtx_metrics_url: str = "http://mediamtx:9998/metrics"
     diagnostic_metrics_timeout_seconds: float = 3.0
+    # VMS-FIX-013. Kept separate from placement settings. MediaMTX v1.21.1 list
+    # APIs default to 100 items per page at page 0. Enumeration stops here and
+    # reports truncation instead of requesting pages without a limit.
+    mediamtx_list_max_items: int = Field(default=10000, ge=1, le=1_000_000)
     live_view_token_private_key_b64: str = ""
     live_view_token_verification_public_keys_b64_json: str = "[]"
     live_view_token_ttl_seconds: int = Field(default=60, ge=15, le=300)

@@ -24,6 +24,11 @@ Role = Literal["media", "recording", "ai"]
 ALLOWED_ROLES = {"media", "recording", "ai"}
 LOG = logging.getLogger("node_agent")
 MIN_BACKOFF_SLEEP_SECONDS = 0.001
+# Pinned MediaMTX v1.21.1 paginate.go / openapi: page defaults to 0,
+# itemsPerPage defaults to 100. The count contract lives in
+# mediamtx_list_page.py, which this process loads and the node image copies.
+_MEDIAMTX_LIST_DEFAULT_PAGE = 0
+_MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE = 100
 
 
 def _load_effective_authority():
@@ -58,6 +63,40 @@ def _load_effective_authority():
 
 
 _AUTHORITY = _load_effective_authority()
+
+
+def _load_mediamtx_list_page():
+    """Load the single MediaMTX list-page contract.
+
+    Control imports app.services.mediamtx_list_page. This process loads that
+    same file from the repository tree, or the copy placed beside main.py in
+    the node image. There is no second count formula.
+
+    Returns:
+        The loaded list-page module.
+
+    Raises:
+        ImportError: If the shared module is not available.
+    """
+    import importlib.util
+
+    candidates = (
+        Path(__file__).resolve().parents[1] / "control-api" / "app" / "services" / "mediamtx_list_page.py",
+        Path(__file__).resolve().with_name("mediamtx_list_page.py"),
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location("vms_mediamtx_list_page", path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    raise ImportError("shared MediaMTX list-page module is not available")
+
+
+_LIST_PAGE = _load_mediamtx_list_page()
 
 
 def _safe_number(value: object) -> float:
@@ -132,6 +171,15 @@ class NodeAgentSettings(BaseSettings):
     recording_mount_path: str = Field(default="/recordings", validation_alias="RECORDING_MOUNT_PATH")
     network_interface: str | None = Field(default=None, validation_alias="NETWORK_INTERFACE")
     mediamtx_api_url: str | None = Field(default=None, validation_alias="MEDIAMTX_API_URL")
+    # VMS-FIX-013. Kept separate from fence settings. MediaMTX v1.21.1 lists
+    # 100 paths per page. The probe stops here and does not publish a partial
+    # count as placement load.
+    mediamtx_list_max_items: int = Field(
+        default=10000,
+        ge=1,
+        le=1_000_000,
+        validation_alias="MEDIAMTX_LIST_MAX_ITEMS",
+    )
     heartbeat_spool_url: str | None = Field(default=None, validation_alias="HEARTBEAT_SPOOL_URL")
     node_fencing_enabled: bool = Field(default=False, validation_alias="NODE_FENCING_ENABLED")
     fence_poll_interval_seconds: float = Field(default=5.0, validation_alias="FENCE_POLL_INTERVAL_SECONDS")
@@ -262,6 +310,215 @@ class NodeAgentSettings(BaseSettings):
         if not Path(self.fence_state_path).is_absolute():
             raise ValueError("FENCE_STATE_PATH must be absolute")
         return self
+
+
+class _MediaMTXListError(RuntimeError):
+    """Raised when a MediaMTX list page is not the v1.21.1 object shape."""
+
+
+def _mediamtx_list_payload(
+    *,
+    items: list,
+    item_count: int | None,
+    page_count: int | None,
+    truncated: bool,
+    inconsistent: bool,
+) -> dict:
+    return {
+        "itemCount": item_count,
+        "pageCount": page_count,
+        "items": items,
+        "truncated": truncated,
+        "inconsistent": inconsistent,
+    }
+
+
+def _mediamtx_names_conflict(seen: set[str], names: list[str]) -> bool:
+    if len(names) != len(set(names)):
+        return True
+    return any(name in seen for name in names)
+
+
+def _count_runtime_paths(items: list) -> tuple[int, int]:
+    live_sources = 0
+    recording_paths = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if name.endswith("-record"):
+            recording_paths += 1
+            continue
+        if item.get("source"):
+            live_sources += 1
+    return live_sources, recording_paths
+
+
+async def _walk_mediamtx_list_once(fetch_page, *, bound: int) -> dict:
+    """Read one bounded pass of a MediaMTX list. Keep this aligned with mediamtx.py.
+
+    Args:
+        fetch_page: Coroutine ``(page, items_per_page) -> response``.
+        bound: Maximum items to keep before reporting truncation.
+
+    Returns:
+        List payload. ``inconsistent`` means the pages are not one stable catalog.
+
+    Raises:
+        Exception: Transport and HTTP failures from ``fetch_page`` propagate.
+        _MediaMTXListError: If a page body is not the v1.21.1 list object.
+    """
+    per_page = _MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
+    max_pages = max(1, (bound + per_page - 1) // per_page)
+    collected: list = []
+    seen: set[str] = set()
+    baseline_items: int | None = None
+    baseline_pages: int | None = None
+
+    for page in range(_MEDIAMTX_LIST_DEFAULT_PAGE, _MEDIAMTX_LIST_DEFAULT_PAGE + max_pages):
+        if baseline_items is not None and len(collected) >= bound and len(seen) < baseline_items:
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=True,
+                inconsistent=False,
+            )
+        response = await fetch_page(page, per_page)
+        response.raise_for_status()
+        body = response.json()
+        try:
+            assessed = _LIST_PAGE.assess_mediamtx_list_page(body, page=page, per_page=per_page)
+        except _LIST_PAGE.MediaMTXListPageError as exc:
+            raise _MediaMTXListError(str(exc)) from exc
+        if not assessed["accepted"]:
+            if baseline_items is None:
+                return _mediamtx_list_payload(
+                    items=assessed["items"],
+                    item_count=assessed["item_count"],
+                    page_count=assessed["page_count"],
+                    truncated=False,
+                    inconsistent=True,
+                )
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+
+        item_count = assessed["item_count"]
+        page_count = assessed["page_count"]
+        page_items = assessed["items"]
+        names = assessed["names"]
+        if baseline_items is None:
+            baseline_items = item_count
+            baseline_pages = page_count
+        elif item_count != baseline_items or page_count != baseline_pages:
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+
+        if baseline_pages == 0:
+            empty = page == 0 and baseline_items == 0 and not names
+            return _mediamtx_list_payload(
+                items=[],
+                item_count=0,
+                page_count=0,
+                truncated=False,
+                inconsistent=not empty,
+            )
+        if page >= baseline_pages:
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+
+        expected_len = len(names)
+        room = bound - len(collected)
+        if room < expected_len:
+            if len(names) < room or _mediamtx_names_conflict(seen, names[:room]):
+                return _mediamtx_list_payload(
+                    items=collected,
+                    item_count=baseline_items,
+                    page_count=baseline_pages,
+                    truncated=False,
+                    inconsistent=True,
+                )
+            collected.extend(page_items[:room])
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=True,
+                inconsistent=False,
+            )
+        if _mediamtx_names_conflict(seen, names):
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+        seen.update(names)
+        collected.extend(page_items)
+        if page + 1 >= baseline_pages:
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=len(seen) != baseline_items,
+            )
+
+    finished = baseline_items is not None and len(seen) == baseline_items
+    truncated = baseline_items is not None and len(collected) >= bound and len(seen) < baseline_items
+    return _mediamtx_list_payload(
+        items=collected,
+        item_count=baseline_items,
+        page_count=baseline_pages,
+        truncated=truncated,
+        inconsistent=not finished and not truncated,
+    )
+
+
+async def _enumerate_mediamtx_list(fetch_page, *, bound: int) -> dict:
+    """Walk a MediaMTX list once more if the first pass is inconsistent.
+
+    Args:
+        fetch_page: Coroutine ``(page, items_per_page) -> response``.
+        bound: Maximum items kept in one pass.
+
+    Returns:
+        List payload. Transport errors propagate. A second inconsistent pass
+        stays ``inconsistent`` and is not a complete catalog.
+
+    Raises:
+        Exception: Transport and HTTP failures propagate without a retry.
+        _MediaMTXListError: If a page body is not the v1.21.1 list object.
+    """
+    first = await _walk_mediamtx_list_once(fetch_page, bound=bound)
+    if not first["inconsistent"]:
+        return first
+    LOG.warning("mediamtx_list_inconsistent_retry")
+    second = await _walk_mediamtx_list_once(fetch_page, bound=bound)
+    if second["inconsistent"]:
+        LOG.error(
+            "mediamtx_list_inconsistent item_count=%s page_count=%s collected=%d",
+            second.get("itemCount"),
+            second.get("pageCount"),
+            len(second.get("items") or []),
+        )
+    return second
 
 
 class NodeAgent:
@@ -776,40 +1033,70 @@ class NodeAgent:
         assert self.settings.mediamtx_api_url
         url = f"{self.settings.mediamtx_api_url}/v3/paths/list"
         try:
-            resp = await self._client.get(url, timeout=self.settings.heartbeat_timeout_seconds)
-            resp.raise_for_status()
-            body = resp.json()
-            if isinstance(body, dict):
-                items = body.get("items", body.get("paths", []))
-            else:
-                items = []
-            if not isinstance(items, list):
-                items = []
-            live_sources = 0
-            recording_paths = 0
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name") or "")
-                if name.endswith("-record"):
-                    recording_paths += 1
-                    continue
-                if item.get("source"):
-                    live_sources += 1
-            return {
-                "mediamtx_reachable": 1.0,
-                "mediamtx_configured_paths": float(len(items)),
-                "mediamtx_live_sources": float(live_sources),
-                "mediamtx_recording_paths": float(recording_paths),
-            }
+            async def fetch_page(page: int, items_per_page: int):
+                return await self._client.get(
+                    url,
+                    params={"page": page, "itemsPerPage": items_per_page},
+                    timeout=self.settings.heartbeat_timeout_seconds,
+                )
+
+            listed = await _enumerate_mediamtx_list(
+                fetch_page,
+                bound=self.settings.mediamtx_list_max_items,
+            )
         except Exception as exc:
+            # Reachable zero is not a measured empty catalog. The zero counts
+            # below stay on the probe result for the unreachable-probe contract;
+            # the heartbeat strips them so placement never reads spare capacity.
             LOG.warning("mediamtx_probe_failed reason=%s", exc.__class__.__name__)
             return {
                 "mediamtx_reachable": 0.0,
                 "mediamtx_configured_paths": 0.0,
                 "mediamtx_live_sources": 0.0,
                 "mediamtx_recording_paths": 0.0,
+                "mediamtx_list_failed": 1.0,
             }
+        items = listed.get("items") or []
+        item_count = listed.get("itemCount")
+        page_count = listed.get("pageCount")
+        if listed.get("inconsistent") is True:
+            LOG.error(
+                "mediamtx_list_inconsistent collected=%d item_count=%s page_count=%s",
+                len(items),
+                "unknown" if item_count is None else item_count,
+                "unknown" if page_count is None else page_count,
+            )
+            return {
+                "mediamtx_reachable": 1.0,
+                "mediamtx_list_truncated": 0.0,
+                "mediamtx_list_inconsistent": 1.0,
+                "mediamtx_list_failed": 1.0,
+            }
+        if listed.get("truncated") is True:
+            # A partial count would understate load and let placement overfill
+            # the node. Omit the counts so missing load stays ineligible.
+            LOG.warning(
+                "mediamtx_list_truncated collected=%d item_count=%s page_count=%s bound=%d",
+                len(items),
+                "unknown" if item_count is None else item_count,
+                "unknown" if page_count is None else page_count,
+                self.settings.mediamtx_list_max_items,
+            )
+            return {
+                "mediamtx_reachable": 1.0,
+                "mediamtx_list_truncated": 1.0,
+                "mediamtx_list_inconsistent": 0.0,
+            }
+        live_sources, recording_paths = _count_runtime_paths(items)
+        return {
+            "mediamtx_reachable": 1.0,
+            "mediamtx_list_truncated": 0.0,
+            "mediamtx_list_inconsistent": 0.0,
+            "mediamtx_list_failed": 0.0,
+            "mediamtx_configured_paths": float(len(items)),
+            "mediamtx_live_sources": float(live_sources),
+            "mediamtx_recording_paths": float(recording_paths),
+        }
 
     async def build_heartbeat_payload(self) -> dict:
         """Collect bounded host/media load and authority state for one heartbeat.
@@ -824,11 +1111,28 @@ class NodeAgent:
         mediamtx = await self._probe_mediamtx()
         load = dict(host)
         load.update(mediamtx)
+        # Failure, truncation, and an inconsistent catalog are not zero load.
+        # Omitting the measured keys is what placement already treats as
+        # ineligible. Publishing 0 would look like spare capacity.
+        list_untrusted = (
+            bool(mediamtx.get("mediamtx_list_truncated"))
+            or bool(mediamtx.get("mediamtx_list_inconsistent"))
+            or bool(mediamtx.get("mediamtx_list_failed"))
+            or not mediamtx.get("mediamtx_reachable")
+        )
+        if list_untrusted:
+            for key in (
+                "mediamtx_configured_paths",
+                "mediamtx_live_sources",
+                "mediamtx_recording_paths",
+            ):
+                load.pop(key, None)
         if "media" in self.settings.node_roles:
             load["ingress_mbps"] = _safe_number(load.get("net_rx_bps", 0.0) / 1_000_000.0)
             load["egress_mbps"] = _safe_number(load.get("net_tx_bps", 0.0) / 1_000_000.0)
-            load["active_sources"] = _safe_number(load.get("mediamtx_live_sources", 0.0))
-        if "recording" in self.settings.node_roles:
+            if not list_untrusted:
+                load["active_sources"] = _safe_number(load.get("mediamtx_live_sources", 0.0))
+        if "recording" in self.settings.node_roles and not list_untrusted:
             load["active_recordings"] = _safe_number(load.get("mediamtx_recording_paths", 0.0))
             # record_mbps is intentionally omitted until a trustworthy per-recording
             # byte-rate source is wired in. Placement treats missing configured
