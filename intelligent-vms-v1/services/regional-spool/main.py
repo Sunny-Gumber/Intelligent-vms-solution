@@ -54,6 +54,44 @@ SPOOL_BACKOFF_MAX_SECONDS = max(
 SPOOL_REQUEST_TIMEOUT_SECONDS = max(
     1.0, float(os.getenv("SPOOL_REQUEST_TIMEOUT_SECONDS", "5"))
 )
+INITIAL_SPOOL_REVISION = 1
+SPOOL_REVISION_MAX = 2**63 - 1
+
+
+def _next_revision(current: int) -> int:
+    """Return the next spool revision, refusing values SQLite cannot store as integers.
+
+    Args:
+        current: Highest revision already issued for this spool key. Zero means none.
+
+    Returns:
+        The following positive revision.
+
+    Raises:
+        OverflowError: If current is not an int, or the next value would exceed int64.
+    """
+    if isinstance(current, bool) or not isinstance(current, int):
+        raise OverflowError("spool revision is not an integer")
+    if current < 0 or current >= SPOOL_REVISION_MAX:
+        raise OverflowError("spool revision cannot increase past int64")
+    return current + 1
+
+
+def _require_revision(revision: int) -> int:
+    """Reject a revision that was not issued by the spool store.
+
+    Args:
+        revision: Revision captured when the item was read for sending.
+
+    Returns:
+        The same revision when it is a positive integer.
+
+    Raises:
+        ValueError: If revision is a bool or is not a positive integer.
+    """
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise ValueError("spool item revision must be a positive integer")
+    return revision
 
 
 class SpoolFull(RuntimeError):
@@ -101,7 +139,8 @@ class Store:
                     next_attempt_at REAL NOT NULL DEFAULT 0,
                     last_error TEXT,
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1
                 );
                 CREATE INDEX IF NOT EXISTS ix_spool_due
                     ON spool_items(next_attempt_at, created_at);
@@ -115,8 +154,151 @@ class Store:
                     created_at REAL NOT NULL,
                     failed_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS spool_revision_marks (
+                    id TEXT PRIMARY KEY,
+                    high_revision INTEGER NOT NULL
+                );
                 """
             )
+            self._ensure_spool_revision(db)
+
+    def _ensure_spool_revision(self, db) -> None:
+        """Add spool_items.revision in place when an older database lacks it.
+
+        CREATE TABLE IF NOT EXISTS does not change a table that already exists.
+        Existing rows keep their bodies, retry state, and row ids. They receive
+        revision 1 so a later acknowledgement can name the body that was read.
+
+        Args:
+            db: Open SQLite connection for this spool file.
+
+        Returns:
+            None after the column is present and each current row has a
+            high-water mark at least as large as its stored revision.
+
+        Raises:
+            sqlite3.Error: If the table cannot be altered.
+        """
+        # Serialize the check and ALTER. Two openers otherwise both observe the
+        # missing column and the second ALTER fails with "duplicate column name".
+        db.execute("BEGIN IMMEDIATE")
+        if not self._has_revision_column(db):
+            try:
+                db.execute(
+                    "ALTER TABLE spool_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+                if not self._has_revision_column(db):
+                    raise
+        self._ensure_revision_marks(db)
+
+    def _ensure_revision_marks(self, db) -> None:
+        """Keep the highest issued revision for each spool id across deletes.
+
+        The mark is not removed when a row is acknowledged. A later coalesce that
+        has to insert the key again continues past that mark, so an acknowledgement
+        already in flight cannot match the new row.
+
+        Args:
+            db: Open SQLite connection holding the write lock.
+
+        Returns:
+            None after every current spool row is covered by a mark.
+
+        Raises:
+            sqlite3.Error: If the mark table cannot be created or filled.
+        """
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS spool_revision_marks (
+                id TEXT PRIMARY KEY,
+                high_revision INTEGER NOT NULL
+            )
+            """
+        )
+        # WHERE true is required. SQLite rejects INSERT...SELECT...ON CONFLICT
+        # without a WHERE clause ("near DO: syntax error") on 3.45.
+        db.execute(
+            """
+            INSERT INTO spool_revision_marks(id, high_revision)
+            SELECT id, revision FROM spool_items WHERE true
+            ON CONFLICT(id) DO UPDATE SET
+                high_revision = MAX(
+                    spool_revision_marks.high_revision,
+                    excluded.high_revision
+                )
+            """
+        )
+
+    def _remember_revision(self, db, item_id: str, revision: int) -> None:
+        """Record that this revision has been issued for the spool id.
+
+        Args:
+            db: Open SQLite connection holding the write lock.
+            item_id: Spool item identifier.
+            revision: Revision just stored or about to be stored.
+
+        Returns:
+            None.
+
+        Raises:
+            sqlite3.Error: If the mark cannot be stored.
+        """
+        db.execute(
+            """
+            INSERT INTO spool_revision_marks(id, high_revision) VALUES(?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                high_revision = MAX(
+                    spool_revision_marks.high_revision,
+                    excluded.high_revision
+                )
+            """,
+            (item_id, revision),
+        )
+
+    def _claim_revision(self, db, item_id: str) -> int:
+        """Allocate a revision strictly above any revision ever issued for this id.
+
+        Args:
+            db: Open SQLite connection holding the write lock.
+            item_id: Spool item identifier being inserted.
+
+        Returns:
+            The revision to store on the new row.
+
+        Raises:
+            OverflowError: If the next revision would exceed int64.
+            sqlite3.Error: If the mark cannot be read or stored.
+        """
+        row = db.execute(
+            "SELECT high_revision FROM spool_revision_marks WHERE id=?",
+            (item_id,),
+        ).fetchone()
+        current = 0 if row is None else row["high_revision"]
+        revision = _next_revision(current)
+        self._remember_revision(db, item_id, revision)
+        return revision
+
+    def _has_revision_column(self, db) -> bool:
+        """Return whether spool_items already stores a revision.
+
+        Args:
+            db: Open SQLite connection for this spool file.
+
+        Returns:
+            True when the revision column is present.
+
+        Raises:
+            sqlite3.Error: If table metadata cannot be read.
+        """
+        columns = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(spool_items)").fetchall()
+        }
+        return "revision" in columns
 
     def _exists(self, db, item_id: str) -> bool:
         return (
@@ -134,48 +316,126 @@ class Store:
             item_id: Deterministic spool item identifier.
             kind: Item kind: recording, event or heartbeat.
             body: JSON-serializable payload.
-            coalesce: Whether an existing item should be updated in place.
+            coalesce: Whether an existing item should be replaced in place.
+                Replacement stores the next revision above every revision
+                already issued for this id, including after the previous row
+                was deleted, so an acknowledgement already in flight cannot
+                remove the new body.
 
         Returns:
             None after the item is stored or an existing duplicate is retained.
+            A coalesced write that finds the previous row gone inserts this body
+            instead of dropping it.
 
         Raises:
             SpoolPayloadTooLarge: If the serialized body exceeds the configured limit.
             SpoolFull: If queued-item capacity is exhausted.
+            OverflowError: If the next revision would exceed int64.
             sqlite3.Error: If durable storage fails.
         """
         now = time.time()
         body_json = json.dumps(body, sort_keys=True, separators=(",", ":"))
         if len(body_json.encode("utf-8")) > self.max_body_bytes:
             raise SpoolPayloadTooLarge("regional spool payload exceeds configured maximum")
+        self._release_coalesce_for_test(item_id, coalesce)
         with self._connect() as db:
-            if coalesce and self._exists(db, item_id):
-                db.execute(
+            db.execute("BEGIN IMMEDIATE")
+            self._write_enqueued(db, item_id, kind, body_json, now, coalesce)
+
+    def _release_coalesce_for_test(self, item_id: str, coalesce: bool) -> None:
+        """Run the optional read/write-gap hook before the coalesced write lock.
+
+        ``_after_coalesce_read`` is unset in production. Tests set it to call
+        success, retry, or dead_letter on another connection while the previous
+        revision is still stored. The following immediate transaction inserts
+        the new body when that acknowledgement removes the row.
+
+        Args:
+            item_id: Spool item identifier being coalesced.
+            coalesce: Whether this enqueue replaces an existing item.
+
+        Returns:
+            None.
+        """
+        hook = getattr(self, "_after_coalesce_read", None)
+        if not coalesce or hook is None:
+            return
+        with self._connect() as db:
+            if self._exists(db, item_id):
+                hook(item_id)
+
+    def _write_enqueued(
+        self,
+        db,
+        item_id: str,
+        kind: str,
+        body_json: str,
+        now: float,
+        coalesce: bool,
+    ) -> None:
+        """Insert or replace one spool row inside the caller's write transaction.
+
+        Args:
+            db: Open SQLite connection that already holds the write lock.
+            item_id: Durable spool item identifier.
+            kind: Item kind: recording, event or heartbeat.
+            body_json: Serialized payload within the configured size limit.
+            now: Timestamp stored on insert or coalesced update.
+            coalesce: Whether an existing row should be replaced in place.
+
+        Returns:
+            None after the row is inserted, replaced, or left unchanged.
+
+        Raises:
+            SpoolFull: If a new row would exceed queued-item capacity.
+            OverflowError: If the next revision would exceed int64.
+            sqlite3.Error: If durable storage fails.
+        """
+        if coalesce and self._exists(db, item_id):
+            # A newer body invalidates any revision already read for sending.
+            current = db.execute(
+                "SELECT revision FROM spool_items WHERE id=?",
+                (item_id,),
+            ).fetchone()
+            if current is not None:
+                revision = _next_revision(current["revision"])
+                updated = db.execute(
                     """
                     UPDATE spool_items
-                    SET body_json=?, updated_at=?
-                    WHERE id=?
+                    SET body_json=?, updated_at=?, revision=?
+                    WHERE id=? AND revision=?
                     """,
-                    (body_json, now, item_id),
+                    (body_json, now, revision, item_id, current["revision"]),
                 )
-                return
+                if updated.rowcount == 1:
+                    self._remember_revision(db, item_id, revision)
+                    return
+        elif self._exists(db, item_id):
+            return
 
-            if self._exists(db, item_id):
-                return
-
-            count = db.execute("SELECT COUNT(*) FROM spool_items").fetchone()[0]
-            if int(count) >= self.max_items:
-                raise SpoolFull("regional spool is full")
-
-            db.execute(
-                """
-                INSERT INTO spool_items(
-                    id, kind, body_json, attempts, next_attempt_at,
-                    last_error, created_at, updated_at
-                ) VALUES(?,?,?,?,?,?,?,?)
-                """,
-                (item_id, kind, body_json, 0, 0.0, None, now, now),
-            )
+        count = db.execute("SELECT COUNT(*) FROM spool_items").fetchone()[0]
+        if int(count) >= self.max_items:
+            raise SpoolFull("regional spool is full")
+        revision = self._claim_revision(db, item_id)
+        db.execute(
+            """
+            INSERT INTO spool_items(
+                id, kind, body_json, attempts, next_attempt_at,
+                last_error, created_at, updated_at, revision
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                item_id,
+                kind,
+                body_json,
+                0,
+                0.0,
+                None,
+                now,
+                now,
+                revision,
+            ),
+        )
 
     def due(self, limit: int) -> list[dict]:
         """Return a bounded batch of spool items due for delivery.
@@ -185,6 +445,8 @@ class Store:
 
         Returns:
             Item dictionaries ordered by original creation time and identifier.
+            Each dictionary includes the stored revision that acknowledgements
+            must pass back.
 
         Raises:
             sqlite3.Error: If spool storage cannot be queried.
@@ -194,7 +456,7 @@ class Store:
         with self._connect() as db:
             rows = db.execute(
                 """
-                SELECT id, kind, body_json, attempts
+                SELECT id, kind, body_json, attempts, revision
                 FROM spool_items
                 WHERE next_attempt_at <= ?
                 ORDER BY created_at, id
@@ -208,73 +470,105 @@ class Store:
                 "kind": row["kind"],
                 "body": json.loads(row["body_json"]),
                 "attempts": int(row["attempts"]),
+                "revision": int(row["revision"]),
             }
             for row in rows
         ]
 
-    def success(self, item_id: str):
-        """Delete one successfully delivered spool item.
+    def success(self, item_id: str, revision: int):
+        """Delete one delivered spool item only when its revision still matches.
 
         Args:
             item_id: Durable spool item identifier.
+            revision: Revision read for the send that is being acknowledged.
 
         Returns:
-            None after deletion.
+            True when that revision was deleted. False when it is no longer
+            stored, including when a newer revision replaced it. A false result
+            is not a delivery.
 
         Raises:
+            ValueError: If revision is not a positive integer.
             sqlite3.Error: If durable storage cannot be updated.
         """
+        revision = _require_revision(revision)
         with self._connect() as db:
-            db.execute("DELETE FROM spool_items WHERE id=?", (item_id,))
+            deleted = db.execute(
+                "DELETE FROM spool_items WHERE id=? AND revision=?",
+                (item_id, revision),
+            )
+        return deleted.rowcount == 1
 
-    def retry(self, item_id: str, error: str, delay_seconds: float):
-        """Schedule one spool item for a later bounded retry.
+    def retry(self, item_id: str, error: str, delay_seconds: float, revision: int):
+        """Schedule the read revision for a later bounded retry.
+
+        A newer revision under the same id keeps its body and its existing
+        due time. The stale attempt does not increment that row's attempts.
 
         Args:
             item_id: Durable spool item identifier.
             error: Bounded error description.
-            delay_seconds: Delay before the item becomes due again.
+            delay_seconds: Delay before this revision becomes due again.
+            revision: Revision read for the attempt that is being retried.
 
         Returns:
-            None after retry state is persisted.
+            True when that revision was rescheduled. False when it is no longer
+            stored. A false result does not change the newer row.
 
         Raises:
+            ValueError: If revision is not a positive integer.
             sqlite3.Error: If durable storage cannot be updated.
         """
+        revision = _require_revision(revision)
         now = time.time()
         with self._connect() as db:
-            db.execute(
+            updated = db.execute(
                 """
                 UPDATE spool_items
                 SET attempts=attempts+1, next_attempt_at=?,
                     last_error=?, updated_at=?
-                WHERE id=?
+                WHERE id=? AND revision=?
                 """,
-                (now + delay_seconds, error[:512], now, item_id),
+                (now + delay_seconds, error[:512], now, item_id, revision),
             )
+        return updated.rowcount == 1
 
-    def dead_letter(self, item_id: str, status_code: int | None, reason: str):
-        """Move one terminally failed item into the bounded dead-letter table.
+    def dead_letter(
+        self, item_id: str, status_code: int | None, reason: str, revision: int
+    ):
+        """Move the read revision into the bounded dead-letter table.
 
         Args:
             item_id: Durable spool item identifier.
             status_code: Optional terminal HTTP status.
             reason: Bounded failure reason.
+            revision: Revision read for the attempt that failed terminally.
 
         Returns:
-            None after the item is dead-lettered or when it no longer exists.
+            True when that revision was moved to dead letters. False when it is
+            no longer stored. A false result is not a dead letter, and a newer
+            revision under the same id stays queued.
 
         Raises:
+            ValueError: If revision is not a positive integer.
             sqlite3.Error: If durable storage cannot be updated.
+            RuntimeError: If the matching revision disappears after it was read
+                inside this write transaction.
         """
+        revision = _require_revision(revision)
         now = time.time()
         with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT kind, body_json, created_at FROM spool_items WHERE id=?",
-                (item_id,),
+                """
+                SELECT kind, body_json, created_at
+                FROM spool_items
+                WHERE id=? AND revision=?
+                """,
+                (item_id, revision),
             ).fetchone()
             if row is None:
-                return
+                return False
             db.execute(
                 """
                 INSERT OR REPLACE INTO dead_letters(
@@ -291,7 +585,14 @@ class Store:
                     now,
                 ),
             )
-            db.execute("DELETE FROM spool_items WHERE id=?", (item_id,))
+            deleted = db.execute(
+                "DELETE FROM spool_items WHERE id=? AND revision=?",
+                (item_id, revision),
+            )
+            if deleted.rowcount != 1:
+                raise RuntimeError(
+                    "spool dead-letter did not remove the revision that was read"
+                )
             overflow = int(
                 db.execute("SELECT COUNT(*) FROM dead_letters").fetchone()[0]
             ) - self.max_dead_letters
@@ -307,6 +608,7 @@ class Store:
                     """,
                     (overflow,),
                 )
+        return True
 
     def counts(self) -> tuple[int, int]:
         """Return current queued and dead-letter spool counts.
@@ -531,6 +833,36 @@ async def _deliver(client: httpx.AsyncClient, item: dict) -> httpx.Response:
     raise RuntimeError(f"unsupported spool kind {kind}")
 
 
+def _log_stale_ack(item: dict, operation: str, status_code: int | None = None) -> None:
+    """Record an acknowledgement that did not match the stored revision.
+
+    Args:
+        item: Spool item read for sending. Only kind, id, and revision are logged.
+        operation: Acknowledgement that missed: success, retry, or dead_letter.
+        status_code: HTTP status when the miss followed an HTTP response.
+
+    Returns:
+        None.
+    """
+    if status_code is None:
+        LOG.info(
+            "spool_stale_ack kind=%s id=%s revision=%s op=%s",
+            item["kind"],
+            item["id"],
+            item["revision"],
+            operation,
+        )
+        return
+    LOG.info(
+        "spool_stale_ack kind=%s id=%s revision=%s op=%s status=%s",
+        item["kind"],
+        item["id"],
+        item["revision"],
+        operation,
+        status_code,
+    )
+
+
 async def flush_once(client: httpx.AsyncClient | None = None) -> int:
     """Attempt delivery for one bounded batch of due spool items.
 
@@ -538,7 +870,8 @@ async def flush_once(client: httpx.AsyncClient | None = None) -> int:
         client: Optional reusable HTTP client. A temporary client is created when absent.
 
     Returns:
-        Number of items successfully delivered in this iteration.
+        Number of read revisions whose successful HTTP response still matched
+        the stored row. A stale acknowledgement is not counted.
 
     Raises:
         Exception: Unexpected spool/client failures propagate to the caller.
@@ -555,36 +888,51 @@ async def flush_once(client: httpx.AsyncClient | None = None) -> int:
             try:
                 response = await _deliver(client, item)
                 if 200 <= response.status_code < 300:
-                    await asyncio.to_thread(store.success, item["id"])
-                    delivered += 1
+                    applied = await asyncio.to_thread(
+                        store.success, item["id"], item["revision"]
+                    )
+                    if applied:
+                        delivered += 1
+                    else:
+                        _log_stale_ack(item, "success", response.status_code)
                     continue
                 if _terminal(item["kind"], response.status_code):
-                    await asyncio.to_thread(
+                    applied = await asyncio.to_thread(
                         store.dead_letter,
                         item["id"],
                         response.status_code,
                         f"HTTP {response.status_code}",
+                        item["revision"],
                     )
-                    LOG.warning(
-                        "spool_dead_letter kind=%s id=%s status=%s",
-                        item["kind"],
-                        item["id"],
-                        response.status_code,
-                    )
+                    if applied:
+                        LOG.warning(
+                            "spool_dead_letter kind=%s id=%s status=%s",
+                            item["kind"],
+                            item["id"],
+                            response.status_code,
+                        )
+                    else:
+                        _log_stale_ack(item, "dead_letter", response.status_code)
                     continue
-                await asyncio.to_thread(
+                applied = await asyncio.to_thread(
                     store.retry,
                     item["id"],
                     f"HTTP {response.status_code}",
                     _retry_delay(item["attempts"]),
+                    item["revision"],
                 )
+                if not applied:
+                    _log_stale_ack(item, "retry", response.status_code)
             except Exception as exc:
-                await asyncio.to_thread(
+                applied = await asyncio.to_thread(
                     store.retry,
                     item["id"],
                     exc.__class__.__name__,
                     _retry_delay(item["attempts"]),
+                    item["revision"],
                 )
+                if not applied:
+                    _log_stale_ack(item, "retry")
         return delivered
     finally:
         if owns_client:

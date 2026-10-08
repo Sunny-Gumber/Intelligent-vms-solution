@@ -5,3 +5,6 @@ pydantic-settings==2.10.1
 
 psutil==7.1.0
 ruff==0.16.9
+# Test-only Prometheus PromQL parser. CI does not install promtool. This wheel
+# has no transitive dependencies and is outside the production dependency audit.
+promql-parser==0.10.0
