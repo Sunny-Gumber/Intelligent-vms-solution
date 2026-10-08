@@ -144,7 +144,8 @@ class Settings(BaseSettings):
     placement_max_moves_per_run: int = 200
     # Lease renewal budget (VMS-FIX-014). Independent of the camera-scan batch.
     # required = pages * (interval + max_run) + missed_lock_cycles * (interval + max_run)
-    #   + fence_poll + clock_skew + safety_margin, and required < lease.
+    #   + missed_lock_cycles * retry_sleep + fence_poll + clock_skew + safety_margin,
+    #   and required < lease. retry_sleep is (lock attempts - 1) * retry delay.
     # pages = ceil(ceiling / batch). missed_lock_cycles is at least 1.
     # Fence poll 5s and clock skew 5s match the node-agent defaults; this block
     # does not change the node. Fence grace is not extra lease life.
@@ -173,9 +174,10 @@ class Settings(BaseSettings):
             This settings instance when the conservative budget holds.
 
         Raises:
-            PlacementRenewalBudgetError: When pages, missed locks, fence poll,
-                clock skew and the safety margin do not fit before lease expiry.
-                The lease is not reduced and fence grace is not spent to fit.
+            PlacementRenewalBudgetError: When pages, missed locks, the retry
+                sleeps those misses actually perform, fence poll, clock skew and
+                the safety margin do not fit before lease expiry. The lease is
+                not reduced and fence grace is not spent to fit.
         """
         assert_settings_renewal_budget(self)
         return self

@@ -332,8 +332,8 @@ async def run_placement(
 
     Returns:
         PlacementRunRead containing scan, move, unplaced, deferred, and renewed
-        counts, whether the live population exceeded the renewal ceiling, and
-        the cursor.
+        counts, whether the live population exceeded the renewal ceiling,
+        whether every lock attempt failed, and the cursor.
 
     Raises:
         Exception: Placement service failures propagate to the API error handler.
