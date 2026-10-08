@@ -3,7 +3,8 @@
 Windows PowerShell ConvertTo-Json can emit SignatureStatus as a number
 (Valid = 0). A numeric 0 must not be rejected once the PE certificate table
 says the file is signed. String names and numeric values share one table.
-Anything outside that table fails closed.
+Anything outside that table fails closed. With --expect-unsigned, only
+NotSigned is UNSIGNED_EXPECTED. UnknownError fails closed in every form.
 
 The values are documented at
 https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.signaturestatus?view=powershellsdk-7.4.0
@@ -139,9 +140,9 @@ def test_unexpected_status_values_are_not_signed_names(raw):
     ("NotTrusted", True, "FAIL"),
     (4, False, "FAIL"),
     ("NotTrusted", False, "FAIL"),
-    (1, True, "UNSIGNED_EXPECTED"),
-    ("1", True, "UNSIGNED_EXPECTED"),
-    ("UnknownError", True, "UNSIGNED_EXPECTED"),
+    (1, True, "FAIL"),
+    ("1", True, "FAIL"),
+    ("UnknownError", True, "FAIL"),
     (1, False, "FAIL"),
     ("UnknownError", False, "FAIL"),
     (5, True, "FAIL"),

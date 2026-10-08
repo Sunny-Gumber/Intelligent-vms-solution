@@ -34,3 +34,14 @@ Remove only explicitly temporary qualification files. Do not automatically delet
 
 ## Submission
 Run validator, summary and release-manifest generation, then independent review. Layer A CI is never a substitute for external-machine or real-camera evidence.
+
+## Authenticode check before install or release evidence (VMS-FIX-045)
+
+Boss default pending signing ADR owner confirmation.
+
+Run `qualification/windows/scripts/qualify.py verify-signature` on the installer or release artifact before recording signing status.
+
+- Field-test artifacts with no certificate table: add `--expect-unsigned`. Exit 0 and status `UNSIGNED_EXPECTED` means the file has no Authenticode table, or the table is present and the status is only `NotSigned`.
+- `UnknownError` (numeric `1`, `"1"`, or `"UnknownError"`) used to exit 0 under `--expect-unsigned`. It now exits 1 with status `FAIL` and detail prefix `SIGNATURE_STATUS_REJECTED:UnknownError`. Treat that as an invalid or unreadable signature, not as an unsigned field-test build.
+- Any other status, and any unknown, unparsable, missing, or empty status, also exits 1. Do not continue the run as if the artifact were unsigned.
+- Omit `--expect-unsigned` for a build that must be signed. Only `Valid` exits 0. This check does not verify publisher or timestamp, and a zero exit is not production signing.

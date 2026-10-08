@@ -397,16 +397,47 @@ def signature_status_name(status:object)->str|None:
         return status
     return _SIGNATURE_STATUS_BY_CODE.get(status)
 
+def signature_rejection_reason(status:object)->str:
+    """Return the fail-closed reason code for one SignatureStatus value.
+
+    Normalisation stays in signature_status_name. This function only names why
+    a value is not an accepted verdict.
+
+    Args:
+        status: Raw Status field from ConvertTo-Json. None is missing. A blank
+            or whitespace-only string is empty. Every value
+            signature_status_name cannot map is unparsable.
+
+    Returns:
+        SIGNATURE_STATUS_MISSING, SIGNATURE_STATUS_EMPTY,
+        SIGNATURE_STATUS_UNPARSED, or SIGNATURE_STATUS_REJECTED:<Name> using
+        the canonical name from signature_status_name.
+
+    Raises:
+        This function does not raise.
+    """
+    if status is None:
+        return "SIGNATURE_STATUS_MISSING"
+    if isinstance(status,str) and status.strip()=="":
+        return "SIGNATURE_STATUS_EMPTY"
+    name=signature_status_name(status)
+    if name is None:
+        return "SIGNATURE_STATUS_UNPARSED"
+    return "SIGNATURE_STATUS_REJECTED:"+name
+
 def authenticode_status_verdict(status:object, expect_unsigned:bool)->str:
     """Classify a certificate-table artifact from one SignatureStatus value.
 
     Args:
         status: Raw Status value from Get-AuthenticodeSignature JSON.
-        expect_unsigned: When true, NotSigned and UnknownError stay on the
-            existing unsigned path. Valid is never treated as unsigned.
+        expect_unsigned: When true, only NotSigned is UNSIGNED_EXPECTED.
+            UnknownError and every other non-Valid status fail closed. Valid
+            is never treated as unsigned. Boss default pending signing ADR
+            owner confirmation.
 
     Returns:
-        SIGNED_VALID, UNSIGNED_EXPECTED, or FAIL. Unmapped values are FAIL.
+        SIGNED_VALID, UNSIGNED_EXPECTED, or FAIL. Unmapped, missing, and
+        empty values are FAIL.
 
     Raises:
         This function does not raise.
@@ -414,7 +445,8 @@ def authenticode_status_verdict(status:object, expect_unsigned:bool)->str:
     name=signature_status_name(status)
     if name=="Valid":
         return "SIGNED_VALID"
-    if expect_unsigned and name in {"NotSigned","UnknownError"}:
+    # UnknownError means the signature could not be read. It is not unsigned.
+    if expect_unsigned and name=="NotSigned":
         return "UNSIGNED_EXPECTED"
     return "FAIL"
 
@@ -440,12 +472,15 @@ def verify_signature(path:str, expect_unsigned:bool)->tuple[str,str]:
 
     Args:
         path: Artifact path to inspect.
-        expect_unsigned: When true, a missing certificate table, NotSigned, or
-            UnknownError is UNSIGNED_EXPECTED.
+        expect_unsigned: When true, a missing certificate table or NotSigned
+            is UNSIGNED_EXPECTED. UnknownError is FAIL. Boss default pending
+            signing ADR owner confirmation.
 
     Returns:
         A status and detail pair. Status is SIGNED_VALID, UNSIGNED_EXPECTED,
-        NOT_RUN, or FAIL.
+        NOT_RUN, or FAIL. A certificate-table FAIL detail starts with
+        SIGNATURE_STATUS_REJECTED:<Name>, SIGNATURE_STATUS_MISSING,
+        SIGNATURE_STATUS_EMPTY, or SIGNATURE_STATUS_UNPARSED.
 
     Raises:
         OSError: The artifact cannot be read.
@@ -476,8 +511,12 @@ def verify_signature(path:str, expect_unsigned:bool)->tuple[str,str]:
         return "FAIL","Authenticode status output was not valid JSON"
     if not isinstance(data,dict):
         return "FAIL","Authenticode status output was not a JSON object"
+    raw_status=data.get("Status")
+    verdict=authenticode_status_verdict(raw_status,expect_unsigned)
     detail=json.dumps(data,sort_keys=True)
-    return authenticode_status_verdict(data.get("Status"),expect_unsigned),detail
+    if verdict=="FAIL":
+        detail=signature_rejection_reason(raw_status)+" "+detail
+    return verdict,detail
 
 def main():
     """Dispatch qualification harness commands.
