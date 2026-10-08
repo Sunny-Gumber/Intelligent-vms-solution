@@ -168,7 +168,7 @@ class Settings(BaseSettings):
     # 4s, not 2s: one PostgreSQL 16 sample of a 21000-row page on this host
     # finished in 1.743s. That is inside 2s and leaves no margin, so the
     # deadline the budget charges is 4s. The sample is this host only, not a
-    # capacity claim.
+    # capacity claim. 0 is accepted by the formula and arms no deadline.
     placement_renewal_max_run_seconds: float = Field(default=4.0, ge=0)
     placement_renewal_missed_lock_cycles: int = Field(default=1, ge=1)
     placement_renewal_fence_poll_seconds: float = Field(default=5.0, ge=1)

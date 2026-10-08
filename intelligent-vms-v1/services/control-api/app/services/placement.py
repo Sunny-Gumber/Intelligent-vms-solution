@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Iterable
 
-from sqlalchemy import and_, exists, func, literal, select, text, update
+from sqlalchemy import and_, exists, func, literal, not_, or_, select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -20,6 +20,7 @@ from app.core.effective_authority import (
     effective_authority_deadline,
 )
 from app.core.placement_renewal import (
+    PlacementRenewalInvalidated,
     PlacementRenewalRunExceeded,
     assert_settings_renewal_budget,
 )
@@ -45,6 +46,10 @@ RENEWAL_CURSOR_KEY = "placement_renewal_cursor"
 _RENEWAL_LEASE_WRITE_CHUNK = 2000
 _RUN_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "placement_renewal_run_deadline",
+    default=None,
+)
+_EXTENDED_LEASE_IDS: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
+    "placement_extended_lease_ids",
     default=None,
 )
 _LEASE_UPDATE = text(
@@ -356,14 +361,25 @@ def _raise_if_over_deadline() -> None:
         )
 
 
-async def _before_renewal_lease_write() -> None:
+async def _before_renewal_lease_write(_session=None) -> None:
     """Stop a lease write that would land after the configured max run.
 
-    Production checks the deadline. A test may wrap this to move the deadline
-    between chunks. A chunk that already ran stays uncommitted when this raises,
-    because the placement transaction has not committed.
+    Production checks the deadline. A test may wrap this to commit a site or
+    policy change between chunks. The session argument is the open placement
+    transaction. A chunk that already ran is still uncommitted when this
+    raises, and a later chunk that misses authority rolls that chunk back
+    before the transaction commits.
+
+    Args:
+        _session: Open placement transaction, when the caller has one.
     """
     _raise_if_over_deadline()
+
+
+def _remember_extended_lease(assignment_id: str) -> None:
+    found = _EXTENDED_LEASE_IDS.get()
+    if found is not None:
+        found.add(assignment_id)
 
 
 def _is_statement_timeout(error: BaseException) -> bool:
@@ -375,8 +391,18 @@ def _is_statement_timeout(error: BaseException) -> bool:
 async def _arm_statement_timeout(session) -> None:
     """Bound the next PostgreSQL statement by the time still left in max run.
 
+    ``statement_timeout`` is per statement. The value armed here is the time
+    still left at this call, not a fresh copy of the full max run. A statement
+    that has already started keeps the timeout it was given when it started, so
+    the advisory lock can be held until that statement ends. The attempt checks
+    the monotonic deadline again before commit and rolls back when the clock is
+    already past max run, so that hold does not commit a lease. Callers arm the
+    timeout again after a chunk returns so the following statement does not
+    inherit a value that was larger than the time now left.
+
     SQLite has no statement_timeout. The deadline check between lease chunks
     is what bounds that dialect, and a raise rolls the transaction back.
+    A max run of 0 leaves the deadline unset, so this function does nothing.
     """
     deadline = _RUN_DEADLINE.get()
     if deadline is None:
@@ -480,13 +506,14 @@ async def _extend_owner_lease(
         PlacementRenewalRunExceeded: This attempt is already past its max run.
             The caller rolls the transaction back, so this write is not committed.
     """
-    await _before_renewal_lease_write()
+    await _before_renewal_lease_write(session)
     if row.node_id != node_id or row.generation != generation:
         return False
     new_lease = now + timedelta(seconds=settings.placement_lease_seconds)
     current = row.lease_expires_at
     if current is not None and _aware_utc(current) >= new_lease:
         return False
+    await _arm_statement_timeout(session)
     autonomy = autonomy_deadline(now)
     result = await session.execute(
         update(PlacementAssignmentEntity)
@@ -511,6 +538,7 @@ async def _extend_owner_lease(
     # flush cannot write it again by primary key onto a successor.
     set_committed_value(row, "lease_expires_at", new_lease)
     set_committed_value(row, "autonomy_expires_at", autonomy)
+    _remember_extended_lease(row.id)
     return True
 
 
@@ -887,6 +915,8 @@ async def _apply_renewal_candidates(
     Raises:
         PlacementRenewalRunExceeded: A lease chunk would start after max run.
             Nothing from this transaction has been committed.
+        PlacementRenewalInvalidated: A later chunk did not extend every owner
+            after an earlier chunk had. The transaction rolls back.
     """
     pending: list[tuple[_RenewalCandidate, dict, NodeSnapshot]] = []
     for candidate in candidates:
@@ -917,19 +947,64 @@ async def _apply_renewal_candidates(
         pending.append((candidate, recording, kept))
     if _session_is_postgresql(session):
         return await _extend_pending_leases_postgres(session, pending, now)
-    renewed = 0
+    return await _extend_pending_leases_sqlite(session, pending, now)
+
+
+async def _extend_pending_leases_sqlite(session, pending, now: datetime) -> int:
+    """Extend kept owners one row at a time, in the same chunks PostgreSQL uses.
+
+    SQLite has no array update. A miss in a later chunk, after an earlier chunk
+    extended someone, rolls the attempt back instead of committing that earlier
+    chunk. A miss in the first chunk leaves the scan free to defer or fail over,
+    because no lease from this attempt has been extended yet.
+
+    Args:
+        session: Open SQLite placement transaction.
+        pending: Kept owners, the recording map their metadata uses, and the node.
+        now: Controller evaluation time.
+
+    Returns:
+        How many leases moved later.
+
+    Raises:
+        PlacementRenewalInvalidated: A later chunk did not extend every owner.
+        PlacementRenewalRunExceeded: A write would start after max run.
+    """
+    new_lease = now + timedelta(seconds=settings.placement_lease_seconds)
+    writable: list[tuple[_RenewalCandidate, dict, NodeSnapshot]] = []
     for candidate, recording, kept in pending:
-        if await _keep_owner(
-            session,
-            candidate.row,
-            kept,
-            recording,
-            now,
-            node_id=candidate.node_id,
-            generation=candidate.generation,
-        ):
-            renewed += 1
-    return renewed
+        row = candidate.row
+        if row.node_id != candidate.node_id or row.generation != candidate.generation:
+            continue
+        current = row.lease_expires_at
+        if current is not None and _aware_utc(current) >= new_lease:
+            _note_recording_owner(candidate, recording, kept)
+            continue
+        writable.append((candidate, recording, kept))
+    extended: set[str] = set()
+    chunk_size = max(1, int(_RENEWAL_LEASE_WRITE_CHUNK))
+    for offset in range(0, len(writable), chunk_size):
+        chunk = writable[offset : offset + chunk_size]
+        missed = False
+        for candidate, recording, kept in chunk:
+            if await _keep_owner(
+                session,
+                candidate.row,
+                kept,
+                recording,
+                now,
+                node_id=candidate.node_id,
+                generation=candidate.generation,
+            ):
+                extended.add(candidate.row.id)
+            else:
+                missed = True
+        if missed and offset > 0 and extended:
+            raise PlacementRenewalInvalidated(
+                "placement renewal invalidated: a later chunk did not extend every owner"
+            )
+        await _arm_statement_timeout(session)
+    return len(extended)
 
 
 async def _extend_pending_leases_postgres(session, pending, now: datetime) -> int:
@@ -949,6 +1024,9 @@ async def _extend_pending_leases_postgres(session, pending, now: datetime) -> in
 
     Raises:
         PlacementRenewalRunExceeded: The next chunk would start after max run.
+        PlacementRenewalInvalidated: A later chunk did not extend every owner
+            after an earlier chunk had. Earlier writes in this transaction are
+            rolled back with it.
     """
     new_lease = now + timedelta(seconds=settings.placement_lease_seconds)
     autonomy = autonomy_deadline(now)
@@ -965,9 +1043,19 @@ async def _extend_pending_leases_postgres(session, pending, now: datetime) -> in
     extended: set[str] = set()
     for offset in range(0, len(writable), _RENEWAL_LEASE_WRITE_CHUNK):
         chunk = writable[offset : offset + _RENEWAL_LEASE_WRITE_CHUNK]
-        await _before_renewal_lease_write()
+        await _before_renewal_lease_write(session)
         await _arm_statement_timeout(session)
-        extended.update(await _extend_lease_chunk(session, chunk, new_lease, autonomy))
+        returned = await _extend_lease_chunk(session, chunk, new_lease, autonomy)
+        if len(returned) != len(chunk) and extended:
+            raise PlacementRenewalInvalidated(
+                "placement renewal invalidated: a later chunk did not extend every owner"
+            )
+        extended.update(returned)
+        for assignment_id in returned:
+            _remember_extended_lease(assignment_id)
+        # The chunk statement kept the timeout armed before it started. Arm the
+        # time still left so the next statement cannot spend that old allowance.
+        await _arm_statement_timeout(session)
     for candidate, recording, kept in writable:
         row = candidate.row
         if row.id in extended:
@@ -1001,6 +1089,81 @@ async def _extend_lease_chunk(session, chunk, new_lease: datetime, autonomy) -> 
         },
     )
     return {row[0] for row in result.fetchall()}
+
+
+async def _reject_stale_extended_leases(session) -> None:
+    """Roll the attempt back when an extended lease no longer matches authority.
+
+    The check runs before commit. It sees a site move or a policy change that
+    landed after the statement that extended the row and that makes that row
+    fail its own predicate. A later chunk that does not extend every owner
+    raises before this check. Raising aborts the transaction, so an earlier
+    chunk is not committed.
+
+    Args:
+        session: Open placement transaction.
+
+    Raises:
+        PlacementRenewalInvalidated: At least one extended row fails the same
+            site, policy, and active-owner predicates the lease UPDATE uses.
+        PlacementRenewalRunExceeded: The check would start after max run.
+    """
+    found = _EXTENDED_LEASE_IDS.get()
+    if not found:
+        return
+    await _arm_statement_timeout(session)
+    _raise_if_over_deadline()
+    site_region = (
+        select(SiteRegionEntity.region_id)
+        .join(
+            CameraEntity,
+            and_(
+                CameraEntity.tenant_id == SiteRegionEntity.tenant_id,
+                CameraEntity.site_id == SiteRegionEntity.site_id,
+            ),
+        )
+        .where(CameraEntity.id == PlacementAssignmentEntity.camera_id)
+        .correlate(PlacementAssignmentEntity)
+        .limit(1)
+        .scalar_subquery()
+    )
+    node_matches = exists(
+        select(InfrastructureNodeEntity.id).where(
+            InfrastructureNodeEntity.id == PlacementAssignmentEntity.node_id,
+            InfrastructureNodeEntity.region_id
+            == func.coalesce(site_region, literal(settings.placement_default_region)),
+        )
+    )
+    recording_enabled = exists(
+        select(RecordingPolicyEntity.id).where(
+            RecordingPolicyEntity.camera_id == PlacementAssignmentEntity.camera_id,
+            RecordingPolicyEntity.enabled.is_(True),
+        )
+    )
+    ai_enabled = exists(
+        select(CameraAIPolicyEntity.id).where(
+            CameraAIPolicyEntity.camera_id == PlacementAssignmentEntity.camera_id,
+            CameraAIPolicyEntity.enabled.is_(True),
+        )
+    )
+    stale = (
+        await session.execute(
+            select(PlacementAssignmentEntity.id).where(
+                PlacementAssignmentEntity.id.in_(list(found)),
+                or_(
+                    PlacementAssignmentEntity.active.is_(False),
+                    not_(node_matches),
+                    and_(PlacementAssignmentEntity.role == "recording", not_(recording_enabled)),
+                    and_(PlacementAssignmentEntity.role == "ai", not_(ai_enabled)),
+                ),
+            )
+        )
+    ).scalars().all()
+    if stale:
+        raise PlacementRenewalInvalidated(
+            "placement renewal invalidated: "
+            f"{len(stale)} extended leases no longer match site or policy state"
+        )
 
 
 def _execution_keys(camera: CameraEntity, role: str) -> list:
@@ -1307,6 +1470,7 @@ def _placement_result(
     renewal_budget_exceeded: bool = False,
     renewal_lock_not_acquired: bool = False,
     renewal_max_run_exceeded: bool = False,
+    renewal_invalidated: bool = False,
     cursor: str | None = None,
 ) -> dict:
     return {
@@ -1318,6 +1482,7 @@ def _placement_result(
         "renewal_budget_exceeded": renewal_budget_exceeded,
         "renewal_lock_not_acquired": renewal_lock_not_acquired,
         "renewal_max_run_exceeded": renewal_max_run_exceeded,
+        "renewal_invalidated": renewal_invalidated,
         "cursor": cursor,
     }
 
@@ -1333,13 +1498,16 @@ async def run_placement_once() -> dict:
     short backoff before this cycle gives up. Every attempt failing is logged.
     A live population above the renewal ceiling skips renewal and still scans.
     A positive max run is a deadline. Past it, this attempt rolls back and
-    reports renewal_max_run_exceeded. No partial lease page is committed.
+    reports renewal_max_run_exceeded. A later renewal chunk that does not
+    extend every owner, after an earlier chunk did, rolls the attempt back
+    and reports renewal_invalidated. No partial lease page is committed.
 
     Returns:
         Dictionary containing scanned, moved, unplaced, deferred, and renewed
         counts, whether the live population exceeded the renewal ceiling,
         whether every lock attempt failed, whether the attempt passed its max
-        run, and the persisted camera-scan cursor. Deferred counts are
+        run, whether a later chunk invalidated an earlier chunk, and the
+        persisted camera-scan cursor. Deferred counts are
         assignments whose previous effective authority is still live. Renewed
         counts are owners the scan would keep whose lease moved later on this
         run's renewal page. An exceeded max run returns zeros because that
@@ -1362,6 +1530,9 @@ async def run_placement_once() -> dict:
                 settings.placement_renewal_max_run_seconds,
             )
             return _placement_result(renewal_max_run_exceeded=True)
+        except PlacementRenewalInvalidated:
+            log.critical("placement_renewal_invalidated")
+            return _placement_result(renewal_invalidated=True)
         if result is not None:
             return result
         if attempt + 1 < attempts:
@@ -1390,6 +1561,7 @@ async def _run_placement_once_locked() -> dict | None:
     renewal_budget_exceeded = False
     cursor: str | None = None
     deadline_token = _arm_run_deadline()
+    extended_token = _EXTENDED_LEASE_IDS.set(set())
     try:
         async with SessionLocal() as session:
             async with session.begin():
@@ -1465,6 +1637,7 @@ async def _run_placement_once_locked() -> dict | None:
                     )
                     if track_renewal_cursor:
                         await _save_renewal_cursor(session, renewal_cursor)
+                    await _reject_stale_extended_leases(session)
                     _raise_if_over_deadline()
                     return _placement_result(
                         renewed=renewed,
@@ -1626,6 +1799,7 @@ async def _run_placement_once_locked() -> dict | None:
                 if track_renewal_cursor:
                     await _save_renewal_cursor(session, renewal_cursor)
 
+                await _reject_stale_extended_leases(session)
                 _raise_if_over_deadline()
                 return _placement_result(
                     scanned=scanned,
@@ -1645,3 +1819,4 @@ async def _run_placement_once_locked() -> dict | None:
         raise
     finally:
         _RUN_DEADLINE.reset(deadline_token)
+        _EXTENDED_LEASE_IDS.reset(extended_token)

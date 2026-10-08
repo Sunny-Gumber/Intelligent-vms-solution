@@ -2377,11 +2377,14 @@ def test_max_run_overrun_rolls_the_lease_back(tmp_path, monkeypatch, caplog, dat
             original_hook = placement._before_renewal_lease_write
             calls = {"n": 0}
 
-            async def trip_on_second_chunk():
+            async def trip_on_second_chunk(session=None):
                 calls["n"] += 1
                 if calls["n"] >= 2:
                     placement._RUN_DEADLINE.set(time.monotonic() - 1)
-                await original_hook()
+                if original_hook.__code__.co_argcount:
+                    await original_hook(session)
+                else:
+                    await original_hook()
 
             monkeypatch.setattr(placement, "_before_renewal_lease_write", trip_on_second_chunk)
             caplog.set_level(logging.CRITICAL, logger="app.services.placement")
@@ -2414,6 +2417,264 @@ def test_max_run_overrun_rolls_the_lease_back(tmp_path, monkeypatch, caplog, dat
                 rows = {row.camera_id: row for row in await _assignments(factory)}
                 assert _as_utc(rows["cam-01"].lease_expires_at) == original_lease
                 assert _as_utc(rows["cam-02"].lease_expires_at) == original_lease
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_renewal_invalidation_is_logged_and_the_controller_continues(monkeypatch, caplog):
+    """A rolled-back chunk split is critical and does not stop the controller."""
+
+    controller = _load_controller()
+
+    async def scenario():
+        async def invalidated():
+            return {
+                "scanned": 0,
+                "moved": 0,
+                "unplaced": 0,
+                "deferred_autonomy": 0,
+                "renewed": 0,
+                "renewal_budget_exceeded": False,
+                "renewal_lock_not_acquired": False,
+                "renewal_max_run_exceeded": False,
+                "renewal_invalidated": True,
+                "cursor": None,
+            }
+
+        async def stop_after_one_cycle(_delay):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(controller, "run_placement_once", invalidated)
+        monkeypatch.setattr(controller.asyncio, "sleep", stop_after_one_cycle)
+        caplog.set_level(logging.CRITICAL, logger="placement-controller")
+        try:
+            await controller.main()
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("controller did not reach the interval sleep")
+        assert "placement_renewal_invalidated" in caplog.text
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("case_name", ["site", "recording"])
+@pytest.mark.parametrize("database_url", _authority_database_urls())
+def test_later_chunk_invalidation_rolls_the_earlier_chunk_back(
+    tmp_path, monkeypatch, caplog, database_url, case_name
+):
+    """QA-014-401. A later chunk that misses authority rolls the earlier chunk back.
+
+    QA used PostgreSQL 16, 4,000 assignments, and a chunk size of 2,000, and
+    paused before the second chunk. This is the same split with four
+    assignments and a chunk size of two. The first chunk's UPDATE has already
+    run. A site move, or a disable of only the later chunk's recording
+    policies, is visible to the second chunk. The attempt must commit neither
+    chunk. On PostgreSQL the change is a second session's commit. SQLite holds
+    the write lock after the first update, so the equivalent change is flushed
+    on the open placement transaction between the second and third row.
+    """
+
+    async def scenario():
+        factory, engine = await _open_database(tmp_path, f"chunk-{case_name}.db", database_url)
+        try:
+            lease = 60
+            _configure_budget(
+                monkeypatch,
+                lease=lease,
+                interval=10,
+                scan_batch=10,
+                renewal_batch=10,
+                max_assignments=10,
+                max_run=4,
+                lock_retry_limit=1,
+            )
+            monkeypatch.setattr(placement, "_RENEWAL_LEASE_WRITE_CHUNK", 2)
+            camera_ids = [f"cam-{index:02d}" for index in range(1, 5)]
+            role = "recording" if case_name == "recording" else "media"
+            original_lease = T0
+            node_a = (
+                _node(
+                    "node-a",
+                    T0,
+                    region_id="region-a",
+                    roles=("media", "recording"),
+                    capacity=_capacity_all(),
+                    load=_load_all(),
+                )
+                if case_name == "recording"
+                else _node("node-a", T0, region_id="region-a")
+            )
+            rows = [
+                node_a,
+                _node("node-b", T0, region_id="region-b"),
+                _site_region("site-a", "region-a"),
+                *[_camera(camera_id) for camera_id in camera_ids],
+                *[
+                    _assignment(
+                        camera_id,
+                        "node-a",
+                        original_lease,
+                        role=role,
+                        region_id="region-a",
+                        assignment_id=f"pa-{camera_id}",
+                    )
+                    for camera_id in camera_ids
+                ],
+            ]
+            if case_name == "recording":
+                rows.extend(_recording_policy(camera_id, enabled=True) for camera_id in camera_ids)
+            await _seed(factory, rows)
+            monkeypatch.setattr(placement, "SessionLocal", factory)
+            monkeypatch.setattr(placement, "datetime", MutableClock)
+            original_hook = placement._before_renewal_lease_write
+            original_keep = placement._keep_owner
+            holder = {"session": None}
+
+            async def remember_session(session, *args, **kwargs):
+                holder["session"] = session
+                return await original_keep(session, *args, **kwargs)
+
+            if database_url == "sqlite":
+                monkeypatch.setattr(placement, "_keep_owner", remember_session)
+
+            async def apply_change(session):
+                if case_name == "site":
+                    region = (
+                        await session.execute(
+                            select(SiteRegionEntity).where(SiteRegionEntity.site_id == "site-a")
+                        )
+                    ).scalar_one()
+                    region.region_id = "region-b"
+                    return
+                policies = (
+                    await session.execute(
+                        select(RecordingPolicyEntity).where(
+                            RecordingPolicyEntity.camera_id.in_(["cam-03", "cam-04"])
+                        )
+                    )
+                ).scalars().all()
+                assert {policy.camera_id for policy in policies} == {"cam-03", "cam-04"}
+                for policy in policies:
+                    policy.enabled = False
+
+            async def invalidate(session):
+                if database_url == "sqlite":
+                    active = session if session is not None else holder["session"]
+                    assert active is not None
+                    await apply_change(active)
+                    await active.flush()
+                    return
+                async with factory() as other:
+                    async with other.begin():
+                        await apply_change(other)
+
+            calls = {"n": 0}
+            # PostgreSQL calls the hook once per chunk. SQLite calls it once per
+            # row. Chunk size 2 means the second chunk starts on call 2 or 3.
+            pause_at = 3 if database_url == "sqlite" else 2
+
+            async def pause_before_later_chunk(session=None):
+                calls["n"] += 1
+                if calls["n"] == pause_at:
+                    await invalidate(session)
+                if original_hook.__code__.co_argcount:
+                    await original_hook(session)
+                else:
+                    await original_hook()
+
+            monkeypatch.setattr(placement, "_before_renewal_lease_write", pause_before_later_chunk)
+            caplog.set_level(logging.CRITICAL, logger="app.services.placement")
+            MutableClock.instant = T0 + timedelta(seconds=10)
+            await _touch_heartbeat(factory, "node-a", MutableClock.instant)
+            await _touch_heartbeat(factory, "node-b", MutableClock.instant)
+            result = await placement.run_placement_once()
+            assert result["renewed"] == 0, (result, calls)
+            assert result["moved"] == 0, result
+            assert result["deferred_autonomy"] == 0, result
+            assert result["renewal_max_run_exceeded"] is False, result
+            assert result["renewal_invalidated"] is True, result
+            assert "placement_renewal_invalidated" in caplog.text
+            stored = {row.camera_id: row for row in await _assignments(factory)}
+            assert list(stored) == camera_ids
+            for camera_id in camera_ids:
+                assert stored[camera_id].node_id == "node-a"
+                assert stored[camera_id].generation == 1
+                assert stored[camera_id].role == role
+                assert _as_utc(stored[camera_id].lease_expires_at) == original_lease
+
+            async with factory() as check:
+                region = (
+                    await check.execute(
+                        select(SiteRegionEntity).where(SiteRegionEntity.site_id == "site-a")
+                    )
+                ).scalar_one()
+                if case_name == "site" and database_url != "sqlite":
+                    assert region.region_id == "region-b"
+                else:
+                    assert region.region_id == "region-a"
+                if case_name == "recording":
+                    policies = {
+                        policy.camera_id: policy.enabled
+                        for policy in (
+                            await check.execute(select(RecordingPolicyEntity))
+                        ).scalars().all()
+                    }
+                    if database_url == "sqlite":
+                        assert policies == {camera_id: True for camera_id in camera_ids}
+                    else:
+                        assert policies["cam-01"] is True
+                        assert policies["cam-02"] is True
+                        assert policies["cam-03"] is False
+                        assert policies["cam-04"] is False
+
+            monkeypatch.setattr(placement, "_before_renewal_lease_write", original_hook)
+            follow = await placement.run_placement_once()
+            fresh_lease = MutableClock.instant + timedelta(seconds=lease)
+            if case_name == "site" and database_url != "sqlite":
+                assert follow["renewed"] == 0, follow
+                assert follow["deferred_autonomy"] == 0, follow
+                assert follow["moved"] == 4, follow
+                moved_rows = {row.camera_id: row for row in await _assignments(factory)}
+                for camera_id in camera_ids:
+                    assert moved_rows[camera_id].node_id == "node-b"
+                    assert moved_rows[camera_id].generation == 2
+                    assert _as_utc(moved_rows[camera_id].lease_expires_at) == fresh_lease
+            elif case_name == "recording" and database_url != "sqlite":
+                assert follow["renewed"] == 2, follow
+                follow_rows = {
+                    (row.camera_id, row.role): row for row in await _assignments(factory)
+                }
+                for camera_id in ("cam-01", "cam-02"):
+                    renewed_row = follow_rows[(camera_id, "recording")]
+                    assert renewed_row.node_id == "node-a"
+                    assert renewed_row.generation == 1
+                    assert _as_utc(renewed_row.lease_expires_at) == fresh_lease
+                for camera_id in ("cam-03", "cam-04"):
+                    held = follow_rows[(camera_id, "recording")]
+                    assert held.node_id == "node-a"
+                    assert held.generation == 1
+                    assert _as_utc(held.lease_expires_at) == original_lease
+            elif case_name == "recording":
+                assert follow["renewed"] == 4, follow
+                follow_rows = {
+                    (row.camera_id, row.role): row for row in await _assignments(factory)
+                }
+                for camera_id in camera_ids:
+                    renewed_row = follow_rows[(camera_id, "recording")]
+                    assert renewed_row.node_id == "node-a"
+                    assert renewed_row.generation == 1
+                    assert _as_utc(renewed_row.lease_expires_at) == fresh_lease
+            else:
+                assert follow["renewed"] == 4, follow
+                assert follow["moved"] == 0, follow
+                follow_rows = {row.camera_id: row for row in await _assignments(factory)}
+                for camera_id in camera_ids:
+                    assert follow_rows[camera_id].node_id == "node-a"
+                    assert follow_rows[camera_id].generation == 1
+                    assert _as_utc(follow_rows[camera_id].lease_expires_at) == fresh_lease
         finally:
             await engine.dispose()
 

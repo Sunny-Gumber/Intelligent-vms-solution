@@ -25,6 +25,12 @@ Fence grace is not added to the lease and is not spent as extra budget: using
 it would loosen the node side to make the arithmetic fit. The lease duration
 is never reduced to force a pass.
 
+A max run of 0 is a legal budget input and reserves no run time. It does not
+arm a deadline: the placement attempt does not cancel a slow statement when
+the configured max run is 0. The shipped default is 4 seconds, and any
+positive max run is enforced as a deadline. Operators who need the deadline
+must set a positive max run that the formula still accepts.
+
 Fence poll and clock skew default to the node-agent's own defaults (5s and
 5s). This module does not change the node-agent. An operator who lengthens
 the node poll or skew warning must raise the matching budget allowance or
@@ -38,6 +44,14 @@ import math
 # The placement controller has always slept at least this long. The budget
 # uses the same floor so it cannot assume a faster loop than the process runs.
 MINIMUM_PLACEMENT_INTERVAL_SECONDS = 2.0
+
+
+class PlacementRenewalInvalidated(RuntimeError):
+    """A later renewal chunk saw authority that an earlier chunk did not.
+
+    The attempt rolls back. Leases written by an earlier chunk of the same
+    attempt are not committed. Callers leave the previous leases in place.
+    """
 
 
 class PlacementRenewalRunExceeded(RuntimeError):

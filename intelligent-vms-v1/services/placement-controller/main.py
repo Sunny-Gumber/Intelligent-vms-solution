@@ -37,7 +37,9 @@ async def main():
     execution lock is retried inside the run, with a short backoff, before
     this cycle sleeps out the full interval. Every attempt failing is logged
     and does not change a lease. A run that passes its configured max run is
-    rolled back, logged, and does not change a lease.
+    rolled back, logged, and does not change a lease. A later renewal chunk
+    that misses authority after an earlier chunk extended owners rolls the
+    attempt back the same way.
 
     Returns:
         None under normal operation; the coroutine runs until cancelled.
@@ -62,6 +64,8 @@ async def main():
                 log.critical("placement_renewal_lock_not_acquired")
             if result.get("renewal_max_run_exceeded"):
                 log.critical("placement_renewal_max_run_exceeded")
+            if result.get("renewal_invalidated"):
+                log.critical("placement_renewal_invalidated")
             log.info(
                 "placement_run scanned=%s moved=%s unplaced=%s renewed=%s "
                 "renewal_budget_exceeded=%s cursor=%s",
