@@ -241,5 +241,8 @@ def test_dead_letters_are_bounded(tmp_path, monkeypatch):
     for i in range(3):
         item_id = f"event:{i}"
         bounded.enqueue(item_id, "event", {"event_id": str(i)})
-        bounded.dead_letter(item_id, 422, "invalid")
+        due = bounded.due(1)
+        assert len(due) == 1
+        assert due[0]["id"] == item_id
+        bounded.dead_letter(due[0]["id"], 422, "invalid", due[0]["revision"])
     assert bounded.counts() == (0, 2)
