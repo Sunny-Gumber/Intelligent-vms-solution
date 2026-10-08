@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -110,8 +111,10 @@ async def _cleanup_provisioned_paths(stream_keys: list[str]) -> None:
         None after every supplied path has been attempted.
 
     Notes:
-        Cleanup failures are logged without upstream exception text so a
-        credential-bearing MediaMTX error cannot leak camera secrets.
+        This call stays outside ``_device_call``. The handler catches every
+        exception and logs only the original class name, so a credential-bearing
+        MediaMTX error cannot leak and the class recorded by operations stays
+        the class the media call raised.
     """
     for stream_key in reversed(stream_keys):
         try:
@@ -124,7 +127,38 @@ async def _cleanup_provisioned_paths(stream_keys: list[str]) -> None:
             )
 
 
+def _generic_onvif_failure() -> HTTPException:
+    """Return the public fallback for an untrusted device or service failure.
+
+    Returns:
+        HTTP 502 whose detail is a fixed code and message.
+
+    Raises:
+        No exception is raised. The detail never copies the caught exception.
+    """
+    return HTTPException(502, {"code": "ONVIF_ERROR", "message": "ONVIF operation failed"})
+
+
 def _http_error(exc: Exception) -> HTTPException:
+    """Translate a device or service failure into a public HTTP error.
+
+    Router validation, including an invalid managed-stream role, is resolved
+    before the device call and does not pass through this helper. An
+    HTTPException raised by device or service code is untrusted: its status
+    and detail are discarded, including when the status is 422, 404, or 409.
+
+    Args:
+        exc: Failure caught around a device or service call.
+
+    Returns:
+        Public HTTP error for a blocked target, a bounded ONVIF error, or a
+        sanitized device or transport failure.
+
+    Raises:
+        No exception is raised. Callers raise the returned value.
+    """
+    if isinstance(exc, HTTPException):
+        return _generic_onvif_failure()
     if isinstance(exc, TargetNotAllowed):
         return HTTPException(
             400,
@@ -132,7 +166,42 @@ def _http_error(exc: Exception) -> HTTPException:
         )
     if isinstance(exc, OnvifError):
         return HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
-    return HTTPException(502, {"code": "ONVIF_ERROR", "message": "ONVIF operation failed"})
+    return _generic_onvif_failure()
+
+
+async def _device_call(awaitable):
+    """Run one device or service call and drop untrusted exception details.
+
+    Every ONVIF handler that reaches a camera, discovery socket, media path, or
+    configuration service uses this wrapper. Router HTTP errors stay outside it.
+    A FastAPI or Starlette HTTPException from the call is replaced with the
+    generic ONVIF failure, and so is any other unexpected exception, including a
+    discovery RuntimeError. That used to escape discovery and become HTTP 500
+    from the process-wide handler. Discovery is a device call, so the same 502
+    is used as for probe and configuration failures. The text is not copied.
+
+    Args:
+        awaitable: One device or service coroutine.
+
+    Returns:
+        The awaited result when the call succeeds.
+
+    Raises:
+        HTTPException: Generic 502 for an HTTPException or unexpected failure.
+        OnvifError: Re-raised so the caller can keep the bounded mapping.
+        TargetNotAllowed: Re-raised so the caller can return the fixed 400.
+        OSError: Re-raised so WS-Discovery can return 503 without the text.
+        TimeoutError: Re-raised so serial search can keep its bounded 504.
+        ValueError: Re-raised so a serial candidate can be skipped.
+    """
+    try:
+        return await awaitable
+    except StarletteHTTPException:
+        raise _generic_onvif_failure() from None
+    except (OnvifError, TargetNotAllowed, OSError, TimeoutError, ValueError):
+        raise
+    except Exception as exc:
+        raise _http_error(exc) from exc
 
 
 def _resolved_site_id(
@@ -249,6 +318,28 @@ def _managed_profile(
     return profile_by_token(capability.profiles_json or [], token_by_role[role])
 
 
+def _client_profile(capability: CameraCapabilityEntity, role: str) -> dict:
+    """Resolve a managed profile before any device or service call.
+
+    Args:
+        capability: Stored ONVIF capability snapshot.
+        role: Managed stream role.
+
+    Returns:
+        Matching stored profile dictionary.
+
+    Raises:
+        HTTPException: Invalid role, raised here, or a mapped stale or
+            unselected profile. Device failures are not handled here.
+    """
+    try:
+        return _managed_profile(capability, role)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
 def _capability_read(capability: CameraCapabilityEntity) -> CameraCapabilityRead:
     """Serialize one stored ONVIF capability snapshot."""
     return CameraCapabilityRead(
@@ -300,13 +391,13 @@ async def _apply_managed_profile(
 
     snapshot, policy = await prepare_source_mutation(session, camera)
     try:
-        probe = await probe_xaddr(
+        probe = await _device_call(probe_xaddr(
             capability.onvif_xaddr,
             username,
             password,
             tenant_id=camera.tenant_id,
             site_id=camera.site_id,
-        )
+        ))
         profile = _profile(probe, profile_token)
         if not profile or not profile.get("_raw_stream_uri"):
             raise HTTPException(
@@ -345,7 +436,7 @@ async def _apply_managed_profile(
         capability.profiles_json = public["profiles"]
         capability.probed_at = datetime.now(timezone.utc)
 
-        await commit_source_mutation(session, camera, policy, snapshot)
+        await _device_call(commit_source_mutation(session, camera, policy, snapshot))
         await session.refresh(capability)
         return _capability_read(capability)
     except HTTPException:
@@ -373,13 +464,15 @@ async def discover_devices(
         Vendor-neutral list of discovered ONVIF devices.
 
     Raises:
-        HTTPException: HTTP 503 when the discovery socket/network is unavailable.
+        HTTPException: HTTP 503 when the discovery socket is unavailable.
+            A device HTTPException or other unexpected discovery failure,
+            including RuntimeError, is HTTP 502 with a fixed message.
     """
     site_id = _resolved_site_id(principal, payload.tenant_id, payload.site_id)
     try:
         require_site_network_policy(payload.tenant_id, site_id)
         require_local_discovery_site(payload.tenant_id, site_id)
-        discovered = await asyncio.to_thread(discover, payload.timeout_seconds)
+        discovered = await _device_call(asyncio.to_thread(discover, payload.timeout_seconds))
         bounded = []
         for device in discovered:
             allowed_xaddrs = []
@@ -403,6 +496,8 @@ async def discover_devices(
             503,
             {"code": "DISCOVERY_UNAVAILABLE", "message": "WS-Discovery socket is unavailable on this host/network"},
         ) from exc
+    except Exception as exc:
+        raise _http_error(exc) from exc
 
 
 @router.post("/probe", response_model=OnvifProbeRead)
@@ -424,7 +519,7 @@ async def probe_device(
     """
     site_id = _resolved_site_id(principal, payload.tenant_id, payload.site_id)
     try:
-        result = await probe_host(
+        result = await _device_call(probe_host(
             payload.host,
             payload.port,
             payload.username,
@@ -433,7 +528,7 @@ async def probe_device(
             payload.scheme,
             tenant_id=payload.tenant_id,
             site_id=site_id,
-        )
+        ))
         return public_probe(result)
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -467,7 +562,7 @@ async def onboard_by_serial(
     try:
         require_site_network_policy(payload.tenant_id, payload.site_id)
         require_local_discovery_site(payload.tenant_id, payload.site_id)
-        discovered = await asyncio.to_thread(discover, payload.timeout_seconds)
+        discovered = await _device_call(asyncio.to_thread(discover, payload.timeout_seconds))
         candidates: list[str] = []
         for device in discovered:
             for xaddr in device.get("xaddrs", []):
@@ -491,14 +586,14 @@ async def onboard_by_serial(
         async def identify_candidate(xaddr: str) -> dict | None:
             async with semaphore:
                 try:
-                    return await identify_xaddr(
+                    return await _device_call(identify_xaddr(
                         xaddr,
                         payload.username,
                         payload.password,
                         tenant_id=payload.tenant_id,
                         site_id=payload.site_id,
                         operation_timeout_seconds=payload.timeout_seconds,
-                    )
+                    ))
                 except (OnvifError, TargetNotAllowed, OSError, ValueError, TimeoutError):
                     return None
 
@@ -640,7 +735,7 @@ async def onboard_device(
     """
     require_scope(principal, payload.tenant_id, payload.site_id)
     try:
-        probe = await probe_host(
+        probe = await _device_call(probe_host(
             payload.host,
             payload.port,
             payload.username,
@@ -649,7 +744,7 @@ async def onboard_device(
             payload.scheme,
             tenant_id=payload.tenant_id,
             site_id=payload.site_id,
-        )
+        ))
         if payload.expected_serial_number is not None:
             observed_serial = str(
                 (probe.get("device_info") or {}).get("SerialNumber") or ""
@@ -777,11 +872,19 @@ async def onboard_device(
                     view_profile["_raw_stream_uri"], payload.username, payload.password
                 )
                 provisioned_keys.append(entity.stream_key)
-                await mediamtx.add_or_replace_path(entity.stream_key, source, **source_trust_options(entity))
+                await _device_call(mediamtx.add_or_replace_path(
+                    entity.stream_key,
+                    source,
+                    **source_trust_options(entity),
+                ))
                 if entity.sub_path:
                     main_key = main_live_stream_key(entity)
                     provisioned_keys.append(main_key)
-                    await mediamtx.add_or_replace_path(main_key, main_live_source(entity), **source_trust_options(entity))
+                    await _device_call(mediamtx.add_or_replace_path(
+                        main_key,
+                        main_live_source(entity),
+                        **source_trust_options(entity),
+                    ))
                 if third and entity.third_stream_key:
                     third_source = inject_rtsp_credentials(
                         third["_raw_stream_uri"],
@@ -789,11 +892,11 @@ async def onboard_device(
                         payload.password,
                     )
                     provisioned_keys.append(entity.third_stream_key)
-                    await mediamtx.add_or_replace_path(
+                    await _device_call(mediamtx.add_or_replace_path(
                         entity.third_stream_key,
                         third_source,
                         **source_trust_options(entity),
-                    )
+                    ))
             await session.commit()
         except Exception:
             await _cleanup_provisioned_paths(provisioned_keys)
@@ -867,7 +970,7 @@ async def clear_third_profile(
     camera.third_path = None
     capability.third_profile_token = None
     try:
-        await commit_source_mutation(session, camera, policy, snapshot)
+        await _device_call(commit_source_mutation(session, camera, policy, snapshot))
     except Exception as exc:
         await session.rollback()
         raise _http_error(exc) from exc
@@ -898,13 +1001,13 @@ async def select_profile_by_codec(
             {"code": "INVALID_STREAM_ROLE", "message": "Role must be main, sub or third"},
         )
     try:
-        probe = await probe_xaddr(
+        probe = await _device_call(probe_xaddr(
             capability.onvif_xaddr,
             username,
             password,
             tenant_id=camera.tenant_id,
             site_id=camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1009,16 +1112,16 @@ async def read_encoder_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
-        state = await get_encoder(
+        state = await _device_call(get_encoder(
             capability.services_json or [],
             profile,
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
         return OnvifEncoderRead(
             role=role,
             profile_token=profile["token"],
@@ -1061,9 +1164,9 @@ async def write_encoder_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
-        state = await set_encoder(
+        state = await _device_call(set_encoder(
             capability.services_json or [],
             profile,
             payload.model_dump(exclude_none=True),
@@ -1071,7 +1174,7 @@ async def write_encoder_configuration(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
         return OnvifEncoderRead(
             role=role,
             profile_token=profile["token"],
@@ -1112,17 +1215,17 @@ async def read_imaging_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         source_token = profile.get("video_source_token")
-        state = await get_imaging(
+        state = await _device_call(get_imaging(
             capability.services_json or [],
             source_token,
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
         return OnvifImagingRead(
             video_source_token=source_token,
             current=state["current"],
@@ -1163,10 +1266,10 @@ async def write_imaging_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         source_token = profile.get("video_source_token")
-        state = await set_imaging(
+        state = await _device_call(set_imaging(
             capability.services_json or [],
             source_token,
             payload.model_dump(exclude_none=True),
@@ -1174,7 +1277,7 @@ async def write_imaging_configuration(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
         return OnvifImagingRead(
             video_source_token=source_token,
             current=state["current"],
@@ -1197,16 +1300,16 @@ async def read_orientation_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
-        state = await get_orientation(
+        state = await _device_call(get_orientation(
             capability.services_json or [],
             profile,
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
         return {"current": state["current"], "options": state["options"]}
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -1226,9 +1329,9 @@ async def write_orientation_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
-        state = await set_orientation(
+        state = await _device_call(set_orientation(
             capability.services_json or [],
             profile,
             payload.model_dump(exclude_none=True),
@@ -1236,7 +1339,7 @@ async def write_orientation_configuration(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
         return {"current": state["current"], "options": state["options"]}
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -1255,16 +1358,16 @@ async def read_video_source_modes(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
-        return await get_video_source_modes(
+        return await _device_call(get_video_source_modes(
             capability.services_json or [],
             profile.get("video_source_token"),
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1283,9 +1386,9 @@ async def write_video_source_mode(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
-        return await set_video_source_mode(
+        return await _device_call(set_video_source_mode(
             capability.services_json or [],
             profile.get("video_source_token"),
             payload.mode_token,
@@ -1293,7 +1396,7 @@ async def write_video_source_mode(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1311,16 +1414,16 @@ async def read_video_standard(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
-        return await get_video_standards(
+        return await _device_call(get_video_standards(
             capability.services_json or [],
             profile.get("video_source_token"),
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1339,9 +1442,9 @@ async def write_video_standard(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
-        return await set_video_standard(
+        return await _device_call(set_video_standard(
             capability.services_json or [],
             profile.get("video_source_token"),
             payload.standard,
@@ -1349,7 +1452,7 @@ async def write_video_standard(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1368,13 +1471,13 @@ async def read_camera_date_time(
     )
     try:
         return OnvifDateTimeRead(
-            **await get_date_time(
+            **await _device_call(get_date_time(
                 capability.onvif_xaddr,
                 username,
                 password,
                 camera.tenant_id,
                 camera.site_id,
-            )
+            ))
         )
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -1395,14 +1498,14 @@ async def write_camera_date_time(
     )
     try:
         return OnvifDateTimeRead(
-            **await set_date_time(
+            **await _device_call(set_date_time(
                 capability.onvif_xaddr,
                 payload.model_dump(),
                 username,
                 password,
                 camera.tenant_id,
                 camera.site_id,
-            )
+            ))
         )
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -1421,13 +1524,13 @@ async def read_ir_capability(
         principal,
     )
     try:
-        commands = await supported_auxiliary_commands(
+        commands = await _device_call(supported_auxiliary_commands(
             capability.onvif_xaddr,
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
         return {
             "supported_modes": [
                 command.rsplit("|", 1)[-1]
@@ -1453,14 +1556,14 @@ async def write_ir_control(
         principal,
     )
     try:
-        return await set_ir_lamp(
+        return await _device_call(set_ir_lamp(
             capability.onvif_xaddr,
             payload.mode,
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1478,13 +1581,13 @@ async def read_osds(
         principal,
     )
     try:
-        return await list_osds(
+        return await _device_call(list_osds(
             capability.services_json or [],
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1503,8 +1606,8 @@ async def create_camera_osd(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1512,7 +1615,7 @@ async def create_camera_osd(
                 "Video source configuration token is missing; refresh capabilities",
                 409,
             )
-        return await create_osd(
+        return await _device_call(create_osd(
             capability.services_json or [],
             token,
             payload.model_dump(),
@@ -1520,7 +1623,7 @@ async def create_camera_osd(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1539,9 +1642,12 @@ async def write_camera_name_osd(
         session,
         principal,
     )
+    profile = None
+    if not payload.osd_token:
+        profile = _client_profile(capability, role)
     try:
         if payload.osd_token:
-            return await update_osd(
+            return await _device_call(update_osd(
                 capability.services_json or [],
                 payload.osd_token,
                 {
@@ -1553,8 +1659,7 @@ async def write_camera_name_osd(
                 password,
                 camera.tenant_id,
                 camera.site_id,
-            )
-        profile = _managed_profile(capability, role)
+            ))
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1562,7 +1667,7 @@ async def write_camera_name_osd(
                 "Video source configuration token is missing; refresh capabilities",
                 409,
             )
-        return await create_osd(
+        return await _device_call(create_osd(
             capability.services_json or [],
             token,
             {
@@ -1576,7 +1681,7 @@ async def write_camera_name_osd(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1596,7 +1701,7 @@ async def update_camera_osd(
         principal,
     )
     try:
-        return await update_osd(
+        return await _device_call(update_osd(
             capability.services_json or [],
             osd_token,
             payload.model_dump(exclude_none=True),
@@ -1604,7 +1709,7 @@ async def update_camera_osd(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1623,14 +1728,14 @@ async def delete_camera_osd(
         principal,
     )
     try:
-        return await delete_osd(
+        return await _device_call(delete_osd(
             capability.services_json or [],
             osd_token,
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1648,8 +1753,8 @@ async def read_privacy_masks(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1657,14 +1762,14 @@ async def read_privacy_masks(
                 "Video source configuration token is missing; refresh capabilities",
                 409,
             )
-        return await list_masks(
+        return await _device_call(list_masks(
             capability.services_json or [],
             token,
             username,
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1683,8 +1788,8 @@ async def create_privacy_mask(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1692,7 +1797,7 @@ async def create_privacy_mask(
                 "Video source configuration token is missing; refresh capabilities",
                 409,
             )
-        return await create_mask(
+        return await _device_call(create_mask(
             capability.services_json or [],
             token,
             payload.model_dump(),
@@ -1700,7 +1805,7 @@ async def create_privacy_mask(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1720,8 +1825,8 @@ async def update_privacy_mask(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1729,7 +1834,7 @@ async def update_privacy_mask(
                 "Video source configuration token is missing; refresh capabilities",
                 409,
             )
-        return await update_mask(
+        return await _device_call(update_mask(
             capability.services_json or [],
             mask_token,
             token,
@@ -1738,7 +1843,7 @@ async def update_privacy_mask(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1757,8 +1862,8 @@ async def delete_privacy_mask(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1766,7 +1871,7 @@ async def delete_privacy_mask(
                 "Video source configuration token is missing; refresh capabilities",
                 409,
             )
-        return await delete_mask(
+        return await _device_call(delete_mask(
             capability.services_json or [],
             mask_token,
             token,
@@ -1774,7 +1879,7 @@ async def delete_privacy_mask(
             password,
             camera.tenant_id,
             camera.site_id,
-        )
+        ))
     except Exception as exc:
         raise _http_error(exc) from exc
 
@@ -1851,13 +1956,13 @@ async def refresh_capabilities(
         raise HTTPException(404, "ONVIF capability snapshot not found")
 
     try:
-        probe = await probe_xaddr(
+        probe = await _device_call(probe_xaddr(
             row.onvif_xaddr,
             decrypt_secret(camera.username_enc),
             decrypt_secret(camera.password_enc),
             tenant_id=camera.tenant_id,
             site_id=camera.site_id,
-        )
+        ))
         public = public_probe(probe)
         row.device_info_json = public["device_info"]
         row.services_json = public["services"]
@@ -1873,7 +1978,7 @@ async def refresh_capabilities(
             row.third_profile_token = None
         row.probed_at = datetime.now(timezone.utc)
         if third_missing:
-            await commit_source_mutation(session, camera, policy, snapshot)
+            await _device_call(commit_source_mutation(session, camera, policy, snapshot))
         else:
             await session.commit()
         await session.refresh(row)
