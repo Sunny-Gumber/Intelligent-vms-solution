@@ -34,7 +34,7 @@ source: rtsp://camera-main
 sourceOnDemand: false
 rtspTransport: tcp
 record: true
-recordPath: /recordings/%path/%Y/%m/%d/%H/%s
+recordPath: /recordings/%path/%Y/%m/%d/%H/%s-%f
 recordFormat: fmp4
 recordPartDuration: 1s
 recordMaxPartSize: 50M
@@ -44,6 +44,8 @@ runOnRecordSegmentComplete: <internal hook>
 ```
 
 The live path remains source-on-demand and record=false.
+
+Owner decision C3 (accepted 2026-10-08): every default and template that enables playback includes `%f` in `recordPath`. Pinned MediaMTX v1.21.1 rejects a playback path that omits it. `%s-%f` keeps the Unix-second filename prefix and six-digit microseconds. See `docs/operations/RECORDING_STORAGE.md`.
 
 ## Segment metadata plane
 

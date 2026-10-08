@@ -42,12 +42,24 @@ Site scope:
 
 `site_ids:["*"]` grants all sites inside the token tenant. `tenant_id:"*"` is reserved for explicitly trusted global administration/service control.
 
+A **global administrator** is an identity whose roles include `admin` and whose `tenant_id` is `"*"`. A tenant-scoped administrator has role `admin` and a specific `tenant_id`. Those are not the same authority.
+
+Only a global administrator may mutate global control-plane state:
+
+- infrastructure nodes: register, configure, and drain via `PUT /api/v1/infrastructure/nodes/{node_id}` (`state` `draining` is the drain operation; this tree has no node-delete route)
+- node heartbeat and revocation acknowledgement when the caller is an administrator (`POST /api/v1/infrastructure/nodes/{node_id}/heartbeat`, `POST /api/v1/infrastructure/nodes/{node_id}/fences/revocations/{revocation_id}/ack`). A `service` token may still act only on the node named by its `node_id` claim. A tenant-scoped administrator may not.
+- placement runs that assign and fail over cameras (`POST /api/v1/infrastructure/placement/run`)
+- transactional outbox requeue (`POST /api/v1/system/outbox/{message_id}/requeue`)
+
+A tenant-scoped administrator receives HTTP 403 on those routes, and the handler does not change state. That administrator keeps tenant-scoped powers, such as cameras and other resources in its own tenant. A service token is not a global administrator.
+
 ## Authorization policy
 
 - viewer: read cameras/health/capabilities
 - operator: viewer rights + camera onboarding/delete/refresh/discovery
-- admin: operator rights + future tenant/admin operations
-- service: machine event ingestion; not camera administration by default
+- admin with a specific `tenant_id`: operator rights plus tenant-scoped administration inside that tenant
+- global admin (`admin` and `tenant_id` `"*"`): tenant-admin rights plus the global mutations listed above
+- service: machine event ingestion and, when `node_id` is set, that node's heartbeat and revocation acknowledgement; not camera administration and not node registration by default
 
 Out-of-scope object access returns 404 to avoid confirming resource existence across tenants.
 
