@@ -946,8 +946,9 @@ class AlarmRuleRead(BaseModel):
 class AlarmRuleUpdate(BaseModel):
     """Validate partial updates to an existing alarm rule.
 
-    Optional fields retain the create-model bounds and may raise Pydantic validation
-    errors when supplied values are invalid.
+    Omitted fields retain persisted values. Explicit nulls are rejected because
+    these mutable fields are non-nullable; empty camera lists mean wildcard.
+    Supplied values retain the create-model bounds and may raise validation errors.
     """
 
     name: str | None = Field(default=None, min_length=1, max_length=256)
@@ -957,6 +958,20 @@ class AlarmRuleUpdate(BaseModel):
     camera_ids: list[str] | None = Field(default=None, max_length=1000)
     alarm_severity: Literal["info", "low", "medium", "high", "critical"] | None = None
     cooldown_seconds: int | None = Field(default=None, ge=0, le=86400)
+
+    @model_validator(mode="after")
+    def reject_explicit_nulls(self) -> "AlarmRuleUpdate":
+        """Reject null PATCH values before persistence while allowing omission.
+
+        Returns:
+            Validated partial rule update.
+
+        Raises:
+            ValueError: If any explicitly supplied mutable field is null.
+        """
+        if any(getattr(self, field) is None for field in self.model_fields_set):
+            raise ValueError("Alarm-rule update fields cannot be null")
+        return self
 
 
 class AlarmInstanceRead(BaseModel):

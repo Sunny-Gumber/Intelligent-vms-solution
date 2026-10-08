@@ -57,6 +57,108 @@ Alarm deduplication uses a deterministic SHA-256 key of rule/camera/event-type/c
 
 Initialized ONVIF property events never open an alarm.
 
+### Alarm rule read and write scope
+
+Rule listing deliberately includes shared null-site rules in the caller's tenant.
+Visibility does not confer mutation authority. Create/update retain admin/operator
+role gates; DELETE remains admin-only and soft-disables the rule so historical
+alarm instances keep their references. An admin role does not bypass tenant/site
+scope. Alarm instance acknowledge/close retain their existing instance-site checks.
+
+Mutation validates the rule tenant first, then its complete matching target:
+
+- A site-specific rule requires authority over that site. Every explicit camera
+  must also exist, belong to the rule tenant/site and be authorized.
+- A null-site rule with a nonempty camera filter requires authority over every
+  referenced camera in the rule tenant, using one batched camera query per check.
+- A null-site rule with an empty or omitted camera filter is tenant-wide and
+  requires `site_ids:["*"]` in the authorized tenant. All-site scope alone gives
+  no cross-tenant authority. Existing explicitly trusted `tenant_id:"*"` semantics
+  are preserved without granting any new role-based global exemption.
+
+PATCH authorizes both persisted scope and the complete proposed result before
+issuing a conditional database write. Omission retains values, duplicate camera IDs normalize
+to a set, and clearing a null-site camera filter requires all-site authority.
+Explicit nulls for mutable PATCH fields return 422; null is not a reset operation.
+Missing/moved/inconsistent cameras fail closed, including metadata-only changes
+and soft-delete. Persisted camera filters exceeding the current 1000-entry API
+bound or containing malformed identifiers also fail closed before a camera query.
+Camera IDs resolve through one query restricted to the caller's tenant/site scope.
+Well-formed unknown IDs and inaccessible IDs return the same HTTP 404
+`Resource not found`, including mixed batches, current rule references and proposed
+filters. No inaccessible ID is omitted or treated as success. Malformed input
+still returns 422; tenant/site inconsistency among cameras already visible to the
+caller also returns 422. Shared read visibility and role gates are unchanged.
+
+PATCH (including metadata/enabled changes) and admin soft-delete use the same
+atomic conditional UPDATE: ID, authorized tenant/site/camera filter and observed
+`updated_at` must still match. The UPDATE changes `updated_at` explicitly and
+returns the written row; zero matching rows returns HTTP 409 after rollback.
+Each API write advances the revision by at least one microsecond, including when
+the wall clock repeats or moves backwards; no new version column is necessary.
+No ORM field is dirtied before the comparison, and the response describes this
+write rather than a post-commit refresh that could observe a subsequent writer.
+The scope predicate is explicit, so scope safety does not rely on timestamp
+uniqueness. The timestamp additionally detects ordinary same-scope edits.
+POST creates a new row and cannot invalidate an existing rule's authorization.
+These are all supported rule writers; the alarm worker only reads rules.
+
+PostgreSQL's READ COMMITTED UPDATE rechecks the predicate after a competing
+writer commits. Camera JSON is compared as JSONB (the persisted column remains
+JSON); SQLite compares normalized JSON and its serialized writers either
+recheck the predicate or reject a stale read transaction. Busy/locked,
+serialization/deadlock and statement-deadline failures return 409 after rollback.
+There are no server retries: the caller must retry the entire request, including
+authorization. PostgreSQL transaction-local lock/statement deadlines are 2/5
+seconds; SQLite's conditional PATCH/soft-delete busy deadline is 2 seconds. Other database dialects
+fail closed with 503. Cancellation propagates and request-session closure rolls
+back unfinished work. No schema/version migration or new endpoint is required.
+
+SQLite policy is contained to an explicitly owned write connection. The authorized
+scope/revision values are captured in the conditional statement before the read
+transaction is rolled back. A connection-bound write session then commits or rolls
+back while its external connection owner retains the physical checkout. The actual
+prior `busy_timeout` is restored on that connection before pool return. Restoration
+uses a shielded, bounded cleanup task; failures invalidate the physical connection
+instead of returning dirty state. Invalidated connections never trigger a fresh
+checkout just to restore policy. Unrelated routes keep their prior SQLite policy;
+no central timeout policy was changed. These are database busy/cleanup deadlines,
+not whole-request deadlines. Cleanup failure after commit can prevent delivery of
+the success response; it cannot undo an already committed transaction.
+
+Validation takes no application row locks. Each write updates exactly one rule,
+so there is no multi-rule/camera lock ordering and no application-wide mutex;
+unrelated PostgreSQL rows proceed independently. SQLite inherently has a single
+database writer, with bounded contention. A stale site-limited mutation after
+all-site broadening conflicts with 409; its fresh retry returns 404, preserving
+the broadening writer's complete persisted row.
+
+Ordinary camera PATCH does not relocate tenant/site. Supported camera DELETE can
+leave explicit alarm-rule references missing; it does not clear the nonempty
+filter or turn it into wildcard coverage. Subsequent rule mutation fails closed
+with the same 404 used for any inaccessible/unknown reference. No reference-repair
+bypass is provided. Concurrent deletion is not coordinated with rule validation.
+Direct database relocation and future scope-changing lifecycle operations are
+outside this rule-writer transaction guarantee: they must preserve camera identity/
+scope or add coordinated validation before being supported. A later camera
+move changes effective matching until reconciliation; this is not a waiver of
+supported concurrent rule writes. Direct SQL that changes rule scope is detected
+by the explicit scope comparison, but arbitrary SQL bypassing revision updates
+does not receive the API's same-scope lost-update guarantee. The matcher continues
+to treat empty filters as wildcard. Existing malformed/stale filters fail closed.
+
+Executable HTTP/persistence matrix: `tests/test_alarm_write_scope.py`. It substitutes
+synthetic identity acquisition only, retaining real role and scope authorization.
+`tests/test_alarm_write_transactions.py` runs independent-session HTTP races and
+persisted-state checks on SQLite and explicitly configured PostgreSQL. Independent
+QA retains its original token-auth/race ordering and security assertion, then
+also executes that matrix and `tests/postgres/alarm_rule_write_contention.py`
+against PostgreSQL 17, including actual lock waits, 409 cleanup and cancellation.
+`tests/test_alarm_reference_confidentiality.py` compares exact public status/body
+and persistence across unknown, other-tenant and unauthorized-site references.
+`tests/test_alarm_sqlite_connection_policy.py` exercises physical pool reuse on the
+pinned SQLAlchemy/aiosqlite stack, non-default prior policy, contention and cleanup.
+
 ## Diagnostics
 
 Current diagnostic API reads MediaMTX Prometheus text and exposes:
