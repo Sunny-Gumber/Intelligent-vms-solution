@@ -1,15 +1,19 @@
 """Storage benchmark byte accounting for VMS-FIX-031 (finding F33).
 
-Fake raw handles replace disk files. Each call is bounded by a daemon-thread
-join so a zero-write spin fails the test instead of hanging the suite. The
-tests do not use the network and do not benchmark a real volume.
+Most cases use fake raw handles. The sibling-cleanup and real-file cases use
+a temporary directory and do not patch ``Path.open``. Each call is bounded by
+a daemon-thread join so a zero-write spin fails the test instead of hanging.
+The tests do not use the network and do not run a storage benchmark volume.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
+import logging
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +31,9 @@ STREAM_BYTES = 32
 CHUNK_BYTES = 16
 ONE_SHORT_ACCEPT = 7
 MANY_SHORT_ACCEPT = 1
+PARTIAL_ACCEPT_BYTES = 7
+SIBLING_OPEN_DELAY_SECONDS = 0.05
+NONUNIFORM_PAYLOAD = bytes((index * 13 + 5) % 251 for index in range(64 * PARTIAL_ACCEPT_BYTES + 3))
 LOOP_TIMEOUT_SECONDS = 2.0
 RUN_TIMEOUT_SECONDS = 20.0
 STALL_ERROR = "StorageBenchmarkWriteError"
@@ -684,3 +691,249 @@ def test_partial_stream_is_not_a_successful_benchmark(monkeypatch, tmp_path, inl
     )
     error = assert_stall(lambda: asyncio.run(storage_bench.run(args)))
     assert "accepted" in str(error)
+
+
+class PartialDiskFile:
+    """Real raw file that accepts at most a fixed prefix of each write."""
+
+    def __init__(self, path, limit):
+        """Open ``path`` unbuffered and remember the per-write cap.
+
+        Args:
+            path: Destination file created for this test.
+            limit: Maximum bytes accepted from each submitted buffer.
+
+        Returns:
+            None.
+
+        Raises:
+            OSError: If the file cannot be opened.
+        """
+        self.limit = limit
+        self.submitted = []
+        self._raw = path.open("wb", buffering=0)
+        self.closed = False
+
+    def write(self, payload):
+        """Accept at most ``limit`` bytes and write that prefix to disk.
+
+        Args:
+            payload: Bytes the benchmark submitted.
+
+        Returns:
+            The count the real raw write accepted, never more than ``limit``.
+
+        Raises:
+            OSError: If the underlying write fails.
+            ValueError: If this handle is already closed.
+        """
+        if self.closed:
+            raise ValueError("write on a closed partial disk file")
+        data = bytes(payload)
+        self.submitted.append(data)
+        count = min(self.limit, len(data))
+        return self._raw.write(data[:count])
+
+    def fileno(self):
+        """Return the real descriptor for the destination file.
+
+        Args:
+            None.
+
+        Returns:
+            The operating-system descriptor.
+
+        Raises:
+            ValueError: If this handle is already closed.
+        """
+        if self.closed:
+            raise ValueError("fileno on a closed partial disk file")
+        return self._raw.fileno()
+
+    def __enter__(self):
+        """Enter the context manager.
+
+        Args:
+            None.
+
+        Returns:
+            This handle.
+
+        Raises:
+            None.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        """Close the real file without hiding a write error.
+
+        Args:
+            exc_type: Exception type being propagated, if any.
+            exc: Exception instance being propagated, if any.
+            tb: Traceback being propagated, if any.
+
+        Returns:
+            False so a write failure still fails the test.
+
+        Raises:
+            OSError: If closing the real file fails.
+        """
+        self.closed = True
+        self._raw.close()
+        return False
+
+
+def test_partial_raw_writes_keep_nonuniform_payload_bytes(tmp_path):
+    """A 7-byte raw writer must land the exact non-uniform payload on disk.
+
+    Args:
+        tmp_path: Temporary directory that receives the real file.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If a resubmitted prefix changes the bytes on disk or
+            the next submission is not the unaccepted tail.
+    """
+    path = tmp_path / "pattern.bin"
+    handle = PartialDiskFile(path, PARTIAL_ACCEPT_BYTES)
+    with handle:
+        accepted = call_bounded(lambda: storage_bench._accept_payload(handle, NONUNIFORM_PAYLOAD))
+    assert accepted == len(NONUNIFORM_PAYLOAD)
+    assert path.read_bytes() == NONUNIFORM_PAYLOAD
+    offset = 0
+    for submitted in handle.submitted:
+        assert submitted == NONUNIFORM_PAYLOAD[offset:]
+        offset += min(PARTIAL_ACCEPT_BYTES, len(submitted))
+    assert offset == len(NONUNIFORM_PAYLOAD)
+    assert handle.closed is True
+
+
+def test_real_file_bytes_match_the_requested_stream(tmp_path):
+    """A real unbuffered stream file matches the bytes the writer reports.
+
+    Args:
+        tmp_path: Temporary directory that receives the stream file.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the file size or contents disagree with the report.
+    """
+    path = tmp_path / "real-stream.bin"
+    total_bytes = 128
+    chunk_bytes = 32
+    written, latencies = call_bounded(
+        lambda: storage_bench._write_stream(path, total_bytes, chunk_bytes, False)
+    )
+    assert written == total_bytes
+    assert path.read_bytes() == b"\0" * total_bytes
+    assert len(latencies) == total_bytes // chunk_bytes
+    assert path.stat().st_size == written
+
+
+def test_failed_multi_stream_run_removes_the_sibling_file(monkeypatch, tmp_path):
+    """QA-031-001: a late sibling must not remain after another stream fails.
+
+    Stream 0 raises ``OSError`` errno 5. Stream 1 sleeps 50 ms before opening a
+    real file. ``Path.open`` is not patched. ``keep_files`` is false.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture used to replace the stream worker.
+        tmp_path: Real temporary directory for the stream files.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the call hangs, publishes a result, or leaves a
+            ``phase8-storage-*.bin`` file behind.
+        OSError: Expected errno 5 from stream 0, asserted by pytest.
+    """
+    build_calls = []
+
+    def forbid_result(*args, **kwargs):
+        del args, kwargs
+        build_calls.append("build_result")
+        raise AssertionError("build_result must not run after a stream failure")
+
+    monkeypatch.setattr(storage_bench, "build_result", forbid_result)
+    original = storage_bench._write_stream
+
+    def wrapped(path, total_bytes, chunk_bytes, fsync, *extra):
+        if path.name.endswith("-0000.bin"):
+            with path.open("wb", buffering=0) as handle:
+                del handle
+            raise OSError(errno.EIO, "Input/output error")
+        if path.name.endswith("-0001.bin"):
+            time.sleep(SIBLING_OPEN_DELAY_SECONDS)
+        return original(path, total_bytes, chunk_bytes, fsync, *extra)
+
+    monkeypatch.setattr(storage_bench, "_write_stream", wrapped)
+    args = benchmark_args(
+        tmp_path,
+        streams=2,
+        total_bytes=STREAM_BYTES,
+        chunk_bytes=STREAM_BYTES,
+        fsync=False,
+    )
+    with pytest.raises(OSError) as caught:
+        call_bounded(lambda: asyncio.run(storage_bench.run(args)))
+    assert caught.value.errno == errno.EIO
+    assert build_calls == []
+    assert list(tmp_path.glob("phase8-storage-*.bin")) == []
+
+
+def test_unlink_failure_is_logged_and_other_files_are_removed(monkeypatch, tmp_path, caplog):
+    """An unlink error is logged and does not skip the remaining stream files.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Real temporary directory for the stream files.
+        caplog: Pytest log capture fixture.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If cleanup stops early, the warning is missing, or a
+            result is published.
+        OSError: Expected errno 5 from the failing stream, asserted by pytest.
+    """
+    gate = threading.Barrier(2)
+    original_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name.endswith("-0000.bin"):
+            raise OSError(errno.EACCES, "file is open")
+        return original_unlink(self, missing_ok=missing_ok)
+
+    def wrapped(path, total_bytes, chunk_bytes, fsync):
+        del chunk_bytes, fsync
+        path.write_bytes(b"x" * 4)
+        gate.wait(timeout=LOOP_TIMEOUT_SECONDS)
+        if path.name.endswith("-0000.bin"):
+            raise OSError(errno.EIO, "Input/output error")
+        return (total_bytes, [0.01])
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(storage_bench, "_write_stream", wrapped)
+    args = benchmark_args(
+        tmp_path,
+        streams=2,
+        total_bytes=STREAM_BYTES,
+        chunk_bytes=STREAM_BYTES,
+        fsync=False,
+    )
+    with caplog.at_level(logging.WARNING, logger="phase8_storage_benchmark"):
+        with pytest.raises(OSError) as caught:
+            call_bounded(lambda: asyncio.run(storage_bench.run(args)))
+    assert caught.value.errno == errno.EIO
+    first = list(tmp_path.glob("phase8-storage-*-0000.bin"))
+    second = list(tmp_path.glob("phase8-storage-*-0001.bin"))
+    assert len(first) == 1
+    assert second == []
+    assert "failed to remove storage benchmark file" in caplog.text
+    assert first[0].name in caplog.text

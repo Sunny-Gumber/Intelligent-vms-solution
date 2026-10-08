@@ -3,25 +3,33 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
+import logging
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 
 from phase8_benchmark_common import SystemSampler, build_result, utc_iso, write_result
 
-# A raw write that returns 0 or None made no progress. Retrying it would submit
-# the same bytes again, so the first stall fails the run instead of spinning.
-_MAX_CONSECUTIVE_ZERO_WRITES = 1
+_LOG = logging.getLogger(__name__)
+# Shared by the threads of one run(). The first stalled or failed stream sets
+# the event; siblings observe it and return. asyncio task cancellation does not
+# join a running to_thread worker, so this event is how a sibling stops.
+_WRITE_CANCEL: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
+    "phase8_storage_write_cancel",
+    default=None,
+)
 
 
 class StorageBenchmarkWriteError(RuntimeError):
     """The storage benchmark stopped before the requested bytes were accepted.
 
-    Short raw writes are retried until the submitted chunk is accepted. A write
-    that returns 0 or None does not shrink that remainder, and
-    ``_MAX_CONSECUTIVE_ZERO_WRITES`` is 1, so the first stall fails the run.
-    A stream total other than the requested size fails here as well, before a
+    Short raw writes are retried until the submitted chunk is accepted. The
+    first write that returns 0 or None fails the run immediately. That return
+    does not shrink the remainder, so it is not retried and cannot spin. A
+    stream total other than the requested size fails here as well, before a
     result dictionary is built. ``OSError`` from the handle is not converted
     into this type.
 
@@ -36,13 +44,98 @@ class StorageBenchmarkWriteError(RuntimeError):
     """
 
 
+class _SiblingWriteCancelled(StorageBenchmarkWriteError):
+    """A stream returned because a sibling stream had already failed.
+
+    ``run`` still raises the original stream error after every sibling returns.
+    This type exists so that cooperative stop is not reported in place of that
+    error.
+
+    Args:
+        message: Why this stream stopped.
+
+    Returns:
+        None. Instances are raised.
+
+    Raises:
+        _SiblingWriteCancelled: Propagated to the stream gatherer.
+    """
+
+
+def _raise_if_sibling_failed() -> None:
+    """Stop this stream when another stream in the same run has already failed.
+
+    Args:
+        None.
+
+    Returns:
+        None when this stream should keep writing.
+
+    Raises:
+        _SiblingWriteCancelled: Another stream has failed and set the cancel event.
+    """
+    cancel = _WRITE_CANCEL.get()
+    if cancel is not None and cancel.is_set():
+        raise _SiblingWriteCancelled("storage stream stopped because another stream failed")
+
+
+def _release_stream_files(paths: list[Path], keep_files: bool) -> None:
+    """Remove every stream path this run may have created.
+
+    Missing files are ignored. An unlink failure, including a Windows
+    open-handle error, is logged and does not stop cleanup of the other paths.
+
+    Args:
+        paths: Stream files the run planned to create, whether or not they exist.
+        keep_files: When true, leave every path on disk.
+
+    Returns:
+        None.
+
+    Raises:
+        None. Unlink failures are logged.
+    """
+    if keep_files:
+        return
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            _LOG.warning("failed to remove storage benchmark file %s: %s", path, exc)
+
+
+def _primary_stream_error(outcomes: list[object]) -> BaseException | None:
+    """Choose the stream error that must fail the run.
+
+    A sibling that stopped after another failure is not the primary error.
+
+    Args:
+        outcomes: Per-stream results from ``asyncio.gather``. Tuples are
+            successes. Exceptions are failures.
+
+    Returns:
+        The original stream failure, or None when every stream succeeded.
+
+    Raises:
+        None.
+    """
+    failures = [item for item in outcomes if isinstance(item, BaseException)]
+    if not failures:
+        return None
+    for failure in failures:
+        if not isinstance(failure, _SiblingWriteCancelled):
+            return failure
+    return failures[0]
+
+
 def _accept_payload(handle, payload: bytes) -> int:
     """Write one chunk, counting only bytes the raw handle accepts.
 
     Files are opened with buffering disabled. ``RawIOBase.write`` may accept a
     short count, so the unaccepted tail is submitted again. Each accepted call
     moves the tail forward by at least one byte, which bounds the retry by the
-    chunk length. A zero-length or ``None`` return fails immediately.
+    chunk length. The first 0 or None fails the run. There is no retry of a
+    stalled write.
 
     Args:
         handle: Binary handle opened with ``buffering=0``.
@@ -58,11 +151,11 @@ def _accept_payload(handle, payload: bytes) -> int:
     """
     accepted = 0
     while accepted < len(payload):
+        _raise_if_sibling_failed()
         count = handle.write(payload[accepted:])
         if count is None or count == 0:
             raise StorageBenchmarkWriteError(
-                "raw write accepted 0 bytes; "
-                f"stopping at {_MAX_CONSECUTIVE_ZERO_WRITES} consecutive zero write"
+                "raw write returned 0 or None; the first stalled write fails the run"
             )
         if isinstance(count, bool) or not isinstance(count, int):
             raise StorageBenchmarkWriteError(f"raw write returned a non-integer count: {count!r}")
@@ -83,6 +176,9 @@ def _write_stream(path: Path, total_bytes: int, chunk_bytes: int, fsync: bool) -
     ``fsync`` relative to that buffer. When ``fsync`` is true it still runs once
     per completed chunk, after that chunk's bytes have been accepted. One
     latency sample is recorded per chunk, including its short-write retries.
+    The first 0 or None from ``write`` fails this stream. If another stream
+    in the same run has already failed, this stream stops instead of opening
+    or continuing.
 
     Args:
         path: Destination file. The parent directory must already exist.
@@ -98,12 +194,14 @@ def _write_stream(path: Path, total_bytes: int, chunk_bytes: int, fsync: bool) -
             unusable count. The stream does not return a partial total.
         OSError: A write or fsync failed.
     """
+    _raise_if_sibling_failed()
     written = 0
     latencies = []
     block = b"\0" * chunk_bytes
     # buffering=0 is required so short raw writes stay visible to _accept_payload.
     with path.open("wb", buffering=0) as handle:
         while written < total_bytes:
+            _raise_if_sibling_failed()
             payload = block[: min(chunk_bytes, total_bytes - written)]
             started = time.perf_counter()
             accepted = _accept_payload(handle, payload)
@@ -126,9 +224,11 @@ async def run(args) -> dict:
 
     Raises:
         ValueError: If stream or chunk byte sizes are non-positive.
-        StorageBenchmarkWriteError: A raw write stalled, or the accepted total
-            differs from the requested size. No result dictionary is returned.
+        StorageBenchmarkWriteError: A raw write stalled, a sibling was stopped
+            after another stream failed, or the accepted total differs from the
+            requested size. No result dictionary is returned.
         OSError: A stream write or fsync failed. No result dictionary is returned.
+            Sibling streams are joined before their files are removed.
     """
     target_dir = Path(args.path)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -153,48 +253,58 @@ async def run(args) -> dict:
         target_dir / f"phase8-storage-{os.getpid()}-{index:04d}.bin"
         for index in range(args.streams)
     ]
-
-    def release_files():
-        if args.keep_files:
-            return
-        for path in paths:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-
     sample_task = asyncio.create_task(sample_loop())
     started_at = utc_iso()
     started = time.perf_counter()
+    cancel_writes = threading.Event()
+    token = _WRITE_CANCEL.set(cancel_writes)
+
+    async def run_stream(path: Path):
+        try:
+            return await asyncio.to_thread(
+                _write_stream,
+                path,
+                bytes_per_stream,
+                chunk_bytes,
+                args.fsync,
+            )
+        except Exception:
+            # Ask siblings to stop, then let gather join every worker before
+            # cleanup. Cancelling the asyncio task would abandon the thread.
+            cancel_writes.set()
+            raise
+
     try:
-        results = await asyncio.gather(
-            *[
-                asyncio.to_thread(
-                    _write_stream,
-                    path,
-                    bytes_per_stream,
-                    chunk_bytes,
-                    args.fsync,
-                )
-                for path in paths
-            ]
+        # return_exceptions waits for every stream, including one that opens
+        # after the first worker has already failed.
+        outcomes = await asyncio.gather(
+            *(run_stream(path) for path in paths),
+            return_exceptions=True,
         )
-    except Exception as write_error:
+    finally:
+        _WRITE_CANCEL.reset(token)
+
+    failure = _primary_stream_error(outcomes)
+    if failure is not None:
         stop.set()
+        sample_error = None
         try:
             await sample_task
-        except Exception as sample_error:
-            release_files()
-            raise write_error from sample_error
-        release_files()
-        raise
+        except Exception as exc:
+            sample_error = exc
+        _release_stream_files(paths, args.keep_files)
+        if sample_error is not None:
+            raise failure from sample_error
+        raise failure
+
+    results = outcomes
     duration = time.perf_counter() - started
     stop.set()
     await sample_task
 
     total_bytes = sum(item[0] for item in results)
     latencies = [latency for _, items in results for latency in items]
-    release_files()
+    _release_stream_files(paths, args.keep_files)
     expected_bytes = bytes_per_stream * len(paths)
     if total_bytes != expected_bytes:
         raise StorageBenchmarkWriteError(
