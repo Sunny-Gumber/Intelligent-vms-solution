@@ -154,15 +154,38 @@ class Store:
         Raises:
             sqlite3.Error: If the table cannot be altered.
         """
+        # Serialize the check and ALTER. Two openers otherwise both observe the
+        # missing column and the second ALTER fails with "duplicate column name".
+        db.execute("BEGIN IMMEDIATE")
+        if self._has_revision_column(db):
+            return
+        try:
+            db.execute(
+                "ALTER TABLE spool_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+            if not self._has_revision_column(db):
+                raise
+
+    def _has_revision_column(self, db) -> bool:
+        """Return whether spool_items already stores a revision.
+
+        Args:
+            db: Open SQLite connection for this spool file.
+
+        Returns:
+            True when the revision column is present.
+
+        Raises:
+            sqlite3.Error: If table metadata cannot be read.
+        """
         columns = {
             row["name"]
             for row in db.execute("PRAGMA table_info(spool_items)").fetchall()
         }
-        if "revision" in columns:
-            return
-        db.execute(
-            "ALTER TABLE spool_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
-        )
+        return "revision" in columns
 
     def _exists(self, db, item_id: str) -> bool:
         return (
@@ -186,6 +209,8 @@ class Store:
 
         Returns:
             None after the item is stored or an existing duplicate is retained.
+            A coalesced write that finds the previous row gone inserts this body
+            instead of dropping it.
 
         Raises:
             SpoolPayloadTooLarge: If the serialized body exceeds the configured limit.
@@ -196,45 +221,96 @@ class Store:
         body_json = json.dumps(body, sort_keys=True, separators=(",", ":"))
         if len(body_json.encode("utf-8")) > self.max_body_bytes:
             raise SpoolPayloadTooLarge("regional spool payload exceeds configured maximum")
+        self._release_coalesce_for_test(item_id, coalesce)
         with self._connect() as db:
-            if coalesce and self._exists(db, item_id):
-                # A newer body invalidates any revision already read for sending.
-                db.execute(
-                    """
-                    UPDATE spool_items
-                    SET body_json=?, updated_at=?, revision=revision+1
-                    WHERE id=?
-                    """,
-                    (body_json, now, item_id),
-                )
-                return
+            db.execute("BEGIN IMMEDIATE")
+            self._write_enqueued(db, item_id, kind, body_json, now, coalesce)
 
+    def _release_coalesce_for_test(self, item_id: str, coalesce: bool) -> None:
+        """Run the optional read/write-gap hook before the coalesced write lock.
+
+        ``_after_coalesce_read`` is unset in production. Tests set it to call
+        success, retry, or dead_letter on another connection while the previous
+        revision is still stored. The following immediate transaction inserts
+        the new body when that acknowledgement removes the row.
+
+        Args:
+            item_id: Spool item identifier being coalesced.
+            coalesce: Whether this enqueue replaces an existing item.
+
+        Returns:
+            None.
+        """
+        hook = getattr(self, "_after_coalesce_read", None)
+        if not coalesce or hook is None:
+            return
+        with self._connect() as db:
             if self._exists(db, item_id):
-                return
+                hook(item_id)
 
-            count = db.execute("SELECT COUNT(*) FROM spool_items").fetchone()[0]
-            if int(count) >= self.max_items:
-                raise SpoolFull("regional spool is full")
+    def _write_enqueued(
+        self,
+        db,
+        item_id: str,
+        kind: str,
+        body_json: str,
+        now: float,
+        coalesce: bool,
+    ) -> None:
+        """Insert or replace one spool row inside the caller's write transaction.
 
-            db.execute(
+        Args:
+            db: Open SQLite connection that already holds the write lock.
+            item_id: Durable spool item identifier.
+            kind: Item kind: recording, event or heartbeat.
+            body_json: Serialized payload within the configured size limit.
+            now: Timestamp stored on insert or coalesced update.
+            coalesce: Whether an existing row should be replaced in place.
+
+        Returns:
+            None after the row is inserted, replaced, or left unchanged.
+
+        Raises:
+            SpoolFull: If a new row would exceed queued-item capacity.
+            sqlite3.Error: If durable storage fails.
+        """
+        if coalesce and self._exists(db, item_id):
+            # A newer body invalidates any revision already read for sending.
+            updated = db.execute(
                 """
-                INSERT INTO spool_items(
-                    id, kind, body_json, attempts, next_attempt_at,
-                    last_error, created_at, updated_at, revision
-                ) VALUES(?,?,?,?,?,?,?,?,?)
+                UPDATE spool_items
+                SET body_json=?, updated_at=?, revision=revision+1
+                WHERE id=?
                 """,
-                (
-                    item_id,
-                    kind,
-                    body_json,
-                    0,
-                    0.0,
-                    None,
-                    now,
-                    now,
-                    INITIAL_SPOOL_REVISION,
-                ),
+                (body_json, now, item_id),
             )
+            if updated.rowcount == 1:
+                return
+        elif self._exists(db, item_id):
+            return
+
+        count = db.execute("SELECT COUNT(*) FROM spool_items").fetchone()[0]
+        if int(count) >= self.max_items:
+            raise SpoolFull("regional spool is full")
+        db.execute(
+            """
+            INSERT INTO spool_items(
+                id, kind, body_json, attempts, next_attempt_at,
+                last_error, created_at, updated_at, revision
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                item_id,
+                kind,
+                body_json,
+                0,
+                0.0,
+                None,
+                now,
+                now,
+                INITIAL_SPOOL_REVISION,
+            ),
+        )
 
     def due(self, limit: int) -> list[dict]:
         """Return a bounded batch of spool items due for delivery.
@@ -282,7 +358,9 @@ class Store:
             revision: Revision read for the send that is being acknowledged.
 
         Returns:
-            None. A newer revision stored under the same id stays queued.
+            True when that revision was deleted. False when it is no longer
+            stored, including when a newer revision replaced it. A false result
+            is not a delivery.
 
         Raises:
             ValueError: If revision is not a positive integer.
@@ -290,10 +368,11 @@ class Store:
         """
         revision = _require_revision(revision)
         with self._connect() as db:
-            db.execute(
+            deleted = db.execute(
                 "DELETE FROM spool_items WHERE id=? AND revision=?",
                 (item_id, revision),
             )
+        return deleted.rowcount == 1
 
     def retry(self, item_id: str, error: str, delay_seconds: float, revision: int):
         """Schedule the read revision for a later bounded retry.
@@ -308,8 +387,8 @@ class Store:
             revision: Revision read for the attempt that is being retried.
 
         Returns:
-            None after the matching revision is rescheduled, or immediately
-            when that revision is no longer stored.
+            True when that revision was rescheduled. False when it is no longer
+            stored. A false result does not change the newer row.
 
         Raises:
             ValueError: If revision is not a positive integer.
@@ -318,7 +397,7 @@ class Store:
         revision = _require_revision(revision)
         now = time.time()
         with self._connect() as db:
-            db.execute(
+            updated = db.execute(
                 """
                 UPDATE spool_items
                 SET attempts=attempts+1, next_attempt_at=?,
@@ -327,6 +406,7 @@ class Store:
                 """,
                 (now + delay_seconds, error[:512], now, item_id, revision),
             )
+        return updated.rowcount == 1
 
     def dead_letter(
         self, item_id: str, status_code: int | None, reason: str, revision: int
@@ -340,8 +420,9 @@ class Store:
             revision: Revision read for the attempt that failed terminally.
 
         Returns:
-            None after that revision is dead-lettered. A newer revision under
-            the same id stays queued and is not copied into dead letters.
+            True when that revision was moved to dead letters. False when it is
+            no longer stored. A false result is not a dead letter, and a newer
+            revision under the same id stays queued.
 
         Raises:
             ValueError: If revision is not a positive integer.
@@ -362,7 +443,7 @@ class Store:
                 (item_id, revision),
             ).fetchone()
             if row is None:
-                return
+                return False
             db.execute(
                 """
                 INSERT OR REPLACE INTO dead_letters(
@@ -402,6 +483,7 @@ class Store:
                     """,
                     (overflow,),
                 )
+        return True
 
     def counts(self) -> tuple[int, int]:
         """Return current queued and dead-letter spool counts.
@@ -626,6 +708,36 @@ async def _deliver(client: httpx.AsyncClient, item: dict) -> httpx.Response:
     raise RuntimeError(f"unsupported spool kind {kind}")
 
 
+def _log_stale_ack(item: dict, operation: str, status_code: int | None = None) -> None:
+    """Record an acknowledgement that did not match the stored revision.
+
+    Args:
+        item: Spool item read for sending. Only kind, id, and revision are logged.
+        operation: Acknowledgement that missed: success, retry, or dead_letter.
+        status_code: HTTP status when the miss followed an HTTP response.
+
+    Returns:
+        None.
+    """
+    if status_code is None:
+        LOG.info(
+            "spool_stale_ack kind=%s id=%s revision=%s op=%s",
+            item["kind"],
+            item["id"],
+            item["revision"],
+            operation,
+        )
+        return
+    LOG.info(
+        "spool_stale_ack kind=%s id=%s revision=%s op=%s status=%s",
+        item["kind"],
+        item["id"],
+        item["revision"],
+        operation,
+        status_code,
+    )
+
+
 async def flush_once(client: httpx.AsyncClient | None = None) -> int:
     """Attempt delivery for one bounded batch of due spool items.
 
@@ -633,7 +745,8 @@ async def flush_once(client: httpx.AsyncClient | None = None) -> int:
         client: Optional reusable HTTP client. A temporary client is created when absent.
 
     Returns:
-        Number of items successfully delivered in this iteration.
+        Number of read revisions whose successful HTTP response still matched
+        the stored row. A stale acknowledgement is not counted.
 
     Raises:
         Exception: Unexpected spool/client failures propagate to the caller.
@@ -650,39 +763,51 @@ async def flush_once(client: httpx.AsyncClient | None = None) -> int:
             try:
                 response = await _deliver(client, item)
                 if 200 <= response.status_code < 300:
-                    await asyncio.to_thread(store.success, item["id"], item["revision"])
-                    delivered += 1
+                    applied = await asyncio.to_thread(
+                        store.success, item["id"], item["revision"]
+                    )
+                    if applied:
+                        delivered += 1
+                    else:
+                        _log_stale_ack(item, "success", response.status_code)
                     continue
                 if _terminal(item["kind"], response.status_code):
-                    await asyncio.to_thread(
+                    applied = await asyncio.to_thread(
                         store.dead_letter,
                         item["id"],
                         response.status_code,
                         f"HTTP {response.status_code}",
                         item["revision"],
                     )
-                    LOG.warning(
-                        "spool_dead_letter kind=%s id=%s status=%s",
-                        item["kind"],
-                        item["id"],
-                        response.status_code,
-                    )
+                    if applied:
+                        LOG.warning(
+                            "spool_dead_letter kind=%s id=%s status=%s",
+                            item["kind"],
+                            item["id"],
+                            response.status_code,
+                        )
+                    else:
+                        _log_stale_ack(item, "dead_letter", response.status_code)
                     continue
-                await asyncio.to_thread(
+                applied = await asyncio.to_thread(
                     store.retry,
                     item["id"],
                     f"HTTP {response.status_code}",
                     _retry_delay(item["attempts"]),
                     item["revision"],
                 )
+                if not applied:
+                    _log_stale_ack(item, "retry", response.status_code)
             except Exception as exc:
-                await asyncio.to_thread(
+                applied = await asyncio.to_thread(
                     store.retry,
                     item["id"],
                     exc.__class__.__name__,
                     _retry_delay(item["attempts"]),
                     item["revision"],
                 )
+                if not applied:
+                    _log_stale_ack(item, "retry")
         return delivered
     finally:
         if owns_client:
