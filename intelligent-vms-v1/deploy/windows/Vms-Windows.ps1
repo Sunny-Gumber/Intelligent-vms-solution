@@ -153,6 +153,7 @@ switch ($Action) {
         if($Confirmation -ne "RESTORE_WINDOWS_FIELD_TEST_DATABASE"){throw "Restore requires -Confirmation RESTORE_WINDOWS_FIELD_TEST_DATABASE"}
         if(-not (Test-Path $BackupFile)){throw "Backup file not found"}
         & $VenvPython $Manager stop --postgres-service $values["WINDOWS_POSTGRES_SERVICE"]
+        if($LASTEXITCODE -ne 0){throw "VMS service stop failed; restore aborted before database changes"}
         $previous=$env:PGPASSWORD
         try {
             $env:PGPASSWORD=$values["WINDOWS_POSTGRES_PASSWORD"]
@@ -171,12 +172,15 @@ switch ($Action) {
     }
     "Uninstall" {
         & $VenvPython $Manager stop --postgres-service $values["WINDOWS_POSTGRES_SERVICE"]
+        if($LASTEXITCODE -ne 0){throw "VMS service stop failed; uninstall aborted"}
         & $VenvPython $Manager remove --postgres-service $values["WINDOWS_POSTGRES_SERVICE"]
+        if($LASTEXITCODE -ne 0){throw "VMS service removal failed; uninstall aborted"}
         Write-Host "windows_field_test_uninstall_ok persistent_database_recordings_config_secrets_preserved=true"
     }
     "PurgeDatabase" {
         if($Confirmation -ne "DELETE_WINDOWS_FIELD_TEST_DATABASE"){throw "Database purge requires -Confirmation DELETE_WINDOWS_FIELD_TEST_DATABASE"}
         & $VenvPython $Manager stop --postgres-service $values["WINDOWS_POSTGRES_SERVICE"]
+        if($LASTEXITCODE -ne 0){throw "VMS service stop failed; database purge aborted"}
         $previous=$env:PGPASSWORD
         try {
             $env:PGPASSWORD=$values["WINDOWS_POSTGRES_PASSWORD"]
