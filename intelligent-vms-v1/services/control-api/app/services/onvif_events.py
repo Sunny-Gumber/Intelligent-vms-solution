@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 import xml.etree.ElementTree as ET
-from xml.sax.saxutils import escape
 
 from app.services.network_policy import (
     pin_site_http_xaddr,
@@ -14,6 +13,7 @@ from app.services.onvif_client import (
     _http_authority,
     _local,
     _soap,
+    _xml_text,
 )
 
 EVENT_NS = "http://www.onvif.org/ver10/events/wsdl"
@@ -87,8 +87,8 @@ def event_service_xaddr(
 
 def _addressing_header(action: str, target: str, reference_xml: str = "") -> str:
     return (
-        f"<wsa:Action>{escape(action)}</wsa:Action>"
-        f"<wsa:To>{escape(target)}</wsa:To>"
+        f"<wsa:Action>{_xml_text(action)}</wsa:Action>"
+        f"<wsa:To>{_xml_text(target)}</wsa:To>"
         f"{reference_xml}"
     )
 
@@ -168,7 +168,7 @@ async def create_pullpoint(
         RuntimeError: If the response omits the required subscription reference.
     """
     termination_xml = (
-        f"<tev:InitialTerminationTime>{escape(initial_termination)}</tev:InitialTerminationTime>"
+        f"<tev:InitialTerminationTime>{_xml_text(initial_termination)}</tev:InitialTerminationTime>"
         if initial_termination
         else ""
     )
@@ -262,8 +262,8 @@ async def pull_messages(
         PULL_ACTION,
         (
             "<tev:PullMessages>"
-            f"<tev:Timeout>{timeout}</tev:Timeout>"
-            f"<tev:MessageLimit>{message_limit}</tev:MessageLimit>"
+            f"<tev:Timeout>{_xml_text(timeout)}</tev:Timeout>"
+            f"<tev:MessageLimit>{_xml_text(message_limit)}</tev:MessageLimit>"
             "</tev:PullMessages>"
         ),
         username,

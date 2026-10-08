@@ -2,9 +2,10 @@ import asyncio
 import base64
 import hashlib
 import os
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, quoteattr
 
 import httpx
 from defusedxml import ElementTree as DET
@@ -42,6 +43,67 @@ class OnvifError(RuntimeError):
         self.status_code = status_code
 
 
+# XML 1.0 Char, inverted: C0 controls other than TAB/LF/CR, surrogates, U+FFFE and U+FFFF.
+_XML10_FORBIDDEN_CHAR = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+def _xml_chars(value: object) -> str:
+    """Return one XML 1.0 character string without changing a legal value.
+
+    Args:
+        value: Text, or a non-string whose str() form is the XML character data.
+            Callers pass tokens through unchanged; numbers keep their usual str() form.
+
+    Returns:
+        The original characters when every character is legal in XML 1.0.
+
+    Raises:
+        OnvifError: If the value contains a character XML 1.0 forbids. The value
+            is not stripped or replaced.
+    """
+    text = value if isinstance(value, str) else str(value)
+    if _XML10_FORBIDDEN_CHAR.search(text):
+        raise OnvifError(
+            "INVALID_XML_VALUE",
+            "ONVIF value contains a character forbidden by XML 1.0",
+            422,
+        )
+    return text
+
+
+def _xml_text(value: object) -> str:
+    """Escape a value for XML element text.
+
+    Args:
+        value: Element character data.
+
+    Returns:
+        Text escaped for ``&``, ``<`` and ``>``. Carriage return is written as a
+        character reference so a parser returns the original character. Quotes and
+        apostrophes stay literal because element text does not treat them as markup.
+
+    Raises:
+        OnvifError: If the value contains a character XML 1.0 forbids.
+    """
+    return escape(_xml_chars(value), {"\r": "&#13;"})
+
+
+def _xml_attr(value: object) -> str:
+    """Quote a value for an XML attribute, including the surrounding quotes.
+
+    Args:
+        value: Attribute character data.
+
+    Returns:
+        A ``quoteattr`` literal. A parser recovers the original value, including
+        quotes, apostrophes, ampersands, brackets and legal whitespace.
+
+    Raises:
+        OnvifError: If the value contains a character XML 1.0 forbids.
+    """
+    return quoteattr(_xml_chars(value))
+
+
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
@@ -71,7 +133,7 @@ def _wsse(username: str | None, password: str | None) -> str:
       xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
       xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
       <wsse:UsernameToken>
-        <wsse:Username>{escape(username)}</wsse:Username>
+        <wsse:Username>{_xml_text(username)}</wsse:Username>
         <wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{base64.b64encode(digest).decode()}</wsse:Password>
         <wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">{base64.b64encode(raw_nonce).decode()}</wsse:Nonce>
         <wsu:Created>{created}</wsu:Created>
@@ -86,7 +148,7 @@ def _envelope(
     extra_header_xml: str = "",
 ) -> bytes:
     return f"""<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="{SOAP_NS}" xmlns:tds="{DEVICE_NS}" xmlns:trt="{MEDIA_NS}" xmlns:tr2="{MEDIA2_NS}" xmlns:timg="{IMAGING_NS}" xmlns:tt="{SCHEMA_NS}" xmlns:tev="{EVENT_NS}" xmlns:wsa="{WSA_NS}" xmlns:wsnt="{WSNT_NS}">
+<s:Envelope xmlns:s={_xml_attr(SOAP_NS)} xmlns:tds={_xml_attr(DEVICE_NS)} xmlns:trt={_xml_attr(MEDIA_NS)} xmlns:tr2={_xml_attr(MEDIA2_NS)} xmlns:timg={_xml_attr(IMAGING_NS)} xmlns:tt={_xml_attr(SCHEMA_NS)} xmlns:tev={_xml_attr(EVENT_NS)} xmlns:wsa={_xml_attr(WSA_NS)} xmlns:wsnt={_xml_attr(WSNT_NS)}>
   <s:Header>{_wsse(username, password)}{extra_header_xml}</s:Header>
   <s:Body>{body}</s:Body>
 </s:Envelope>""".encode("utf-8")
@@ -764,7 +826,7 @@ async def probe_xaddr(
         raise OnvifError("NO_MEDIA_PROFILES", "Camera returned no usable ONVIF media profiles")
 
     for profile in profiles[:32]:
-        token = escape(profile["token"])
+        token = _xml_text(profile["token"])
         root = await _soap(
             media_xaddr,
             f"{MEDIA_NS}/GetStreamUri",
