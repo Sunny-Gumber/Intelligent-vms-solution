@@ -1916,6 +1916,9 @@ async def set_orientation(
 
     Raises:
         OnvifError: If requested orientation is not advertised by the camera.
+            A supplied rotation degree is rejected with ``VALUE_NOT_SUPPORTED``
+            (422) when the advertised degree list is empty, missing, or does
+            not contain that degree, and no configuration write is sent.
     """
     state = await get_orientation(
         services,
@@ -1937,13 +1940,13 @@ async def set_orientation(
         options["rotation_modes"],
     )
     degree = changes.get("rotation_degree")
-    if degree is not None and options["rotation_degrees"]:
-        if degree not in options["rotation_degrees"]:
-            raise OnvifError(
-                "VALUE_NOT_SUPPORTED",
-                "Requested rotation degree is not advertised by the camera",
-                422,
-            )
+    advertised_degrees = options.get("rotation_degrees") or []
+    if degree is not None and degree not in advertised_degrees:
+        raise OnvifError(
+            "VALUE_NOT_SUPPORTED",
+            "Requested rotation degree is not advertised by the camera",
+            422,
+        )
     if changes.get("mirror") is not None and not options["mirror_supported"]:
         raise _unsupported("Camera did not advertise standard ONVIF mirror control")
 
