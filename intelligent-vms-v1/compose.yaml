@@ -84,6 +84,8 @@ services:
     restart: "${VMS_RESTART_POLICY:-no}"
     env_file:
       - .env
+    environment:
+      FENCE_EXPIRY_GRACE_SECONDS: ${FENCE_EXPIRY_GRACE_SECONDS:-2}
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,6 +145,7 @@ services:
       - .env
     environment:
       PLACEMENT_INTERVAL_SECONDS: ${PLACEMENT_INTERVAL_SECONDS:-10}
+      FENCE_EXPIRY_GRACE_SECONDS: ${FENCE_EXPIRY_GRACE_SECONDS:-2}
     depends_on:
       postgres:
         condition: service_healthy
