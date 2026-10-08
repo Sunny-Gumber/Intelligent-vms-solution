@@ -27,6 +27,9 @@ const SCENARIOS = new Set([
   "layout-shrink-logout-rejected",
   "relogin-cameras-held-logout-rejected",
   "auth-epoch-held-steps",
+  "sign-out-overlaps-login",
+  "pagehide-during-layout",
+  "stale-health-401-after-login",
 ]);
 
 const harness = {
@@ -49,7 +52,10 @@ const harness = {
   holdCameras: false,
   holdLogin: false,
   holdLayoutDelete: false,
+  holdHealth: false,
+  healthStatus: 200,
   createdSessions: [],
+  pageListeners: {},
 };
 
 function decodeEntities(text) {
@@ -395,7 +401,7 @@ function isWhep(href) {
 }
 
 function sessionLocation(scenario) {
-  if (scenario === "layout-shrink-logout-rejected" || scenario === "relogin-cameras-held-logout-rejected" || scenario === "auth-epoch-held-steps") {
+  if (scenario === "layout-shrink-logout-rejected" || scenario === "relogin-cameras-held-logout-rejected" || scenario === "auth-epoch-held-steps" || scenario === "sign-out-overlaps-login" || scenario === "pagehide-during-layout" || scenario === "stale-health-401-after-login") {
     return `https://media.example/whep/sessions/s-${harness.whepPostCount}`;
   }
   return SESSION_URL;
@@ -487,6 +493,14 @@ function route(method, href, scenario) {
     });
   }
   if (pathname === "/api/v1/system/health") {
+    if (harness.holdHealth) {
+      harness.holdHealth = false;
+      return holdUntilRelease(() => (
+        harness.healthStatus === 401
+          ? new Response("expired", { status: 401 })
+          : jsonResponse({ status: "ok", media_node: "media-local-01" })
+      ));
+    }
     if (harness.failNextHealth) {
       harness.failNextHealth = false;
       return new Response("expired", { status: 401 });
@@ -678,9 +692,16 @@ async function runScenario(scenario, htmlPath) {
     clearInterval() {},
     queueMicrotask,
     document,
+    AbortController,
     window: {
-      addEventListener() {},
-      removeEventListener() {},
+      addEventListener(type, listener) {
+        const list = harness.pageListeners[type] || [];
+        list.push(listener);
+        harness.pageListeners[type] = list;
+      },
+      removeEventListener(type, listener) {
+        harness.pageListeners[type] = (harness.pageListeners[type] || []).filter((item) => item !== listener);
+      },
     },
     RTCPeerConnection: installPeerConnection(scenario),
     Option: DomOption,
@@ -714,6 +735,15 @@ async function runScenario(scenario, htmlPath) {
   }
   if (scenario === "auth-epoch-held-steps") {
     return runAuthEpochHeldSteps(context, document, htmlPath, script.length);
+  }
+  if (scenario === "sign-out-overlaps-login") {
+    return runSignOutOverlapsLogin(context, document, htmlPath, script.length);
+  }
+  if (scenario === "pagehide-during-layout") {
+    return runPagehideDuringLayout(context, document, htmlPath, script.length);
+  }
+  if (scenario === "stale-health-401-after-login") {
+    return runStaleHealth401(context, document, htmlPath, script.length);
   }
 
   const assigned = context.__vms.assignCamera(0, "cam-1");
@@ -770,7 +800,15 @@ function observe(scenario, context, document, htmlPath, scriptBytes) {
     unknown_requests: harness.unknown,
     tile_states: tileStates(document),
     whep_sessions: harness.createdSessions.slice(),
+    auth_message: (document.getElementById("authMessage") || {}).textContent || "",
+    auth_requests: harness.requests
+      .filter((item) => item.url.includes("/api/v1/auth/session"))
+      .map((item) => `${item.method} ${item.url}`),
   };
+}
+
+function dispatchPageHide() {
+  for (const listener of harness.pageListeners.pagehide || []) listener();
 }
 
 function tileStates(document) {
@@ -834,6 +872,65 @@ async function runReloginCamerasHeld(context, document, htmlPath, scriptBytes) {
   await login;
   await settleSignedOut(context);
   return observe("relogin-cameras-held-logout-rejected", context, document, htmlPath, scriptBytes);
+}
+
+async function runSignOutOverlapsLogin(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 1);
+  harness.holdLayoutDelete = true;
+  harness.holdTarget = 1;
+  harness.holds = [];
+  harness.reachedHold = false;
+  const signingOut = context.__vms.signOut();
+  await waitFor(() => harness.reachedHold, "sign-out WHEP DELETE hold");
+  document.getElementById("authToken").value = "field-token";
+  await context.__vms.loginWithToken({ preventDefault() {} });
+  await waitFor(() => harness.whepPostCount >= 2 && context.__vms.inspect().liveSessionCount === 1, "replacement session");
+  releaseHolds();
+  await signingOut;
+  await new Promise((resolve) => { setImmediate(resolve); });
+  return observe("sign-out-overlaps-login", context, document, htmlPath, scriptBytes);
+}
+
+async function runPagehideDuringLayout(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 2);
+  harness.holdLayoutDelete = true;
+  harness.holdTarget = 1;
+  harness.holds = [];
+  harness.reachedHold = false;
+  const layout = context.__vms.setLayout(1);
+  await waitFor(() => harness.reachedHold, "removed tile DELETE hold");
+  dispatchPageHide();
+  const during = observe("pagehide-during-layout", context, document, htmlPath, scriptBytes);
+  releaseHolds();
+  await layout;
+  await settleSignedOut(context);
+  const finalState = observe("pagehide-during-layout", context, document, htmlPath, scriptBytes);
+  finalState.during_pagehide = {
+    tile_states: during.tile_states,
+    live_session_count: during.live_session_count,
+    open_peer_count: during.open_peer_count,
+    media_deletes: during.media_deletes,
+  };
+  return finalState;
+}
+
+async function runStaleHealth401(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 1);
+  harness.holdHealth = true;
+  harness.healthStatus = 401;
+  harness.holdTarget = 1;
+  harness.holds = [];
+  harness.reachedHold = false;
+  const health = context.__vms.refreshHealth();
+  await waitFor(() => harness.reachedHold, "health request hold");
+  await context.__vms.signOut();
+  document.getElementById("authToken").value = "field-token";
+  await context.__vms.loginWithToken({ preventDefault() {} });
+  await waitFor(() => context.__vms.inspect().authenticated === true && context.__vms.inspect().liveSessionCount === 1, "relogin live");
+  releaseHolds();
+  await health;
+  await settleSignedOut(context);
+  return observe("stale-health-401-after-login", context, document, htmlPath, scriptBytes);
 }
 
 async function runAuthEpochHeldSteps(context, document, htmlPath, scriptBytes) {

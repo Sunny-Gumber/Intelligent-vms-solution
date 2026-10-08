@@ -136,7 +136,7 @@ code{color:#9cdcfe}@media(max-width:720px){.event{grid-template-columns:1fr 1fr}
 </main>
 <script>
 const API='/api/v1';
-let authenticated=false;let authEpoch=0;
+let authenticated=false;let authEpoch=0;let authLogoutAbort=null;
 let deploymentCapabilities={deployment_profile:'enterprise-distributed',event_history:true,alarm_processing:true,ai_ui:true,distributed_placement:false};
 let cameraCache=[];let healthMap={};let aiCameraId=null;let aiPolicyCache=null;let liveSessions=new Map();let pendingLive=new Map();let snapshotBusy=new Set();let releasedWhepUrls=new Set();
 let liveWorkspace={tileCount:4,activeTile:0,assignments:[null,null,null,null],roles:[null,null,null,null],generations:[0,0,0,0]};
@@ -161,11 +161,12 @@ async function apiFetch(url,opts={}){
  }
  return fetch(url,{...opts,headers,credentials:'same-origin'});
 }
-function noteAuthLoss(){authEpoch+=1}
+// One generation for sign-in, sign-out, page hide, and auth loss. Login bumps before its POST, so a sign-out still awaiting teardown cannot write the signed-out banner or DELETE /auth/session afterward.
+function bumpLifecycle(){authEpoch+=1;if(authLogoutAbort){const pending=authLogoutAbort;authLogoutAbort=null;try{pending.abort()}catch{}}return authEpoch}
 function authAllowsLive(epoch){return authenticated&&epoch===authEpoch}
 function setAuthenticated(value,info=null){
  const next=!!value;
- if(!next)noteAuthLoss();
+ if(!next)bumpLifecycle();
  authenticated=next;
  document.body.classList.toggle('auth-required',!authenticated);
  document.getElementById('authPanel').style.display=authenticated?'none':'block';
@@ -175,31 +176,34 @@ function setAuthenticated(value,info=null){
  if(!authenticated){cameraCache=[];closePlayback(false);stopLiveSessions();renderLiveGrid()}
 }
 async function jsonFetch(url,opts={}){
+ const epoch=authEpoch;
  const r=await apiFetch(url,opts);
- if(r.status===401){setAuthenticated(false);throw new Error('Authentication required')}
+ if(r.status===401){if(epoch===authEpoch)setAuthenticated(false);throw new Error('Authentication required')}
  if(!r.ok) throw new Error(await r.text());
  if(r.status===204)return null;
  return r.json();
 }
 async function initializeSession(){
- const epoch=authEpoch,message=document.getElementById('authMessage');
+ const epoch=bumpLifecycle(),message=document.getElementById('authMessage');
  try{
   const info=await jsonFetch(`${API}/auth/session`);
   if(epoch!==authEpoch)return;
   setAuthenticated(true,info);
   if(!authAllowsLive(epoch))return;
   await refreshAll();
+  if(!authAllowsLive(epoch))return;
  }catch(e){
-  setAuthenticated(false);
+  if(epoch!==authEpoch&&authenticated)return;
+  if(epoch===authEpoch)setAuthenticated(false);
   message.textContent=String(e.message||'Authentication required');
   document.getElementById('system').textContent='login required';
  }
 }
 async function loginWithToken(event){
- const epoch=authEpoch;
  event.preventDefault();
  const input=document.getElementById('authToken'),message=document.getElementById('authMessage'),token=input.value.trim();
  if(!token){message.textContent='Paste a valid VMS access token.';return}
+ const epoch=bumpLifecycle();
  message.textContent='Authenticating…';
  try{
   const r=await fetch(`${API}/auth/session`,{method:'POST',headers:{Authorization:'Bearer '+token},credentials:'same-origin'});
@@ -211,18 +215,26 @@ async function loginWithToken(event){
   setAuthenticated(true,info);
   if(!authAllowsLive(epoch))return;
   message.textContent='Authenticated.';await refreshAll();
- }catch(e){input.value='';setAuthenticated(false);message.textContent='Login failed: '+String(e.message||'invalid token')}
+  if(!authAllowsLive(epoch))return;
+ }catch(e){if(epoch!==authEpoch)return;input.value='';setAuthenticated(false);message.textContent='Login failed: '+String(e.message||'invalid token')}
 }
 async function signOut(){
- noteAuthLoss();authenticated=false;
+ const epoch=bumpLifecycle();authenticated=false;
  document.body.classList.toggle('auth-required',true);
  document.getElementById('authPanel').style.display='block';
  document.getElementById('signOut').hidden=true;
  document.getElementById('identity').textContent='';
  cameraCache=[];closePlayback(false);closeCameraSetup();
- await stopLiveSessions();renderLiveGrid();
+ await stopLiveSessions();
+ if(epoch!==authEpoch)return;
+ renderLiveGrid();
+ if(epoch!==authEpoch)return;
  document.getElementById('authMessage').textContent='Signed out. Paste a valid VMS access token to continue.';
- try{await apiFetch(`${API}/auth/session`,{method:'DELETE'})}catch{}
+ if(epoch!==authEpoch)return;
+ authLogoutAbort=new AbortController();
+ const signal=authLogoutAbort.signal;
+ try{await apiFetch(`${API}/auth/session`,{method:'DELETE',signal})}catch{}
+ if(authLogoutAbort&&authLogoutAbort.signal===signal)authLogoutAbort=null;
 }
 function openCameraSetup(){
  document.getElementById('cameraSetup').style.display='block';document.getElementById('cameraSetupMessage').textContent='';
@@ -291,11 +303,12 @@ async function refreshCapabilities(){
  if(!deploymentCapabilities.ai_ui)closeAI();
 }
 async function refreshHealth(){
- const el=document.getElementById('system');
- try{const j=await jsonFetch(`${API}/system/health`);el.textContent=`system: ${j.status} · media: ${j.media_node}`;}
- catch{el.textContent='system: offline';}
+ const epoch=authEpoch,el=document.getElementById('system');
+ try{const j=await jsonFetch(`${API}/system/health`);if(epoch!==authEpoch)return;el.textContent=`system: ${j.status} · media: ${j.media_node}`;}
+ catch{if(epoch!==authEpoch)return;el.textContent='system: offline';}
  try{
   const summary=await jsonFetch(`${API}/health/summary`);
+  if(epoch!==authEpoch)return;
   document.getElementById('healthSummary').innerHTML=
     `<span class="badge online">online ${summary.online}</span>
      <span class="badge degraded">degraded ${summary.degraded}</span>
@@ -303,8 +316,10 @@ async function refreshHealth(){
      <span class="badge unknown">unknown ${summary.unknown}</span>
      <span class="muted">scan: ${summary.monitor_last_scanned} · changes: ${summary.monitor_last_changed} · node errors: ${summary.monitor_media_errors}</span>`;
   const rows=await jsonFetch(`${API}/health/cameras?limit=1000`);
+  if(epoch!==authEpoch)return;
   healthMap=Object.fromEntries(rows.map(x=>[x.camera_id,x]));
  }catch{
+  if(epoch!==authEpoch)return;
   document.getElementById('healthSummary').innerHTML='<span class="muted">Health service unavailable.</span>';
  }
 }
@@ -413,10 +428,17 @@ function setTileState(tileIndex,state,message=''){
  const retry=document.getElementById('tile-retry-'+tileIndex);if(retry)retry.hidden=state!=='FAILED';
 }
 async function liveAccess(id,role){return jsonFetch(`${API}/live/cameras/${encodeURIComponent(id)}/access?stream_role=${encodeURIComponent(role)}`,{method:'POST'})}
+function markTileNotLive(tileIndex){
+ const owner=liveSessions.get(tileIndex);if(owner&&owner.generation===liveWorkspace.generations[tileIndex])return;
+ const el=document.getElementById('tile-state-'+tileIndex);if(!el)return;
+ const text=el.textContent||'';
+ if(text==='LIVE'||text.startsWith('LIVE ')||text.startsWith('CONNECTING'))setTileState(tileIndex,liveWorkspace.assignments[tileIndex]?'STOPPED':'EMPTY');
+}
 function abandonLiveStart(tileIndex,pc,sessionUrl,access){
  const pending=pendingLive.get(tileIndex);if(pending&&pending.pc===pc)pendingLive.delete(tileIndex);
  if(pc){try{pc.ontrack=null;pc.onconnectionstatechange=null}catch{}try{pc.close()}catch{}}
  if(sessionUrl&&access&&rememberWhepDelete(sessionUrl))if(sessionUrl)fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true}).catch(()=>{});
+ markTileNotLive(tileIndex);
 }
 async function startTile(tileIndex,cameraId,role=liveWorkspace.roles[tileIndex]){
  const epoch=authEpoch;if(!authAllowsLive(epoch))return;
@@ -425,13 +447,13 @@ async function startTile(tileIndex,cameraId,role=liveWorkspace.roles[tileIndex])
  const stale=()=>!authAllowsLive(epoch)||current!==liveWorkspace.generations[tileIndex]||liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role;
  try{
   await detachTile(tileIndex);
-  if(stale())return;
-  access=await liveAccess(cameraId,role);if(stale())return;
+  if(stale()){markTileNotLive(tileIndex);return}
+  access=await liveAccess(cameraId,role);if(stale()){markTileNotLive(tileIndex);return}
   setTileState(tileIndex,'CONNECTING','switching to '+role.toUpperCase());
   const whep=access.webrtc_url.replace(/\/$/,'')+'/whep';
   const options=await fetch(whep,{method:'OPTIONS',headers:{Authorization:'Bearer '+access.access_token}});
   if(!options.ok)throw new Error('ICE discovery rejected ('+options.status+')');
-  if(stale())return;
+  if(stale()){markTileNotLive(tileIndex);return}
   pc=new RTCPeerConnection({iceServers:parseIceServers(options.headers.get('Link'))});pc.addTransceiver('video',{direction:'recvonly'});pc.addTransceiver('audio',{direction:'recvonly'});
   pendingLive.set(tileIndex,{pc,sessionUrl:null,token:access.access_token,cameraId,role,generation:current,stream:null,state:'CONNECTING'});
   pc.ontrack=e=>{if(!authAllowsLive(epoch)||current!==liveWorkspace.generations[tileIndex])return;if(e.streams&&e.streams[0]){mediaStream=e.streams[0];const video=document.getElementById('tile-video-'+tileIndex);if(video)video.srcObject=mediaStream;const pending=pendingLive.get(tileIndex);if(pending)pending.stream=mediaStream}};
@@ -449,7 +471,7 @@ async function startTile(tileIndex,cameraId,role=liveWorkspace.roles[tileIndex])
   await pc.setRemoteDescription({type:'answer',sdp:answer});if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
   const registered=pendingLive.get(tileIndex);if(!registered||registered.pc===pc)pendingLive.delete(tileIndex);
   liveSessions.set(tileIndex,{pc,sessionUrl,token:access.access_token,cameraId,role,generation:current,stream:mediaStream,state:'LIVE'});setTileState(tileIndex,'LIVE');
- }catch(e){abandonLiveStart(tileIndex,pc,sessionUrl,access);if(current===liveWorkspace.generations[tileIndex]&&liveWorkspace.assignments[tileIndex]===cameraId&&liveWorkspace.roles[tileIndex]===role)setTileState(tileIndex,'FAILED',String(e.message||'live unavailable'))}
+ }catch(e){abandonLiveStart(tileIndex,pc,sessionUrl,access);if(authAllowsLive(epoch)&&current===liveWorkspace.generations[tileIndex]&&liveWorkspace.assignments[tileIndex]===cameraId&&liveWorkspace.roles[tileIndex]===role)setTileState(tileIndex,'FAILED',String(e.message||'live unavailable'))}
 }
 function snapshotFilename(cameraId,role,capturedAt){
  const safeId=String(cameraId).replace(/[^A-Za-z0-9_-]/g,'_').slice(0,80)||'camera';
@@ -458,7 +480,8 @@ function snapshotFilename(cameraId,role,capturedAt){
  return 'snapshot-'+safeId+'-'+safeRole+'-'+stamp+'.png';
 }
 async function snapshotTile(tileIndex){
- if(tileIndex!==liveWorkspace.activeTile||snapshotBusy.has(tileIndex))return;
+ const epoch=authEpoch;
+ if(!authAllowsLive(epoch)||tileIndex!==liveWorkspace.activeTile||snapshotBusy.has(tileIndex))return;
  const cameraId=liveWorkspace.assignments[tileIndex],role=liveWorkspace.roles[tileIndex],generation=liveWorkspace.generations[tileIndex],session=liveSessions.get(tileIndex),video=document.getElementById('tile-video-'+tileIndex);
  if(!cameraId||!role||!session||session.cameraId!==cameraId||session.role!==role||session.generation!==generation||session.state!=='LIVE'||!video||video.readyState<2||video.videoWidth<1||video.videoHeight<1){setTileState(tileIndex,'FAILED','snapshot requires a current live frame');return}
  snapshotBusy.add(tileIndex);renderLiveGrid();
@@ -466,12 +489,14 @@ async function snapshotTile(tileIndex){
   const canvas=document.createElement('canvas');canvas.width=video.videoWidth;canvas.height=video.videoHeight;
   const context=canvas.getContext('2d');if(!context)throw new Error('snapshot canvas unavailable');context.drawImage(video,0,0,canvas.width,canvas.height);
   const blob=await new Promise((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(new Error('snapshot encoding failed')),'image/png'));
+  if(!authAllowsLive(epoch))return;
   if(liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role||liveWorkspace.generations[tileIndex]!==generation||liveSessions.get(tileIndex)!==session)throw new Error('snapshot source changed before completion');
   const capturedAt=new Date(),url=URL.createObjectURL(blob),link=document.createElement('a');
   try{link.href=url;link.download=snapshotFilename(cameraId,role,capturedAt);link.rel='noopener';link.click()}finally{URL.revokeObjectURL(url)}
+  if(!authAllowsLive(epoch))return;
   setTileState(tileIndex,'LIVE','snapshot saved · '+role.toUpperCase());
- }catch(e){if(liveWorkspace.assignments[tileIndex]===cameraId&&liveWorkspace.roles[tileIndex]===role)setTileState(tileIndex,'FAILED',String(e.message||'snapshot failed'))}
- finally{snapshotBusy.delete(tileIndex);if(liveWorkspace.assignments[tileIndex]===cameraId&&liveWorkspace.roles[tileIndex]===role&&liveWorkspace.generations[tileIndex]===generation)renderLiveGrid()}
+ }catch(e){if(authAllowsLive(epoch)&&liveWorkspace.assignments[tileIndex]===cameraId&&liveWorkspace.roles[tileIndex]===role)setTileState(tileIndex,'FAILED',String(e.message||'snapshot failed'))}
+ finally{snapshotBusy.delete(tileIndex);if(authAllowsLive(epoch)&&liveWorkspace.assignments[tileIndex]===cameraId&&liveWorkspace.roles[tileIndex]===role&&liveWorkspace.generations[tileIndex]===generation)renderLiveGrid()}
 }
 function defaultRole(camera){const roles=camera?.available_live_roles||['main'];return roles.includes('sub')?'sub':'main'}
 function roleOptions(camera,selected){return (camera?.available_live_roles||['main']).map(role=>`<option value="${esc(role)}" ${selected===role?'selected':''}>${esc(role.toUpperCase())}</option>`).join('')}
@@ -813,6 +838,22 @@ function closePlayback(scrollToLive=false){
 }
 function returnToLive(){closePlayback(true)}
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':'&quot;'}[c]))}
+function releaseTileNow(tileIndex){
+ liveWorkspace.generations[tileIndex]=(liveWorkspace.generations[tileIndex]||0)+1;
+ const session=liveSessions.get(tileIndex)||pendingLive.get(tileIndex);
+ liveSessions.delete(tileIndex);pendingLive.delete(tileIndex);
+ if(!session)return;
+ try{session.pc.ontrack=null;session.pc.onconnectionstatechange=null}catch{}
+ try{session.pc.close()}catch{}
+ const video=document.getElementById('tile-video-'+tileIndex);if(video){video.srcObject=null;video.removeAttribute('src')}
+ if(session.sessionUrl&&session.token&&rememberWhepDelete(session.sessionUrl))fetch(session.sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+session.token},keepalive:true}).catch(()=>{});
+}
+function leavePage(){
+ bumpLifecycle();
+ const tiles=[...new Set([...liveSessions.keys(),...pendingLive.keys(),...liveWorkspace.generations.map((_,tileIndex)=>tileIndex)])];
+ tiles.forEach(releaseTileNow);
+ renderLiveGrid();
+}
 async function refreshAll(){
  const epoch=authEpoch;if(!authAllowsLive(epoch))return;
  await refreshCapabilities();if(!authAllowsLive(epoch))return;
@@ -825,6 +866,7 @@ async function refreshAll(){
  await Promise.all(tasks);
  if(!authAllowsLive(epoch))return;
 }
+window.addEventListener('pagehide',()=>{leavePage()});
 window.addEventListener('pagehide',()=>{closePlayback(false)});
 window.addEventListener('pagehide',()=>{stopLiveSessions()});
 initializeSession();setInterval(()=>{if(authenticated)refreshHealth()},10000);

@@ -252,6 +252,65 @@ def test_held_layout_refresh_and_login_do_not_go_live_after_sign_out():
     assert result["whep_post_count"] == 2
 
 
+def assert_no_auth_delete_after_login(result: dict) -> None:
+    """A stale sign-out must not DELETE the browser session after the new login POST.
+
+    Args:
+        result: Observations that include auth request order.
+    """
+    posts = [index for index, item in enumerate(result["auth_requests"]) if item.startswith("POST ")]
+    assert posts, result["auth_requests"]
+    last_login = posts[-1]
+    assert all(not item.startswith("DELETE ") for item in result["auth_requests"][last_login + 1 :])
+
+
+def test_sign_out_overlapping_login_keeps_the_new_session():
+    """Login during a held sign-out DELETE must not be revoked or left with a signed-out banner."""
+    result = run_scenario("sign-out-overlaps-login")
+    assert result["authenticated"] is True
+    assert result["auth_message"] == "Authenticated."
+    assert result["auth_panel_display"] == "none"
+    assert result["live_session_count"] == 1
+    assert result["open_peer_count"] == 1
+    assert str(result["tile_state"]).startswith("LIVE")
+    assert result["whep_post_count"] == 2
+    assert result["media_deletes"] == [{"url": "https://media.example/whep/sessions/s-1", "authorization": GRANT}]
+    assert "https://media.example/whep/sessions/s-2" not in {item["url"] for item in result["media_deletes"]}
+    assert_no_auth_delete_after_login(result)
+    assert result["unknown_requests"] == []
+
+
+def test_pagehide_during_layout_does_not_restart_live():
+    """pagehide must drop tile labels and stop a layout resume from opening a new session."""
+    result = run_scenario("pagehide-during-layout")
+    assert result["during_pagehide"]["live_session_count"] == 0
+    assert result["during_pagehide"]["open_peer_count"] == 0
+    assert all(not str(state).startswith("LIVE") for state in result["during_pagehide"]["tile_states"])
+    assert result["live_session_count"] == 0
+    assert result["open_peer_count"] == 0
+    assert result["whep_post_count"] == 2
+    assert all(not str(state).startswith("LIVE") for state in result["tile_states"])
+    deleted = {item["url"] for item in result["media_deletes"]}
+    assert set(result["whep_sessions"]) <= deleted
+    assert "https://media.example/whep/sessions/s-3" not in deleted
+    assert "https://media.example/whep/sessions/s-3" not in result["whep_sessions"]
+    assert result["unknown_requests"] == []
+
+
+def test_stale_health_401_does_not_sign_out_a_newer_login():
+    """A health 401 from before re-login must not clear the new authenticated session."""
+    result = run_scenario("stale-health-401-after-login")
+    assert result["authenticated"] is True
+    assert result["auth_message"] == "Authenticated."
+    assert result["auth_required"] is False
+    assert result["live_session_count"] == 1
+    assert result["open_peer_count"] == 1
+    assert str(result["tile_state"]).startswith("LIVE")
+    assert "https://media.example/whep/sessions/s-1" in {item["url"] for item in result["media_deletes"]}
+    assert "https://media.example/whep/sessions/s-2" not in {item["url"] for item in result["media_deletes"]}
+    assert result["unknown_requests"] == []
+
+
 def test_deferred_whep_post_after_auth_expiry_does_not_leave_a_live_session():
     """Auth expiry (HTTP 401) must cancel an in-flight WHEP POST the same way."""
     result = run_scenario("deferred-post-auth-expiry")
