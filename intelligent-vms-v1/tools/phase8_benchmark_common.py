@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 try:
     import psutil
@@ -132,6 +133,94 @@ def canonical_descriptor(value: Any) -> str:
     text = "".join(" " if character.isspace() else character for character in text)
     text = " ".join(text.split()).casefold()
     return text.replace("\u0307", "").replace("\u0131", "i")
+
+
+# Deep enough for real benchmark documents, and far below the depth where
+# json.dumps raises RecursionError. 950 levels still serialize; 2000 does not.
+MAX_STRUCTURE_DEPTH = 32
+
+
+def _structure_deeper_than(value: Any, limit: int) -> bool:
+    """Return whether a JSON-like tree is deeper than limit.
+
+    The walk is iterative so a 2000-level document cannot raise RecursionError
+    while it is being rejected.
+
+    Args:
+        value: JSON-like object, list, or scalar.
+        limit: Maximum allowed nesting depth. The outermost container is depth 1.
+
+    Returns:
+        True when any nested container exceeds the limit.
+    """
+    pending = [(value, 1)]
+    while pending:
+        current, depth = pending.pop()
+        if isinstance(current, dict):
+            if depth > limit:
+                return True
+            pending.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            if depth > limit:
+                return True
+            pending.extend((item, depth + 1) for item in current)
+    return False
+
+
+def _case_preserving_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value))
+    text = "".join(character for character in text if unicodedata.category(character) != "Cf")
+    text = "".join(" " if character.isspace() else character for character in text)
+    return " ".join(text.split())
+
+
+def _canonical_api(value: Any) -> str:
+    """Keep HTTP path case and casefold only the DNS host.
+
+    Args:
+        value: API URL or path from workload config.
+
+    Returns:
+        Identity text. Host case does not split a workload. Path case does.
+    """
+    raw = str(value).strip()
+    parts = urlsplit(raw)
+    if not parts.scheme and not parts.netloc:
+        return _case_preserving_text(raw)
+    host = (parts.hostname or "").casefold()
+    port = f":{parts.port}" if parts.port is not None else ""
+    auth = ""
+    if parts.username is not None:
+        auth = parts.username
+        if parts.password is not None:
+            auth += f":{parts.password}"
+        auth += "@"
+    path = _case_preserving_text(parts.path)
+    return urlunsplit((parts.scheme.casefold(), f"{auth}{host}{port}", path, parts.query, parts.fragment))
+
+
+def safe_workload_config(result: Any) -> dict[str, Any]:
+    """Return workload config that is safe to store in a QA report.
+
+    A non-object config, and any config deeper than MAX_STRUCTURE_DEPTH, is
+    replaced with an empty object so report serialization cannot recurse into
+    the rejected document.
+
+    Args:
+        result: Candidate benchmark record.
+
+    Returns:
+        Shallow copy of a shallow config, or an empty object.
+    """
+    if not isinstance(result, dict):
+        return {}
+    workload = result.get("workload")
+    if not isinstance(workload, dict):
+        return {}
+    config = workload.get("config", {})
+    if not isinstance(config, dict) or _structure_deeper_than(config, MAX_STRUCTURE_DEPTH):
+        return {}
+    return dict(config)
 
 
 def _summary_numbers(block: Any) -> dict[str, str] | None:
@@ -295,6 +384,8 @@ def workload_config_identity(config: Any) -> dict[str, Any]:
 
     Unknown keys, notes, labels, operator names, and timestamps of any casing
     are ignored. Copies that differ only in those keys are the same workload.
+    path keeps its case, and api keeps the case of its HTTP path. host and the
+    host component of api are casefolded because DNS is case-insensitive.
 
     Args:
         config: Workload config object, or None.
@@ -317,7 +408,12 @@ def workload_config_identity(config: Any) -> dict[str, Any]:
         value = config[key]
         field = f"workload.config.{key}"
         if key in _SHAPING_TEXT_FIELDS:
-            identity[key] = canonical_descriptor(value)
+            if key == "path":
+                identity[key] = _case_preserving_text(value)
+            elif key == "api":
+                identity[key] = _canonical_api(value)
+            else:
+                identity[key] = canonical_descriptor(value)
             continue
         if key in _SHAPING_FLAG_FIELDS:
             _checked_number(value, _NUMBER_BOUNDS["unit_interval"], field)
@@ -777,9 +873,11 @@ class ValidatedRecord:
 def parse_benchmark_record(result: dict[str, Any]) -> ValidatedRecord | Rejection:
     """Parse one benchmark record before either independent-repeat gate.
 
-    Numeric conversion, bounds, GPU index rules, the hardware key, and the
-    workload key all happen here. OverflowError, ValueError, and TypeError
-    raised by record content become a Rejection. Gates do not see them.
+    Container types, nesting depth, numeric conversion, bounds, GPU index
+    rules, the hardware key, and the workload key all happen here. A wrong
+    container, a document deeper than MAX_STRUCTURE_DEPTH, and OverflowError,
+    ValueError, TypeError, KeyError, or AttributeError from record content
+    become a Rejection. Gates do not see them.
 
     Args:
         result: Candidate benchmark result.
@@ -812,7 +910,15 @@ def parse_benchmark_record(result: dict[str, Any]) -> ValidatedRecord | Rejectio
             thermal_measured=parsed["thermal_measured"],
             thermal_limit_exceeded=parsed["thermal_limit_exceeded"],
         )
-    except (ValueError, OverflowError, TypeError, KeyError, ArithmeticError) as exc:
+    except (
+        ValueError,
+        OverflowError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        ArithmeticError,
+        RecursionError,
+    ) as exc:
         return Rejection(benchmark_id=benchmark_id, reason=str(exc) or exc.__class__.__name__)
 
 
@@ -1303,7 +1409,12 @@ def build_result(
 
 
 def validate_result(result: dict[str, Any]) -> None:
-    """Validate required schema and evidence fields in a benchmark result.
+    """Validate required schema, container types, and evidence fields.
+
+    environment, hardware, workload, result, resources, and result.latency must
+    be objects before any attribute access. hardware null is invalid and must
+    not collapse to an empty machine identity. Nesting deeper than
+    MAX_STRUCTURE_DEPTH is invalid.
 
     Args:
         result: Benchmark result dictionary.
@@ -1312,20 +1423,42 @@ def validate_result(result: dict[str, Any]) -> None:
         None when required schema and evidence fields are valid.
 
     Raises:
-        ValueError: If schema version or required evidence fields are invalid.
+        ValueError: If schema version, container types, nesting, or required
+            evidence fields are invalid.
     """
+    if not isinstance(result, dict):
+        raise ValueError("benchmark result is not an object")
+    if _structure_deeper_than(result, MAX_STRUCTURE_DEPTH):
+        raise ValueError(f"benchmark record nesting exceeds {MAX_STRUCTURE_DEPTH}")
     required_top = {"schema_version", "benchmark_id", "environment", "workload", "result", "resources"}
     missing = required_top - set(result)
     if missing:
         raise ValueError(f"benchmark result missing keys: {sorted(missing)}")
     if result["schema_version"] != SCHEMA_VERSION:
         raise ValueError("unsupported benchmark result schema")
-    if not result["environment"].get("commit_sha"):
+    environment = result["environment"]
+    if not isinstance(environment, dict):
+        raise ValueError("environment is not an object")
+    if not environment.get("commit_sha"):
         raise ValueError("commit_sha is required")
-    latency = result["result"].get("latency", {})
+    if not isinstance(environment.get("hardware"), dict):
+        raise ValueError("hardware is not an object")
+    workload = result["workload"]
+    if not isinstance(workload, dict):
+        raise ValueError("workload is not an object")
+    if not isinstance(workload.get("type"), str) or not workload.get("type"):
+        raise ValueError("workload.type is required")
+    metrics = result["result"]
+    if not isinstance(metrics, dict):
+        raise ValueError("result is not an object")
+    latency = metrics.get("latency", {})
+    if not isinstance(latency, dict):
+        raise ValueError("result.latency is not an object")
     for key in ("p50_ms", "p95_ms", "p99_ms"):
         if key not in latency:
             raise ValueError(f"latency.{key} is required")
+    if not isinstance(result["resources"], dict):
+        raise ValueError("resources is not an object")
 
 
 def write_result(

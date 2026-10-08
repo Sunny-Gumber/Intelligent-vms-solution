@@ -1190,3 +1190,199 @@ def _cli_outputs(tmp_path, copies, *, fail_on_rejected=True):
     assert matrix_cli.returncode == 0, matrix_cli.stdout + matrix_cli.stderr
     produced = json.loads(matrix_path.read_text(encoding="utf-8"))
     return reproducibility_cli, produced
+
+
+def _genuine_capacities():
+    return [
+        fake_result(benchmark_id="b1", capacity=1000),
+        fake_result(benchmark_id="b2", capacity=980),
+        fake_result(benchmark_id="b3", capacity=1020),
+    ]
+
+
+def _assert_structured_failure(tmp_path, copies):
+    try:
+        report = reproducibility.build_report(results=copies)
+    except (AttributeError, TypeError, KeyError, ValueError, RecursionError, OverflowError) as exc:
+        raise AssertionError(f"build_report raised {type(exc).__name__}: {exc}") from exc
+    json.dumps(report)
+    assert report["summary"]["passed"] == 0
+    assert all(group["status"] == "FAIL" for group in report["groups"])
+    try:
+        output = matrix.build_matrix(results=copies, demand=demand(1500))
+    except (AttributeError, TypeError, KeyError, ValueError, RecursionError, OverflowError) as exc:
+        raise AssertionError(f"build_matrix raised {type(exc).__name__}: {exc}") from exc
+    json.dumps(output)
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in json.dumps(output)
+    _report, approved, handed = _handoff_matrix(copies)
+    assert approved == {}
+    assert handed["qualified_evidence"] == []
+    assert handed["profiles"][0]["roles"]["event_ingest"]["status"] == "UNQUALIFIED"
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    for index, item in enumerate(copies):
+        (result_dir / f"run-{index}.json").write_text(json.dumps(item), encoding="utf-8")
+    _assert_cli_files_fail_closed(tmp_path, result_dir)
+
+
+def _assert_cli_files_fail_closed(tmp_path, result_dir):
+    demand_path = tmp_path / "demand.json"
+    demand_path.write_text(json.dumps(demand(1500)), encoding="utf-8")
+    report_path = tmp_path / "reproducibility.json"
+    matrix_path = tmp_path / "hardware-matrix.json"
+    reproducibility_cli = _run_phase8_cli(
+        "phase8_reproducibility.py",
+        ["--results", str(result_dir), "--output", str(report_path), "--fail-on-rejected-groups"],
+    )
+    assert report_path.is_file(), reproducibility_cli.stderr
+    assert "Traceback" not in reproducibility_cli.stderr
+    assert "Traceback" not in reproducibility_cli.stdout
+    written = json.loads(report_path.read_text(encoding="utf-8"))
+    assert written["summary"]["passed"] == 0
+    matrix_cli = _run_phase8_cli(
+        "phase8_hardware_matrix.py",
+        [
+            "--results",
+            str(result_dir),
+            "--demand",
+            str(demand_path),
+            "--reproducibility-report",
+            str(report_path),
+            "--output",
+            str(matrix_path),
+        ],
+    )
+    assert matrix_path.is_file(), matrix_cli.stderr
+    assert "Traceback" not in matrix_cli.stderr
+    assert "Traceback" not in matrix_cli.stdout
+    produced = json.loads(matrix_path.read_text(encoding="utf-8"))
+    assert produced["qualified_evidence"] == []
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in json.dumps(produced)
+
+
+@pytest.mark.parametrize("bad", ("environment", ["environment"], 5, None))
+def test_bad_environment_container_is_structured_rejection(tmp_path, bad):
+    copies = _genuine_capacities()
+    for item in copies:
+        item["environment"] = bad
+    _assert_structured_failure(tmp_path, copies)
+
+
+@pytest.mark.parametrize("bad", ("metrics", ["metrics"], None))
+def test_bad_result_container_is_structured_rejection(tmp_path, bad):
+    copies = _genuine_capacities()
+    for item in copies:
+        item["result"] = bad
+    _assert_structured_failure(tmp_path, copies)
+
+
+def test_null_hardware_does_not_share_an_empty_identity(tmp_path):
+    copies = _genuine_capacities()
+    for item in copies:
+        item["environment"]["hardware"] = None
+    _assert_structured_failure(tmp_path, copies)
+
+
+@pytest.mark.parametrize("bad", ("box", 5, ["nic"]))
+def test_bad_hardware_container_is_structured_rejection(tmp_path, bad):
+    copies = _genuine_capacities()
+    for item in copies:
+        item["environment"]["hardware"] = bad
+    _assert_structured_failure(tmp_path, copies)
+
+
+def test_workload_without_type_is_structured_rejection(tmp_path):
+    copies = _genuine_capacities()
+    for item in copies:
+        del item["workload"]["type"]
+    _assert_structured_failure(tmp_path, copies)
+
+
+def test_latency_string_list_is_structured_rejection(tmp_path):
+    copies = _genuine_capacities()
+    for item in copies:
+        item["result"]["latency"] = ["p50_ms", "p95_ms", "p99_ms", "bad"]
+    _assert_structured_failure(tmp_path, copies)
+
+
+def test_latency_number_is_structured_rejection(tmp_path):
+    copies = _genuine_capacities()
+    for item in copies:
+        item["result"]["latency"] = 5
+    _assert_structured_failure(tmp_path, copies)
+
+
+def test_top_level_json_array_writes_failed_report(tmp_path):
+    payload = _genuine_capacities()
+    try:
+        report = reproducibility.build_report(results=[payload])
+    except (AttributeError, TypeError, KeyError, ValueError) as exc:
+        raise AssertionError(f"build_report raised {type(exc).__name__}: {exc}") from exc
+    json.dumps(report)
+    assert report["summary"]["passed"] == 0
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    (result_dir / "array.json").write_text(json.dumps(payload), encoding="utf-8")
+    _assert_cli_files_fail_closed(tmp_path, result_dir)
+
+
+def _nested_config(depth):
+    node = {"leaf": "x"}
+    for _ in range(depth):
+        node = {"child": node}
+    return node
+
+
+def test_deep_workload_config_is_rejected_without_recursion(tmp_path):
+    item = fake_result(benchmark_id="deep", capacity=1000)
+    item["workload"]["config"] = _nested_config(2000)
+    try:
+        report = reproducibility.build_report(results=[item])
+    except RecursionError as exc:
+        raise AssertionError("build_report raised RecursionError") from exc
+    json.dumps(report)
+    assert report["summary"]["passed"] == 0
+    assert report["groups"][0]["repeat_count"] == 0
+    assert "nesting" in " ".join(report["groups"][0]["reasons"])
+    assert report["groups"][0]["workload"]["config"] == {}
+    text = json.dumps(item)
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    (result_dir / "deep.json").write_text(text, encoding="utf-8")
+    _assert_cli_files_fail_closed(tmp_path, result_dir)
+    written = json.loads((tmp_path / "reproducibility.json").read_text(encoding="utf-8"))
+    assert "leaf" not in json.dumps(written)
+
+
+@pytest.mark.parametrize(
+    "field,values",
+    (
+        ("path", ("/Events", "/events", "/EVENTS")),
+        ("api", ("http://localhost:8000/Events", "http://localhost:8000/events", "http://localhost:8000/EVENTS")),
+    ),
+)
+def test_path_case_is_not_one_workload(tmp_path, field, values):
+    copies = _genuine_capacities()
+    for item, value in zip(copies, values, strict=True):
+        item["workload"]["config"] = {field: value}
+    assert len({reproducibility.workload_key(item) for item in copies}) == 3
+    _assert_structured_failure(tmp_path, copies)
+
+
+def test_api_host_case_stays_one_workload():
+    copies = _genuine_capacities()
+    hosts = (
+        "http://localhost:8000/events",
+        "http://LOCALHOST:8000/events",
+        "http://LocalHost:8000/events",
+    )
+    for item, value in zip(copies, hosts, strict=True):
+        item["workload"]["config"] = {"api": value}
+    assert len({reproducibility.workload_key(item) for item in copies}) == 1
+    report = reproducibility.build_report(results=copies)
+    output = matrix.build_matrix(results=copies, demand=demand(1500))
+    assert report["summary"]["passed"] == 1
+    assert output["profiles"][0]["roles"]["event_ingest"]["status"] == "QUALIFIED_FROM_MEASURED_EVIDENCE"

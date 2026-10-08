@@ -14,7 +14,7 @@ from phase8_benchmark_common import (
     Rejection,
     parse_benchmark_record,
     repeat_verdict,
-    validate_result,
+    safe_workload_config,
     workload_identity_json,
     workload_key as shared_workload_key,
 )
@@ -119,7 +119,10 @@ def percentile_order_valid(result: dict[str, Any]) -> bool:
     Returns:
         True when present p50, p95, p99 and max values are nondecreasing.
     """
-    latency = result["result"].get("latency", {})
+    metrics = result.get("result") if isinstance(result, dict) else None
+    latency = metrics.get("latency", {}) if isinstance(metrics, dict) else {}
+    if not isinstance(latency, dict):
+        return False
     values = [
         _num(latency.get("p50_ms")),
         _num(latency.get("p95_ms")),
@@ -137,21 +140,22 @@ def load_results(paths: list[str]) -> list[dict[str, Any]]:
         paths: JSON files or directories containing benchmark results.
 
     Returns:
-        Validated results with internal source-file metadata.
+        Loaded JSON values with source-file metadata on objects. Container and
+        schema checks happen in parse_benchmark_record, not here, so one bad
+        file cannot abort the report.
 
     Raises:
-        ValueError: If any benchmark result is invalid.
         OSError: If an input cannot be read.
         json.JSONDecodeError: If an input is not valid JSON.
     """
-    results: list[dict[str, Any]] = []
+    results: list[Any] = []
     for raw in paths:
         path = Path(raw)
         candidates = sorted(path.glob("*.json")) if path.is_dir() else [path]
         for candidate in candidates:
             result = json.loads(candidate.read_text(encoding="utf-8"))
-            validate_result(result)
-            result["_source_file"] = str(candidate)
+            if isinstance(result, dict):
+                result["_source_file"] = str(candidate)
             results.append(result)
     return results
 
@@ -321,7 +325,7 @@ def review_group(
         "workload": (
             {
                 "type": sources[0]["workload"]["type"],
-                "config": sources[0]["workload"].get("config", {}),
+                "config": safe_workload_config(sources[0]),
             }
             if sources
             else {}
@@ -355,16 +359,19 @@ def review_group(
     }
 
 
-def _rejection_group(result: dict[str, Any], rejection: Rejection) -> dict[str, Any]:
+def _rejection_group(result: Any, rejection: Rejection) -> dict[str, Any]:
     """Build one failed group for a record the parser rejected.
 
     Args:
-        result: Original benchmark record, used only for provenance.
+        result: Original benchmark record, used only for provenance. Non-objects
+            and deep config are not copied into the group.
         rejection: Structured parse rejection.
 
     Returns:
         FAIL group with repeat_count zero and the parser reason.
     """
+    if not isinstance(result, dict):
+        result = {}
     workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
     environment = result.get("environment") if isinstance(result.get("environment"), dict) else {}
     return {
@@ -374,7 +381,7 @@ def _rejection_group(result: dict[str, Any], rejection: Rejection) -> dict[str, 
         "workload_key": "",
         "workload": {
             "type": workload.get("type"),
-            "config": workload.get("config", {}),
+            "config": safe_workload_config(result),
         },
         "repeat_count": 0,
         "benchmark_ids": [rejection.benchmark_id],
@@ -492,6 +499,65 @@ def build_report(
     }
 
 
+def _fail_closed_report(reason: str) -> dict[str, Any]:
+    """Build a minimal FAIL report that is always safe to serialize.
+
+    Args:
+        reason: Controlled explanation of the load or serialization failure.
+
+    Returns:
+        One failed group with an empty config and no measured repeats.
+    """
+    return {
+        "report_version": REPORT_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "policy": {},
+        "summary": {"groups": 1, "passed": 0, "failed": 1},
+        "groups": [
+            {
+                "status": "FAIL",
+                "commit_sha": "",
+                "hardware_key": "",
+                "workload_key": "",
+                "workload": {"type": None, "config": {}},
+                "repeat_count": 0,
+                "benchmark_ids": [],
+                "benchmark_fingerprints": {},
+                "source_files": [],
+                "reasons": [reason],
+                "warnings": [],
+                "metrics": {
+                    "duration_seconds_min": None,
+                    "warmup_seconds_min": None,
+                    "failure_rate_max": None,
+                    "capacity": {
+                        "dimension": None,
+                        "values": [],
+                        "mean": None,
+                        "cv": None,
+                        "relative_range": None,
+                    },
+                    "p95_latency_ms": {"values": [], "mean": None, "cv": None},
+                    "thermal_measured_all": False,
+                    "thermal_limit_exceeded": False,
+                    "cpu_freq_ratio_min": None,
+                },
+            }
+        ],
+    }
+
+
+def _serialize_report(report: dict[str, Any]) -> str:
+    try:
+        return json.dumps(report, indent=2, sort_keys=True)
+    except RecursionError:
+        return json.dumps(
+            _fail_closed_report("report nesting exceeds the serialization limit"),
+            indent=2,
+            sort_keys=True,
+        )
+
+
 def main() -> int:
     """Validate Phase-8 repeatability evidence and write the QA report.
 
@@ -517,21 +583,25 @@ def main() -> int:
         help="exit non-zero when any workload group fails QA",
     )
     args = parser.parse_args()
-
-    report = build_report(
-        results=load_results(args.results),
-        min_repeats=args.min_repeats,
-        min_duration_seconds=args.min_duration_seconds,
-        min_warmup_seconds=args.min_warmup_seconds,
-        max_failure_rate=args.max_failure_rate,
-        max_capacity_cv=args.max_capacity_cv,
-        max_p95_latency_cv=args.max_p95_latency_cv,
-        max_capacity_relative_range=args.max_capacity_relative_range,
-        require_thermal=args.require_thermal,
-    )
     target = Path(args.output)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        report = build_report(
+            results=load_results(args.results),
+            min_repeats=args.min_repeats,
+            min_duration_seconds=args.min_duration_seconds,
+            min_warmup_seconds=args.min_warmup_seconds,
+            max_failure_rate=args.max_failure_rate,
+            max_capacity_cv=args.max_capacity_cv,
+            max_p95_latency_cv=args.max_p95_latency_cv,
+            max_capacity_relative_range=args.max_capacity_relative_range,
+            require_thermal=args.require_thermal,
+        )
+    except RecursionError:
+        report = _fail_closed_report("benchmark record nesting exceeds the serialization limit")
+    except (OSError, json.JSONDecodeError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        report = _fail_closed_report(str(exc) or exc.__class__.__name__)
+    target.write_text(_serialize_report(report), encoding="utf-8")
 
     print(
         f"groups={report['summary']['groups']} passed={report['summary']['passed']} "

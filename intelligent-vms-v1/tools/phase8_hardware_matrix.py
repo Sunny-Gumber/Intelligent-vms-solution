@@ -15,7 +15,6 @@ from phase8_benchmark_common import (
     parse_benchmark_record,
     repeat_verdict,
     result_fingerprint,
-    validate_result,
 )
 from phase8_benchmark_common import hardware_key as shared_hardware_key
 
@@ -169,8 +168,11 @@ def capacity_dimension(result: dict[str, Any]) -> tuple[str, str, float] | None:
         Tuple of role, capacity-dimension name and positive observed capacity,
         or None when the workload has no qualification mapping.
     """
-    workload_type = result["workload"]["type"]
-    metrics = result["result"]
+    workload = result.get("workload") if isinstance(result, dict) else None
+    if not isinstance(workload, dict) or not isinstance(workload.get("type"), str):
+        return None
+    workload_type = workload["type"]
+    metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
 
     if workload_type == "event-ingest-http":
         capacity = _num(metrics.get("throughput_ops_s"))
@@ -273,14 +275,15 @@ def extract_evidence(
     elif ram_p95 > max_ram_p95_pct:
         reasons.append(f"RAM p95 {ram_p95:.1f}% > allowed {max_ram_p95_pct:.1f}%")
 
-    env = result["environment"]
+    env = result.get("environment") if isinstance(result.get("environment"), dict) else {}
+    hardware = env.get("hardware") if isinstance(env.get("hardware"), dict) else {}
     return Evidence(
         benchmark_id=parsed.benchmark_id,
         content_fingerprint=parsed.content_fingerprint,
         commit_sha=parsed.commit_sha,
         hardware_key=parsed.hardware_key,
         workload_key=parsed.workload_key,
-        hardware=dict(env.get("hardware", {})),
+        hardware=dict(hardware),
         role=role,
         dimension=dimension,
         observed_capacity=float(capacity),
@@ -301,10 +304,10 @@ def load_results(paths: list[str]) -> list[dict[str, Any]]:
         paths: JSON files or directories containing JSON benchmark results.
 
     Returns:
-        Validated benchmark result dictionaries.
+        Loaded JSON values. Container and schema checks happen in
+        parse_benchmark_record so one bad file cannot abort the matrix.
 
     Raises:
-        ValueError: If any benchmark result is invalid.
         OSError: If an input path cannot be read.
         json.JSONDecodeError: If an input file is not valid JSON.
     """
@@ -317,7 +320,8 @@ def load_results(paths: list[str]) -> list[dict[str, Any]]:
             candidates = [path]
         for candidate in candidates:
             payload = json.loads(candidate.read_text(encoding="utf-8"))
-            validate_result(payload)
+            if isinstance(payload, dict):
+                payload["_source_file"] = str(candidate)
             results.append(payload)
     return results
 
@@ -437,6 +441,9 @@ def build_matrix(
     if approved_benchmark_fingerprints is not None:
         approved_results = []
         for result in results:
+            if not isinstance(result, dict):
+                qa_excluded.append("")
+                continue
             benchmark_id = str(result.get("benchmark_id"))
             expected = approved_benchmark_fingerprints.get(benchmark_id)
             if expected is None:
@@ -608,6 +615,34 @@ def approved_fingerprints_from_reproducibility_report(path: str) -> dict[str, st
     return approved
 
 
+def _fail_closed_matrix(reason: str) -> dict[str, Any]:
+    """Build a minimal unqualified matrix that is always safe to serialize.
+
+    Args:
+        reason: Controlled explanation of the load or serialization failure.
+
+    Returns:
+        Matrix with no qualified evidence.
+    """
+    return {
+        "report_version": "phase8-hardware-matrix-v1",
+        "qualified_evidence": [],
+        "rejected_evidence": [{"reason": reason}],
+        "profiles": [],
+    }
+
+
+def _serialize_matrix(matrix: dict[str, Any]) -> str:
+    try:
+        return json.dumps(matrix, indent=2, sort_keys=True)
+    except RecursionError:
+        return json.dumps(
+            _fail_closed_matrix("report nesting exceeds the serialization limit"),
+            indent=2,
+            sort_keys=True,
+        )
+
+
 def main():
     """Build and write a hardware matrix from reproducibility-approved evidence."""
     parser = argparse.ArgumentParser(
@@ -630,28 +665,32 @@ def main():
     parser.add_argument("--design-headroom-fraction", type=float, default=0.80)
     parser.add_argument("--no-n-plus-one", action="store_true")
     args = parser.parse_args()
-
-    results = load_results(args.results)
-    demand = json.loads(Path(args.demand).read_text(encoding="utf-8"))
-    approved_fingerprints = approved_fingerprints_from_reproducibility_report(
-        args.reproducibility_report
-    )
-    matrix = build_matrix(
-        results=results,
-        demand=demand,
-        approved_benchmark_fingerprints=approved_fingerprints,
-        min_repeats=args.min_repeats,
-        min_duration_seconds=args.min_duration_seconds,
-        min_warmup_seconds=args.min_warmup_seconds,
-        max_failure_rate=args.max_failure_rate,
-        max_cpu_p95_pct=args.max_cpu_p95_pct,
-        max_ram_p95_pct=args.max_ram_p95_pct,
-        design_headroom_fraction=args.design_headroom_fraction,
-        n_plus_one=not args.no_n_plus_one,
-    )
     target = Path(args.output)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(matrix, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        results = load_results(args.results)
+        demand = json.loads(Path(args.demand).read_text(encoding="utf-8"))
+        approved_fingerprints = approved_fingerprints_from_reproducibility_report(
+            args.reproducibility_report
+        )
+        matrix = build_matrix(
+            results=results,
+            demand=demand,
+            approved_benchmark_fingerprints=approved_fingerprints,
+            min_repeats=args.min_repeats,
+            min_duration_seconds=args.min_duration_seconds,
+            min_warmup_seconds=args.min_warmup_seconds,
+            max_failure_rate=args.max_failure_rate,
+            max_cpu_p95_pct=args.max_cpu_p95_pct,
+            max_ram_p95_pct=args.max_ram_p95_pct,
+            design_headroom_fraction=args.design_headroom_fraction,
+            n_plus_one=not args.no_n_plus_one,
+        )
+    except RecursionError:
+        matrix = _fail_closed_matrix("benchmark record nesting exceeds the serialization limit")
+    except (OSError, json.JSONDecodeError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        matrix = _fail_closed_matrix(str(exc) or exc.__class__.__name__)
+    target.write_text(_serialize_matrix(matrix), encoding="utf-8")
 
     qualified_roles = sum(
         1
