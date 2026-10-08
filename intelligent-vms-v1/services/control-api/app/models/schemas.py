@@ -305,11 +305,20 @@ class EventCenterRead(BaseModel):
 
 
 class EventHistoryPage(BaseModel):
-    """Serialize one bounded deterministic page of authorized Event Center history."""
+    """Serialize one bounded deterministic page of authorized Event Center history.
+
+    `next_before` and `next_before_id` are set only when another page of valid
+    events exists. A shorter `items` list with both cursors empty is the final
+    page. `partial` and `skipped_rows` report malformed backend rows skipped
+    while filling this page. They do not by themselves mean more valid events
+    remain. See docs/architecture/SEARCH_INDEX_PAGE_CONTRACT.md.
+    """
 
     items: list[EventCenterRead] = Field(default_factory=list)
     next_before: datetime | None = None
     next_before_id: str | None = None
+    partial: bool = False
+    skipped_rows: int = Field(default=0, ge=0)
 
 class CameraHealthStateRead(BaseModel):
     """Serialize persisted camera health and transition state.

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +31,7 @@ from app.services.recording_health import (
     sync_recording_health_policy,
 )
 from app.services.recording_index import RecordingIndexError, recording_index
+from app.services.search_page import apply_page_headers
 
 router = APIRouter(prefix="/api/v1/recordings", tags=["recordings"])
 internal_router = APIRouter(prefix="/internal/v1/recording", tags=["internal-recording"])
@@ -395,6 +396,7 @@ async def put_policy(
 
 @router.get("/cameras/{camera_id}/timeline", response_model=list[RecordingTimespan])
 async def timeline(
+    response: Response,
     camera_id: str,
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
@@ -412,6 +414,8 @@ async def timeline(
 
     Returns:
         Chronologically sorted recording timespans clipped to the request window.
+        The JSON body stays an array. ``X-VMS-Partial`` and ``X-VMS-Skipped-Rows``
+        report malformed recording-index rows skipped while filling it.
 
     Raises:
         HTTPException: If authorization/policy fails, the interval is invalid or
@@ -443,6 +447,7 @@ async def timeline(
             )
         except RecordingIndexError as exc:
             raise HTTPException(503, str(exc)) from exc
+        apply_page_headers(response, rows)
         indexed = [
             RecordingTimespan(
                 start=max(row["segment_start"], start),
@@ -476,6 +481,7 @@ async def timeline(
                 recent.append(span)
         return sorted(indexed + recent, key=lambda span: span.start)
 
+    apply_page_headers(response, None)
     client = await _playback_for_policy(session, policy)
     try:
         spans = await client.list_timespans(policy.record_stream_key, start, end)
