@@ -1144,7 +1144,8 @@ class AIPolicyRead(BaseModel):
     """Serialize the active AI policy for one camera.
 
     Fields expose source/model selection, sampling/confidence, analytics, zones,
-    provider configuration and update time.
+    provider configuration and update time. ``provider_config`` on this public
+    model is readback: the policy serializer removes secret-like keys first.
     """
 
     camera_id: str
