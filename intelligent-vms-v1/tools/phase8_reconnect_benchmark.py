@@ -5,6 +5,8 @@ import argparse
 import asyncio
 import logging
 import os
+import stat
+import tempfile
 import time
 from collections.abc import Awaitable
 from pathlib import Path
@@ -518,44 +520,136 @@ async def run(args) -> dict:
         _raise_failed(exc, source="result")
 
 
-def _staging_json_path(json_path: Path) -> Path:
-    """Return the temporary JSON path published with ``os.replace``.
+def _legacy_partial_path(json_path: Path) -> Path:
+    """Return the old shared staging name, which this run does not own.
 
     Args:
         json_path: Final ``--output-json`` path.
 
     Returns:
-        A sibling path whose name ends in ``.partial``.
+        The sibling path ``<name>.partial``.
     """
     return json_path.with_name(f"{json_path.name}.partial")
 
 
-def _discard_benchmark_json(json_path: Path) -> None:
-    """Remove this run's JSON evidence and any staging file.
+def _is_real_directory(path: Path) -> bool:
+    """Report whether ``path`` is a directory and not a symlink.
 
-    The optional CSV is an append-only log of publishes that completed, so
-    this function does not remove it.
+    Args:
+        path: Evidence path to inspect. A missing path is not a directory.
+
+    Returns:
+        True when ``lstat`` shows a directory. Symlinks are False even when
+        their target is a directory, because unlink and ``os.replace`` replace
+        the link itself.
+    """
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISDIR(info.st_mode)
+
+
+def _refuse_unsafe_evidence_paths(json_path: Path) -> None:
+    """Fail closed before any evidence file is removed.
 
     Args:
         json_path: Configured ``--output-json`` path.
 
     Returns:
-        None after both paths are absent or were already missing.
+        None when neither the destination nor the legacy staging name is a
+        real directory.
+
+    Raises:
+        RuntimeError: When either path is a directory. Nothing is deleted.
+    """
+    if _is_real_directory(json_path):
+        raise RuntimeError(f"reconnect benchmark output JSON is a directory: {json_path}")
+    legacy = _legacy_partial_path(json_path)
+    if _is_real_directory(legacy):
+        raise RuntimeError(f"reconnect benchmark staging path is a directory: {legacy}")
+
+
+def _discard_stale_destination(json_path: Path) -> None:
+    """Remove the destination once, before this run starts.
+
+    Call this only after ``_refuse_unsafe_evidence_paths``. It removes a
+    regular file or a symlink at ``--output-json`` and does not follow a
+    symlink. It does not remove the legacy ``<name>.partial`` path, because
+    that name is not owned by this run.
+
+    A failed publish must not call this again. Another process may have
+    replaced the destination after this process started, and deleting it
+    would drop a run that already exited 0. A later invocation may clear the
+    path at its own startup; that is a new run, not cleanup of the run that
+    already published.
+
+    Args:
+        json_path: Configured ``--output-json`` path.
+
+    Returns:
+        None after the destination is absent or was already missing.
 
     Raises:
         OSError: If a present file cannot be removed.
     """
     json_path.unlink(missing_ok=True)
-    _staging_json_path(json_path).unlink(missing_ok=True)
+
+
+def _create_staging_file(json_path: Path) -> Path:
+    """Create an exclusive temporary JSON file beside the destination.
+
+    ``tempfile.mkstemp`` uses ``O_EXCL``, so two runs of the same
+    ``--output-json`` do not share one staging file. The name is
+    ``<output>.<random>.partial`` in the destination directory.
+
+    Args:
+        json_path: Final ``--output-json`` path.
+
+    Returns:
+        The new file path. The caller owns it until ``os.replace`` renames it
+        or the caller unlinks it.
+
+    Raises:
+        OSError: If the directory cannot be created or the file cannot be
+            created exclusively.
+    """
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(
+        dir=json_path.parent,
+        prefix=f"{json_path.name}.",
+        suffix=".partial",
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _unlink_owned_staging(staging: Path) -> None:
+    """Remove the temporary file this run created.
+
+    Args:
+        staging: Path returned by ``_create_staging_file`` for this run.
+
+    Returns:
+        None after that path is absent. The destination is not removed, even
+        when ``os.replace`` has already moved this file onto it: after a
+        successful replace the temporary name no longer exists.
+
+    Raises:
+        OSError: If the temporary file exists and cannot be removed.
+    """
+    staging.unlink(missing_ok=True)
 
 
 def _publish_benchmark_result(result: dict, json_path: Path, csv_path: str | None) -> None:
     """Publish JSON only after a successful run, by atomic replace.
 
-    ``write_result`` validates and writes a sibling staging file, appending the
-    optional CSV from that same call. ``os.replace`` then moves the staging
-    file onto ``--output-json``. The destination is removed before the run, so
-    a crash before the replace leaves it absent.
+    The JSON is written to a private temporary file, then ``os.replace`` moves
+    that file onto ``--output-json``. The CSV row is appended only after that
+    replace returns. A failure before the replace unlinks the temporary file
+    and leaves the destination untouched, so a sibling run's published JSON
+    stays in place. A CSV failure after the replace also leaves the destination
+    in place.
 
     Args:
         result: Completed benchmark result dictionary.
@@ -563,28 +657,45 @@ def _publish_benchmark_result(result: dict, json_path: Path, csv_path: str | Non
         csv_path: Optional append-only CSV summary path.
 
     Returns:
-        None after the destination JSON is this run's evidence.
+        None after the destination JSON is this run's evidence. When
+        ``csv_path`` is set, the CSV row is appended after the replace.
 
     Raises:
         Exception: Validation or filesystem failures from ``write_result`` or
-            ``os.replace``.
+            ``os.replace``. The temporary file is removed when the replace has
+            not committed it.
     """
-    staging = _staging_json_path(json_path)
-    staging.unlink(missing_ok=True)
-    write_result(result, json_path=str(staging), csv_path=csv_path)
-    os.replace(staging, json_path)
+    staging = _create_staging_file(json_path)
+    try:
+        write_result(result, json_path=str(staging), csv_path=None)
+        os.replace(staging, json_path)
+    except BaseException:
+        _unlink_owned_staging(staging)
+        raise
+    if csv_path:
+        write_result(result, json_path=str(json_path), csv_path=csv_path)
 
 
 def main():
     """Parse CLI arguments, execute the reconnect benchmark, and write results.
 
-    Evidence policy: ``--output-json`` is removed before the run. JSON is
-    written only after ``run`` succeeds, to a sibling ``<name>.partial`` file,
-    then ``os.replace`` moves that file onto the destination. A failed run
-    leaves the destination absent, so an earlier run's JSON cannot be read as
-    this run's result. ``--output-csv`` is an append-only log of publishes that
-    completed and is not deleted when a later run fails. ``--help`` and
-    argument errors still exit from ``argparse`` before any file is removed.
+    Evidence policy: directory checks run first and delete nothing. A real
+    directory at ``--output-json`` or at the legacy ``<name>.partial`` path
+    raises ``RuntimeError`` and leaves every existing file in place. A symlink
+    at ``<name>.partial`` is not removed and its target is not modified.
+
+    After those checks, a regular file or symlink at ``--output-json`` is
+    removed once, before the benchmark, so this process's own failure cannot
+    be read as a previous run. That removal is not repeated. Each run then
+    writes JSON to its own ``<output>.<random>.partial`` file in the same
+    directory and ``os.replace`` moves it onto the destination. Cleanup of a
+    failed replace unlinks only that temporary file. It does not unlink the
+    destination, so a sibling process that published after this process
+    started keeps the file from the run that exited 0. A later invocation of
+    the same path may clear it at that invocation's startup; that is a new
+    run. The CSV row is appended only after ``os.replace`` returns, and the
+    CSV is not deleted when a later run fails. ``--help`` and argument errors
+    still exit from ``argparse`` before any file is removed.
 
     Args:
         None. Arguments are read from the process command line.
@@ -595,8 +706,11 @@ def main():
     Raises:
         RuntimeError: A successful ``SystemExit`` from the run or from
             publishing is rewritten to this so the process cannot exit 0.
-        Exception: Benchmark or output failures propagate and leave no JSON
-            evidence for this run.
+            Also raised when the destination or the legacy staging path is a
+            directory.
+        Exception: Benchmark or output failures propagate. A failed publish
+            does not remove JSON that another run has already replaced into
+            place.
         KeyboardInterrupt: Propagates when the run is interrupted.
         asyncio.CancelledError: Propagates when the run task is cancelled.
     """
@@ -612,12 +726,12 @@ def main():
     parser.add_argument("--output-csv")
     args = parser.parse_args()
     json_path = Path(args.output_json)
-    _discard_benchmark_json(json_path)
+    _refuse_unsafe_evidence_paths(json_path)
+    _discard_stale_destination(json_path)
     try:
         result = asyncio.run(run(args))
         _publish_benchmark_result(result, json_path, args.output_csv)
     except BaseException as exc:
-        _discard_benchmark_json(json_path)
         _raise_failed(exc, source="publish")
     print(
         f"ok={result['result']['operations_ok']} "

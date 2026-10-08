@@ -958,3 +958,96 @@ def test_qa_030_101_cli_help_exits_zero_without_touching_evidence(tmp_path: Path
     assert completed.returncode == 0
     assert "output-json" in completed.stdout
     assert output.read_text(encoding="utf-8") == "ORIGINAL_JSON"
+
+
+def test_qa_030_201_lost_replace_keeps_the_other_runs_json(tmp_path: Path) -> None:
+    """A failed os.replace must not delete JSON another run already published."""
+    output = tmp_path / "reconnect.json"
+    csv_path = tmp_path / "reconnect.csv"
+    output.write_text("STALE_JSON", encoding="utf-8")
+    csv_path.write_text("ORIGINAL_CSV", encoding="utf-8")
+    script = _cli_script(
+        "def lose_replace(src, dst):\n"
+        "    from pathlib import Path\n"
+        "    Path(dst).write_text('WINNER_JSON')\n"
+        "    raise FileNotFoundError(2, 'No such file or directory', str(src))\n"
+        "bench.os.replace = lose_replace\n"
+        + _HEALTHY_ATTEMPT,
+        csv=True,
+    )
+    completed = _run_cli(script, output, csv_path)
+    assert completed.returncode != 0
+    assert output.read_text(encoding="utf-8") == "WINNER_JSON"
+    assert csv_path.read_text(encoding="utf-8") == "ORIGINAL_CSV"
+    assert "ok=" not in completed.stdout
+    assert not Path(f"{output}.partial").exists()
+
+
+def test_qa_030_202_failed_replace_does_not_append_csv(tmp_path: Path) -> None:
+    """CSV grows only after os.replace commits the JSON."""
+    output = tmp_path / "reconnect.json"
+    csv_path = tmp_path / "reconnect.csv"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    csv_path.write_text("ORIGINAL_CSV", encoding="utf-8")
+    script = _cli_script(
+        "def lose_replace(src, dst):\n"
+        "    raise OSError('replace failed')\n"
+        "bench.os.replace = lose_replace\n"
+        + _HEALTHY_ATTEMPT,
+        csv=True,
+    )
+    completed = _run_cli(script, output, csv_path)
+    assert completed.returncode != 0
+    assert csv_path.read_text(encoding="utf-8") == "ORIGINAL_CSV"
+    assert "ok=" not in completed.stdout
+
+
+def test_qa_030_202_write_result_system_exit_does_not_append_csv(tmp_path: Path) -> None:
+    """SystemExit after write_result returns must not leave a new CSV row."""
+    output = tmp_path / "reconnect.json"
+    csv_path = tmp_path / "reconnect.csv"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    csv_path.write_text("ORIGINAL_CSV", encoding="utf-8")
+    script = _cli_script(
+        "real_write = bench.write_result\n"
+        "def wrapped(*args, **kwargs):\n"
+        "    real_write(*args, **kwargs)\n"
+        "    raise SystemExit(0)\n"
+        "bench.write_result = wrapped\n"
+        + _HEALTHY_ATTEMPT,
+        csv=True,
+    )
+    completed = _run_cli(script, output, csv_path)
+    assert completed.returncode != 0
+    assert csv_path.read_text(encoding="utf-8") == "ORIGINAL_CSV"
+    assert "ok=" not in completed.stdout
+
+
+def test_qa_030_203_partial_directory_does_not_delete_json(tmp_path: Path) -> None:
+    """A directory at <name>.partial must fail closed before the JSON is removed."""
+    output = tmp_path / "reconnect.json"
+    partial = Path(f"{output}.partial")
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    partial.mkdir()
+    completed = _run_cli(_cli_script(_HEALTHY_ATTEMPT), output)
+    assert completed.returncode != 0
+    assert output.read_text(encoding="utf-8") == "ORIGINAL_JSON"
+    assert partial.is_dir()
+    assert "directory" in completed.stderr
+    assert "ok=" not in completed.stdout
+
+
+def test_qa_030_203_partial_symlink_is_left_in_place(tmp_path: Path) -> None:
+    """A symlink at <name>.partial stays, and its target is not rewritten."""
+    output = tmp_path / "reconnect.json"
+    target = tmp_path / "target.txt"
+    partial = Path(f"{output}.partial")
+    target.write_text("SYMLINK_TARGET", encoding="utf-8")
+    partial.symlink_to(target)
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    completed = _run_cli(_cli_script(_HEALTHY_ATTEMPT), output)
+    assert completed.returncode == 0
+    assert partial.is_symlink()
+    assert target.read_text(encoding="utf-8") == "SYMLINK_TARGET"
+    assert "phase8-benchmark-v1" in output.read_text(encoding="utf-8")
+    assert "ok=4 failed=0" in completed.stdout
