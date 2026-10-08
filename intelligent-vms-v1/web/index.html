@@ -373,7 +373,7 @@ async function cleanupTile(tileIndex){
  const video=document.getElementById('tile-video-'+tileIndex);if(video){video.srcObject=null;video.removeAttribute('src')}
  if(session.sessionUrl&&session.token){try{await fetch(session.sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+session.token},keepalive:true})}catch{}}
 }
-async function stopLiveSessions(){await Promise.allSettled([...liveSessions.keys()].map(cleanupTile))}
+async function stopLiveSessions(){const tiles=[...new Set([...liveSessions.keys(),...liveWorkspace.generations.map((_,tileIndex)=>tileIndex)])];await Promise.allSettled(tiles.map(cleanupTile))}
 function waitForIceGathering(pc,timeoutMs=3000){
  if(pc.iceGatheringState==='complete')return Promise.resolve();
  return new Promise(resolve=>{const done=()=>{pc.removeEventListener('icegatheringstatechange',check);clearTimeout(timer);resolve()};const check=()=>{if(pc.iceGatheringState==='complete')done()};const timer=setTimeout(done,timeoutMs);pc.addEventListener('icegatheringstatechange',check)});
@@ -411,6 +411,7 @@ async function startTile(tileIndex,cameraId,role=liveWorkspace.roles[tileIndex])
   if(location){const candidate=new URL(location,whep),origin=new URL(whep).origin;if(candidate.origin!==origin)throw new Error('cross-origin WHEP session rejected');sessionUrl=candidate.toString()}
   const answer=await response.text();if(current!==liveWorkspace.generations[tileIndex]){if(sessionUrl)fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true}).catch(()=>{});pc.close();return}
   await pc.setRemoteDescription({type:'answer',sdp:answer});
+  if(current!==liveWorkspace.generations[tileIndex]){if(sessionUrl)fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true}).catch(()=>{});pc.close();return}
   liveSessions.set(tileIndex,{pc,sessionUrl,token:access.access_token,cameraId,role,generation:current,stream:mediaStream,state:'LIVE'});setTileState(tileIndex,'LIVE');
  }catch(e){if(pc)pc.close();if(sessionUrl&&access){try{await fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true})}catch{}}if(current===liveWorkspace.generations[tileIndex])setTileState(tileIndex,'FAILED',String(e.message||'live unavailable'))}
 }
