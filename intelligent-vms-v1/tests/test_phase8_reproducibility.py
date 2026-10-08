@@ -204,8 +204,8 @@ def test_observed_thermal_limit_is_hard_failure():
 
 def test_missing_thermal_is_warning_by_default_and_failure_when_required():
     results = [
-        result(benchmark_id=f"b{i}", thermal_measured=False)
-        for i in range(3)
+        result(benchmark_id=f"b{index}", throughput=1000 + (index * 20), thermal_measured=False)
+        for index in range(3)
     ]
     default_group = reproducibility.build_report(results=results)["groups"][0]
     assert default_group["status"] == "PASS"
@@ -221,8 +221,12 @@ def test_missing_thermal_is_warning_by_default_and_failure_when_required():
 
 def test_low_frequency_ratio_is_visible_as_throttling_dvfs_warning():
     results = [
-        result(benchmark_id=f"b{i}", cpu_freq_ratio_min=0.40)
-        for i in range(3)
+        result(
+            benchmark_id=f"b{index}",
+            throughput=1000 + (index * 20),
+            cpu_freq_ratio_min=0.40,
+        )
+        for index in range(3)
     ]
     group = reproducibility.build_report(results=results)["groups"][0]
     assert group["status"] == "PASS"
@@ -275,7 +279,7 @@ def test_three_copies_of_one_benchmark_fail_independent_repeat_gate():
     reasons = " ".join(group["reasons"])
     assert "duplicate benchmark identities" in reasons
     assert "same-run" in reasons
-    assert "duplicate benchmark fingerprints" in reasons
+    assert "duplicate benchmark content fingerprints" in reasons
     assert len(group["benchmark_fingerprints"]) == 1
     assert list(group["benchmark_fingerprints"]) == ["same-run"]
 
@@ -290,11 +294,11 @@ def test_repeated_benchmark_id_with_different_payloads_is_not_three_repeats():
     group = reproducibility.build_report(results=results)["groups"][0]
 
     assert group["status"] == "FAIL"
-    assert group["repeat_count"] == 1
+    assert group["repeat_count"] == 3
     reasons = " ".join(group["reasons"])
     assert "duplicate benchmark identities" in reasons
     assert "same-run" in reasons
-    assert "duplicate benchmark fingerprints" not in reasons
+    assert "duplicate benchmark content fingerprints" not in reasons
 
 
 def test_extra_copy_does_not_satisfy_independent_repeat_gate():
@@ -311,7 +315,48 @@ def test_extra_copy_does_not_satisfy_independent_repeat_gate():
     reasons = " ".join(group["reasons"])
     assert "duplicate benchmark identities" in reasons
     assert "run-1" in reasons
-    assert group["repeat_count"] == 3
+    assert group["repeat_count"] == 4
+
+
+def _relabeled_copies(source, *, retimestamp):
+    copies = []
+    for index in range(3):
+        item = copy.deepcopy(source)
+        item["benchmark_id"] = f"copy-{index}"
+        if retimestamp:
+            item["environment"]["captured_at"] = f"2026-09-26T00:0{index}:00+00:00"
+            item["workload"]["started_at"] = f"2026-09-26T01:0{index}:00+00:00"
+        copies.append(item)
+    return copies
+
+
+def test_relabeled_copies_of_one_measurement_fail_independent_repeat_gate():
+    source = result(benchmark_id="physical-run", throughput=1000, p95_ms=10.0)
+    copies = _relabeled_copies(source, retimestamp=False)
+
+    report = reproducibility.build_report(results=copies)
+
+    assert report["summary"] == {"groups": 1, "passed": 0, "failed": 1}
+    group = report["groups"][0]
+    assert group["status"] == "FAIL"
+    assert group["repeat_count"] == 1
+    reasons = " ".join(group["reasons"])
+    assert "duplicate benchmark content fingerprints" in reasons
+    assert "QUALIFIED" not in group["status"]
+
+
+def test_relabeled_retimestamped_copies_fail_independent_repeat_gate():
+    source = result(benchmark_id="physical-run", throughput=1000, p95_ms=10.0)
+    copies = _relabeled_copies(source, retimestamp=True)
+
+    group = reproducibility.build_report(results=copies)["groups"][0]
+
+    assert group["status"] == "FAIL"
+    assert group["repeat_count"] == 1
+    assert "duplicate benchmark content fingerprints" in " ".join(group["reasons"])
+    assert len({item["benchmark_id"] for item in copies}) == 3
+    assert len({item["environment"]["captured_at"] for item in copies}) == 3
+    assert len({item["workload"]["started_at"] for item in copies}) == 3
 
 
 def test_three_distinct_benchmarks_still_pass_independent_repeat_gate():

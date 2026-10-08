@@ -1,4 +1,6 @@
 import copy
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -142,8 +144,8 @@ def test_three_repeats_use_conservative_minimum_and_n_plus_one():
 def test_two_repeats_remain_unqualified():
     output = matrix.build_matrix(
         results=[
-            fake_result(benchmark_id="b1"),
-            fake_result(benchmark_id="b2"),
+            fake_result(benchmark_id="b1", capacity=1000),
+            fake_result(benchmark_id="b2", capacity=900),
         ],
         demand=demand(),
     )
@@ -155,9 +157,9 @@ def test_two_repeats_remain_unqualified():
 def test_mixed_commits_do_not_combine_into_repeat_count():
     output = matrix.build_matrix(
         results=[
-            fake_result(benchmark_id="b1", commit="commit-a"),
-            fake_result(benchmark_id="b2", commit="commit-a"),
-            fake_result(benchmark_id="b3", commit="commit-b"),
+            fake_result(benchmark_id="b1", commit="commit-a", capacity=1000),
+            fake_result(benchmark_id="b2", commit="commit-a", capacity=900),
+            fake_result(benchmark_id="b3", commit="commit-b", capacity=950),
         ],
         demand=demand(),
     )
@@ -215,9 +217,9 @@ def test_missing_deployment_demand_is_never_guessed():
 def test_roles_without_measured_workload_stay_unqualified():
     output = matrix.build_matrix(
         results=[
-            fake_result(benchmark_id="b1"),
-            fake_result(benchmark_id="b2"),
-            fake_result(benchmark_id="b3"),
+            fake_result(benchmark_id="b1", capacity=1000),
+            fake_result(benchmark_id="b2", capacity=1100),
+            fake_result(benchmark_id="b3", capacity=1200),
         ],
         demand={
             "required_roles": {
@@ -244,8 +246,8 @@ def test_roles_without_measured_workload_stay_unqualified():
 def test_different_nic_or_storage_identity_does_not_combine_repeats():
     output = matrix.build_matrix(
         results=[
-            fake_result(benchmark_id="b1", nic_speed_mbps=10000),
-            fake_result(benchmark_id="b2", nic_speed_mbps=10000),
+            fake_result(benchmark_id="b1", nic_speed_mbps=10000, capacity=1000),
+            fake_result(benchmark_id="b2", nic_speed_mbps=10000, capacity=900),
             fake_result(
                 benchmark_id="b3",
                 nic_speed_mbps=1000,
@@ -261,8 +263,8 @@ def test_different_nic_or_storage_identity_does_not_combine_repeats():
 def test_reproducibility_filter_excludes_unapproved_benchmark_ids():
     results = [
         fake_result(benchmark_id="b1", capacity=1000),
-        fake_result(benchmark_id="b2", capacity=1000),
-        fake_result(benchmark_id="b3", capacity=1000),
+        fake_result(benchmark_id="b2", capacity=1010),
+        fake_result(benchmark_id="b3", capacity=1020),
         fake_result(benchmark_id="unapproved-fast-run", capacity=100000),
     ]
     approved = {
@@ -315,8 +317,8 @@ def test_reproducibility_report_parser_returns_only_pass_group_fingerprints(tmp_
 def test_changed_result_is_rejected_even_when_benchmark_id_was_approved():
     approved_results = [
         fake_result(benchmark_id="b1", capacity=1000),
-        fake_result(benchmark_id="b2", capacity=1000),
-        fake_result(benchmark_id="b3", capacity=1000),
+        fake_result(benchmark_id="b2", capacity=1010),
+        fake_result(benchmark_id="b3", capacity=1020),
     ]
     approved = {
         item["benchmark_id"]: common.result_fingerprint(item)
@@ -349,7 +351,7 @@ def test_three_copies_of_one_benchmark_cannot_qualify_hardware_matrix():
     role = output["profiles"][0]["roles"]["event_ingest"]
     assert role["status"] == "UNQUALIFIED"
     assert "duplicate benchmark identities" in role["reason"]
-    assert "duplicate benchmark fingerprints" in role["reason"]
+    assert "duplicate benchmark content fingerprints" in role["reason"]
     assert "same-run" in role["reason"]
     assert output["qualified_evidence"] == []
     assert "observed_capacity_per_node_min" not in role
@@ -369,7 +371,7 @@ def test_repeated_benchmark_id_cannot_qualify_even_when_payloads_differ():
     role = output["profiles"][0]["roles"]["event_ingest"]
     assert role["status"] == "UNQUALIFIED"
     assert "duplicate benchmark identities" in role["reason"]
-    assert "duplicate benchmark fingerprints" not in role["reason"]
+    assert "duplicate benchmark content fingerprints" not in role["reason"]
     assert output["qualified_evidence"] == []
     assert "observed_capacity_per_node_min" not in role
 
@@ -429,7 +431,7 @@ def test_duplicate_fingerprint_with_distinct_ids_cannot_qualify():
     copies = [
         matrix.Evidence(
             benchmark_id=f"run-{index}",
-            fingerprint=source.fingerprint,
+            content_fingerprint=source.content_fingerprint,
             commit_sha=source.commit_sha,
             hardware_key=source.hardware_key,
             hardware=source.hardware,
@@ -453,7 +455,184 @@ def test_duplicate_fingerprint_with_distinct_ids_cannot_qualify():
         role="event_ingest",
         dimension="events_per_second",
     )
-    assert reason == "duplicate benchmark fingerprints are not independent repeats"
+    assert reason == "duplicate benchmark content fingerprints are not independent repeats"
+
+
+def _relabeled_copies(source, *, retimestamp):
+    copies = []
+    for index in range(3):
+        item = copy.deepcopy(source)
+        item["benchmark_id"] = f"copy-{index}"
+        if retimestamp:
+            item["environment"]["captured_at"] = f"2026-09-26T00:0{index}:00+00:00"
+            item["workload"]["started_at"] = f"2026-09-26T01:0{index}:00+00:00"
+        copies.append(item)
+    return copies
+
+
+def _assert_unqualified_duplicate_content(output):
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert "duplicate benchmark content fingerprints" in role["reason"]
+    assert output["qualified_evidence"] == []
+    assert "observed_capacity_per_node_min" not in role
+    assert "nodes_required" not in role
+    assert role["status"] != "QUALIFIED_FROM_MEASURED_EVIDENCE"
+
+
+def test_relabeled_copies_cannot_qualify_hardware_matrix():
+    source = fake_result(benchmark_id="physical-run", capacity=1000)
+    copies = _relabeled_copies(source, retimestamp=False)
+
+    direct = matrix.build_matrix(results=copies, demand=demand(1500))
+    _assert_unqualified_duplicate_content(direct)
+
+    approved = {
+        item["benchmark_id"]: common.result_fingerprint(item)
+        for item in copies
+    }
+    forced = matrix.build_matrix(
+        results=copies,
+        demand=demand(1500),
+        approved_benchmark_fingerprints=approved,
+    )
+    _assert_unqualified_duplicate_content(forced)
+
+
+def test_relabeled_retimestamped_copies_cannot_qualify_hardware_matrix():
+    source = fake_result(benchmark_id="physical-run", capacity=1000)
+    copies = _relabeled_copies(source, retimestamp=True)
+
+    direct = matrix.build_matrix(results=copies, demand=demand(1500))
+    _assert_unqualified_duplicate_content(direct)
+
+    approved = {
+        item["benchmark_id"]: common.result_fingerprint(item)
+        for item in copies
+    }
+    forced = matrix.build_matrix(
+        results=copies,
+        demand=demand(1500),
+        approved_benchmark_fingerprints=approved,
+    )
+    _assert_unqualified_duplicate_content(forced)
+
+
+def test_relabeled_copies_fail_reproducibility_handoff():
+    source = fake_result(benchmark_id="physical-run", capacity=1000)
+    copies = _relabeled_copies(source, retimestamp=False)
+    report = reproducibility.build_report(results=copies)
+    assert report["groups"][0]["status"] == "FAIL"
+    assert report["groups"][0]["repeat_count"] == 1
+
+    approved = {}
+    for group in report["groups"]:
+        if group["status"] == "PASS":
+            approved.update(group["benchmark_fingerprints"])
+    assert approved == {}
+
+    output = matrix.build_matrix(
+        results=copies,
+        demand=demand(1500),
+        approved_benchmark_fingerprints=approved,
+    )
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+    assert "nodes_required" not in role
+
+
+def test_relabeled_retimestamped_copies_fail_reproducibility_handoff():
+    source = fake_result(benchmark_id="physical-run", capacity=1000)
+    copies = _relabeled_copies(source, retimestamp=True)
+    report = reproducibility.build_report(results=copies)
+    assert report["groups"][0]["status"] == "FAIL"
+    assert report["groups"][0]["repeat_count"] == 1
+    assert len({item["environment"]["captured_at"] for item in copies}) == 3
+    assert len({item["workload"]["started_at"] for item in copies}) == 3
+
+    approved = {}
+    for group in report["groups"]:
+        if group["status"] == "PASS":
+            approved.update(group["benchmark_fingerprints"])
+    output = matrix.build_matrix(
+        results=copies,
+        demand=demand(1500),
+        approved_benchmark_fingerprints=approved,
+    )
+    assert output["profiles"][0]["roles"]["event_ingest"]["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+
+
+def _run_phase8_cli(script, args):
+    return subprocess.run(
+        [sys.executable, str(TOOLS / script), *args],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _assert_cli_rejects_copies(tmp_path, copies):
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    for index, item in enumerate(copies):
+        (result_dir / f"run-{index}.json").write_text(
+            json.dumps(item),
+            encoding="utf-8",
+        )
+    demand_path = tmp_path / "demand.json"
+    demand_path.write_text(json.dumps(demand(1500)), encoding="utf-8")
+    report_path = tmp_path / "reproducibility.json"
+    matrix_path = tmp_path / "hardware-matrix.json"
+
+    reproducibility_cli = _run_phase8_cli(
+        "phase8_reproducibility.py",
+        [
+            "--results",
+            str(result_dir),
+            "--output",
+            str(report_path),
+            "--fail-on-rejected-groups",
+        ],
+    )
+    assert reproducibility_cli.returncode != 0, reproducibility_cli.stdout + reproducibility_cli.stderr
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["groups"][0]["status"] == "FAIL"
+    assert report["groups"][0]["repeat_count"] == 1
+    assert "duplicate benchmark content fingerprints" in " ".join(report["groups"][0]["reasons"])
+
+    matrix_cli = _run_phase8_cli(
+        "phase8_hardware_matrix.py",
+        [
+            "--results",
+            str(result_dir),
+            "--demand",
+            str(demand_path),
+            "--reproducibility-report",
+            str(report_path),
+            "--output",
+            str(matrix_path),
+        ],
+    )
+    assert matrix_cli.returncode == 0, matrix_cli.stdout + matrix_cli.stderr
+    produced = json.loads(matrix_path.read_text(encoding="utf-8"))
+    role = produced["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert produced["qualified_evidence"] == []
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in role["status"]
+    assert "nodes_required" not in role
+
+
+def test_relabeled_copies_fail_cli_reproducibility_and_hardware_matrix(tmp_path):
+    source = fake_result(benchmark_id="physical-run", capacity=1000)
+    _assert_cli_rejects_copies(tmp_path, _relabeled_copies(source, retimestamp=False))
+
+
+def test_relabeled_retimestamped_copies_fail_cli_reproducibility_and_hardware_matrix(tmp_path):
+    source = fake_result(benchmark_id="physical-run", capacity=1000)
+    _assert_cli_rejects_copies(tmp_path, _relabeled_copies(source, retimestamp=True))
 
 
 def test_three_distinct_benchmarks_still_qualify_hardware_matrix():

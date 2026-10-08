@@ -48,6 +48,56 @@ def result_fingerprint(result: dict[str, Any]) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
+def content_fingerprint(result: dict[str, Any]) -> str:
+    """Hash measured benchmark content, ignoring run labels and clock stamps.
+
+    build_result writes three fields that label a run without measuring it:
+    benchmark_id, environment.captured_at, and workload.started_at. Those are
+    omitted, as are underscore-prefixed internal fields. Every measured value
+    stays in the hash, including durations, result metrics, resource summaries,
+    and hardware descriptors. commit_sha stays because it is the measured
+    source revision, not a per-run label.
+
+    Two results whose remaining canonical JSON is byte-identical share this
+    fingerprint. Three genuine runs that aggregate to the same metrics,
+    resources, durations, and hardware descriptors are therefore not
+    independent repeats. That fail-closed outcome is accepted: the gate cannot
+    tell those runs from copies.
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        Hexadecimal SHA-256 of the measured content.
+    """
+    payload = {
+        key: value
+        for key, value in result.items()
+        if not str(key).startswith("_") and key != "benchmark_id"
+    }
+    environment = payload.get("environment")
+    if isinstance(environment, dict):
+        payload["environment"] = {
+            key: value
+            for key, value in environment.items()
+            if key != "captured_at"
+        }
+    workload = payload.get("workload")
+    if isinstance(workload, dict):
+        payload["workload"] = {
+            key: value
+            for key, value in workload.items()
+            if key != "started_at"
+        }
+    material = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
 def utc_iso() -> str:
     """Return the current timezone-aware UTC instant as ISO-8601 text."""
     return datetime.now(timezone.utc).isoformat()

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from phase8_benchmark_common import result_fingerprint, validate_result
+from phase8_benchmark_common import content_fingerprint, result_fingerprint, validate_result
 from phase8_hardware_matrix import capacity_dimension, hardware_key
 
 
@@ -177,18 +177,20 @@ def review_group(
 
     Returns:
         PASS/FAIL group review with fingerprints, reasons, warnings and metrics.
-        Duplicate benchmark identities and duplicate result fingerprints fail the
-        group and do not increase the independent repeat count.
+        Duplicate benchmark identities and duplicate measured-content fingerprints
+        fail the group. repeat_count is the number of unique content fingerprints,
+        not the number of submitted labels.
     """
     reasons: list[str] = []
     warnings: list[str] = []
 
     identities = [str(result["benchmark_id"]) for result in results]
     fingerprints = [result_fingerprint(result) for result in results]
+    measured = [content_fingerprint(result) for result in results]
     duplicate_identities = _repeated_values(identities)
-    duplicate_fingerprints = _repeated_values(fingerprints)
-    # List length is not evidence. One copied run must not satisfy min_repeats.
-    independent_repeats = min(len(set(identities)), len(set(fingerprints)))
+    duplicate_content = _repeated_values(measured)
+    # Independence is measured content. Relabeling one run cannot raise the count.
+    independent_repeats = len(set(measured))
     submitted_count = len(results)
 
     if duplicate_identities:
@@ -196,8 +198,10 @@ def review_group(
             "duplicate benchmark identities are not independent repeats: "
             + ", ".join(duplicate_identities)
         )
-    if duplicate_fingerprints:
-        reasons.append("duplicate benchmark fingerprints are not independent repeats")
+    if duplicate_content:
+        reasons.append(
+            "duplicate benchmark content fingerprints are not independent repeats"
+        )
     if independent_repeats < min_repeats:
         reasons.append(
             f"repeat_count {independent_repeats} < required {min_repeats}"

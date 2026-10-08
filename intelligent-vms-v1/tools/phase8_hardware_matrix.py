@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from phase8_benchmark_common import result_fingerprint, validate_result
+from phase8_benchmark_common import content_fingerprint, result_fingerprint, validate_result
 
 
 MATRIX_VERSION = "phase8-hardware-matrix-v1"
@@ -22,7 +22,7 @@ class Evidence:
 
     Attributes:
         benchmark_id: Source benchmark identifier.
-        fingerprint: Immutable full-result fingerprint, including benchmark_id.
+        content_fingerprint: Measured-content fingerprint, excluding run labels and clock stamps.
         commit_sha: Benchmarked source revision.
         hardware_key: Stable hardware/environment identity.
         hardware: Captured hardware metadata.
@@ -39,7 +39,7 @@ class Evidence:
     """
 
     benchmark_id: str
-    fingerprint: str
+    content_fingerprint: str
     commit_sha: str
     hardware_key: str
     hardware: dict[str, Any]
@@ -77,13 +77,13 @@ def _repeated_values(values: list[str]) -> list[str]:
 
 
 def _duplicate_repeat_reason(items: list[Evidence]) -> str | None:
-    """Reject copies that reuse one benchmark identity or result fingerprint.
+    """Reject copies that reuse one benchmark identity or measured-content fingerprint.
 
     Args:
         items: Evidence rows already grouped by role, dimension, commit and hardware.
 
     Returns:
-        Rejection reason when an identity or fingerprint repeats, otherwise None.
+        Rejection reason when an identity or content fingerprint repeats, otherwise None.
     """
     reasons: list[str] = []
     duplicate_identities = _repeated_values([item.benchmark_id for item in items])
@@ -92,9 +92,11 @@ def _duplicate_repeat_reason(items: list[Evidence]) -> str | None:
             "duplicate benchmark identities are not independent repeats: "
             + ", ".join(duplicate_identities)
         )
-    duplicate_fingerprints = _repeated_values([item.fingerprint for item in items])
-    if duplicate_fingerprints:
-        reasons.append("duplicate benchmark fingerprints are not independent repeats")
+    duplicate_content = _repeated_values([item.content_fingerprint for item in items])
+    if duplicate_content:
+        reasons.append(
+            "duplicate benchmark content fingerprints are not independent repeats"
+        )
     if not reasons:
         return None
     return "; ".join(reasons)
@@ -259,7 +261,7 @@ def extract_evidence(
     env = result["environment"]
     return Evidence(
         benchmark_id=str(result["benchmark_id"]),
-        fingerprint=result_fingerprint(result),
+        content_fingerprint=content_fingerprint(result),
         commit_sha=str(env["commit_sha"]),
         hardware_key=hardware_key(result),
         hardware=dict(env.get("hardware", {})),
@@ -317,8 +319,10 @@ def grouped_qualified_evidence(
 
     Returns:
         Best conservative qualified evidence row for each role/dimension pair.
-        Groups that reuse a benchmark identity or result fingerprint are omitted
-        so one run cannot satisfy the independent-repeat minimum.
+        Groups that reuse a benchmark identity or measured-content fingerprint are
+        omitted. repeat_count is the number of unique content fingerprints, so one
+        relabeled measurement cannot satisfy the independent-repeat minimum.
+        Byte-identical aggregated measurements fail closed and are not qualified.
     """
     groups: dict[tuple[str, str, str, str], list[Evidence]] = {}
     for item in evidence:
@@ -331,7 +335,7 @@ def grouped_qualified_evidence(
     for (role, dimension, commit_sha, hw_key), items in groups.items():
         if _duplicate_repeat_reason(items) is not None:
             continue
-        independent_repeats = len({item.benchmark_id for item in items})
+        independent_repeats = len({item.content_fingerprint for item in items})
         if independent_repeats < min_repeats:
             continue
         conservative_capacity = min(i.observed_capacity for i in items)
@@ -371,8 +375,10 @@ def build_matrix(
 ) -> dict[str, Any]:
     """Build deployment node requirements strictly from qualified measured evidence.
 
-    Duplicate benchmark identities and duplicate result fingerprints are not
-    independent repeats and cannot produce QUALIFIED_FROM_MEASURED_EVIDENCE.
+    Duplicate benchmark identities and duplicate measured-content fingerprints are
+    not independent repeats and cannot produce QUALIFIED_FROM_MEASURED_EVIDENCE.
+    repeat_count is the number of unique content fingerprints. Byte-identical
+    aggregated measurements fail closed even when their run labels differ.
 
     Args:
         results: Phase-8 benchmark results.
