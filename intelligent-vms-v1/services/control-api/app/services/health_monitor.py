@@ -102,6 +102,28 @@ def evaluate_state(
     return current, next_counters
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Label a naive persisted timestamp as UTC without changing aware values.
+
+    SQLite returns naive datetimes for timezone-aware columns even when the
+    value was stored as UTC. Those values are labeled UTC in memory so they
+    can be subtracted from an aware clock. The wall time is not shifted.
+    Aware values, including PostgreSQL timestamptz results, are returned as
+    the same object so an existing offset is not replaced or applied again.
+    This helper does not write the row.
+
+    Args:
+        value: Timestamp read from the database, or None.
+
+    Returns:
+        The original aware datetime, a UTC-labeled copy of a naive datetime,
+        or None when value is None.
+    """
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def safe_path_detail(item: dict | None) -> dict:
     """Return only approved non-sensitive MediaMTX path diagnostic fields.
 
@@ -356,9 +378,12 @@ class HealthMonitor:
                         recovery_threshold=settings.health_recovery_threshold,
                     )
 
+                    # SQLite drops tzinfo on read. Label that UTC instant for the
+                    # comparison only; aware values and the stored row stay as read.
+                    observed_at = _as_utc(row.observed_at)
                     heartbeat_due = (
-                        row.observed_at is None
-                        or now - row.observed_at
+                        observed_at is None
+                        or now - observed_at
                         >= timedelta(seconds=settings.health_heartbeat_seconds)
                     )
                     state_changed = after != before
