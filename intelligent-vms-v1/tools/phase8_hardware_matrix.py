@@ -115,7 +115,7 @@ def _role_duplicate_reason(
 
     Returns:
         A duplicate identity or fingerprint reason for a qualified-threshold group,
-        or None when no such group reused an identity.
+        or None when no such group reused an identity or fingerprint.
     """
     groups: dict[tuple[str, str], list[Evidence]] = {}
     for item in evidence:
