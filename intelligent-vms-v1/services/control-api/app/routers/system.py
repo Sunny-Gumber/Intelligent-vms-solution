@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 
-from app.core.auth import Principal, require_roles
+from app.core.auth import Principal, require_global_admin, require_roles
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.observability import READY
@@ -121,13 +121,16 @@ async def outbox_status(
 @router.post("/outbox/{message_id}/requeue")
 async def outbox_requeue(
     message_id: str,
-    principal: Principal = Depends(require_roles("admin")),
+    principal: Principal = Depends(require_global_admin()),
 ):
     """Requeue one dead-letter outbox message for delivery retry.
 
+    The outbox is cross-tenant operational state. Only a global administrator
+    (role admin and tenant_id "*") may requeue a dead-letter message.
+
     Args:
         message_id: Durable outbox message identifier.
-        principal: Authorized administrator.
+        principal: Global administrator (role admin and tenant_id "*").
 
     Returns:
         Confirmation object when the message is requeued.
