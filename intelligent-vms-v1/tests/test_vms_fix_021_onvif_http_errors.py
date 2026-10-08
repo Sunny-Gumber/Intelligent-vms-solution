@@ -1004,6 +1004,15 @@ def _call_name(node: ast.Call) -> str:
     return ""
 
 
+def _enclosing_function(node: ast.AST) -> str | None:
+    current = node
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current.name
+        current = getattr(current, "parent", None)
+    return None
+
+
 def _inside_device_call(node: ast.AST) -> bool:
     current = node
     while current is not None:
@@ -1032,12 +1041,27 @@ def test_every_onvif_route_wraps_device_calls():
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node)
+        cleanup_delete = (
+            name == "mediamtx.delete_path"
+            and _enclosing_function(node) == "_cleanup_provisioned_paths"
+        )
+        if cleanup_delete:
+            continue
         if (name in device_names or name.startswith("mediamtx.")) and not _inside_device_call(node):
             leaks.append(f"line {node.lineno}: {name}")
         if name == "asyncio.to_thread" and node.args and isinstance(node.args[0], ast.Name):
             if node.args[0].id in device_names and not _inside_device_call(node):
                 leaks.append(f"line {node.lineno}: asyncio.to_thread({node.args[0].id})")
     assert leaks == []
+    cleanup = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_cleanup_provisioned_paths"
+    )
+    cleanup_source = ast.get_source_segment(source, cleanup) or ""
+    assert "exc.__class__.__name__" in cleanup_source
+    assert "str(exc)" not in cleanup_source
+    assert "{exc}" not in cleanup_source
 
     defined = {
         node.name

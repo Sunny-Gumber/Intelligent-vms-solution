@@ -111,12 +111,14 @@ async def _cleanup_provisioned_paths(stream_keys: list[str]) -> None:
         None after every supplied path has been attempted.
 
     Notes:
-        Cleanup failures are logged without upstream exception text so a
-        credential-bearing MediaMTX error cannot leak camera secrets.
+        This call stays outside ``_device_call``. The handler catches every
+        exception and logs only the original class name, so a credential-bearing
+        MediaMTX error cannot leak and the class recorded by operations stays
+        the class the media call raised.
     """
     for stream_key in reversed(stream_keys):
         try:
-            await _device_call(mediamtx.delete_path(stream_key))
+            await mediamtx.delete_path(stream_key)
         except Exception as exc:
             log.warning(
                 "onvif_onboard_cleanup_failed stream_key=%s reason=%s",
