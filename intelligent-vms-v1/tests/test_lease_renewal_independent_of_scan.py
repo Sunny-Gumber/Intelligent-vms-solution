@@ -16,12 +16,13 @@ import logging
 import math
 import os
 import socket
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -768,6 +769,9 @@ def test_default_budget_covers_reviewed_fleet_without_shortening_lease():
 
     assert settings.placement_lease_seconds == 60
     assert settings.placement_renewal_max_assignments >= 7000 * 3
+    # One PostgreSQL sample of that page was inside 2s and too close to use 2s
+    # as the deadline. The default deadline stays above that sample.
+    assert settings.placement_renewal_max_run_seconds >= 4
     assert settings.placement_renewal_batch_size >= 1
     assert settings.placement_interval_seconds >= 2
     assert settings.placement_renewal_missed_lock_cycles >= 1
@@ -781,6 +785,29 @@ def test_default_budget_covers_reviewed_fleet_without_shortening_lease():
     page_interval = pages * settings.placement_interval_seconds
     assert required < settings.placement_lease_seconds
     assert required > page_interval
+
+
+def test_page_longer_than_the_lease_timeline_is_rejected():
+    """QA-014-302. A max run of the slow page is not silently inside the lease.
+
+    Charging that run on the grant and again on the revisit, with the default
+    allowances, is 77.904s. Startup rejects it. The lease stays 60s.
+    """
+
+    try:
+        Settings(
+            placement_lease_seconds=60,
+            placement_interval_seconds=10,
+            placement_renewal_batch_size=21000,
+            placement_renewal_max_assignments=21000,
+            placement_renewal_max_run_seconds=20.702,
+        )
+    except ValidationError as exc:
+        message = str(exc)
+        assert "renewal budget" in message.lower(), message
+        assert ">= lease 60s" in message, message
+    else:
+        raise AssertionError("a 20.702s page was accepted against a 60s lease")
 
 
 def test_page_interval_inside_the_lease_is_rejected():
@@ -1094,10 +1121,11 @@ def _repro_budget_kwargs():
 def test_retry_sleeps_are_inside_the_renewal_budget():
     """Retry sleeps on every cycle, not only on a full miss, stay inside the lease.
 
-    The QA-014-101 inputs are 3 pages, a 12s run, a 9s retry sleep, and 11s of
-    allowances. Charging that retry sleep on each successful page as well makes
-    the required budget 93s. Required equal to the lease stays rejected. The
-    stock defaults stay inside 60s.
+    The QA-014-101 inputs are 3 pages, a 2s max run, a 9s retry sleep, and 11s
+    of allowances. Charging that retry sleep on each successful page, and
+    charging the revisit's own max run, makes the required budget 95s.
+    Required equal to the lease stays rejected. The stock defaults stay inside
+    60s when their page really finishes inside the configured max run.
     """
 
     try:
@@ -1122,10 +1150,10 @@ def test_retry_sleeps_are_inside_the_renewal_budget():
             safety_margin_seconds=1,
             lock_retry_seconds=3,
             lock_retry_limit=4,
-            lease_seconds=93,
+            lease_seconds=95,
         )
     except PlacementRenewalBudgetError as exc:
-        assert "required 93s >= lease 93s" in str(exc), str(exc)
+        assert "required 95s >= lease 95s" in str(exc), str(exc)
     else:
         raise AssertionError("required == lease was accepted")
 
@@ -1964,6 +1992,428 @@ def test_failover_does_not_overwrite_a_newer_generation(tmp_path, monkeypatch, c
             assert "placement_failover_superseded" in caplog.text
             assert "cam-z" in caplog.text
             assert await _revocations(factory) == []
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def _qa_301_budget_kwargs():
+    """The configuration QA-014-301 showed startup accepting at required 59.75s."""
+    return {
+        "placement_lease_seconds": 60,
+        "placement_interval_seconds": 3,
+        "placement_renewal_batch_size": 1,
+        "placement_renewal_max_assignments": 6,
+        "placement_renewal_max_run_seconds": 4,
+        "placement_renewal_missed_lock_cycles": 3,
+        "placement_renewal_fence_poll_seconds": 1,
+        "placement_renewal_clock_skew_seconds": 0,
+        "placement_renewal_safety_margin_seconds": 1,
+        "placement_renewal_lock_retry_seconds": 0.25,
+        "placement_renewal_lock_retry_limit": 4,
+    }
+
+
+def _observed_renewal_seconds(
+    *,
+    pages,
+    interval_seconds,
+    max_run_seconds,
+    missed_lock_cycles,
+    fence_poll_seconds,
+    lock_retry_seconds,
+    lock_retry_limit,
+):
+    """Replay the controller timeline without calling the budget formula.
+
+    The granting run acquires immediately. Every later successful run, including
+    the revisit, burns every retry and then max_run. A full miss burns the
+    retries and the interval and does not spend max_run. Observation is the
+    revisit commit plus one fence poll. No interval is added after that commit.
+    """
+    interval = max(2.0, float(interval_seconds))
+    retry_sleep = float(lock_retry_seconds) * max(0, int(lock_retry_limit) - 1)
+    max_run = float(max_run_seconds)
+    observed = max_run + interval
+    for _page in range(pages - 1):
+        observed += retry_sleep + max_run + interval
+    for _miss in range(int(missed_lock_cycles)):
+        observed += retry_sleep + interval
+    observed += retry_sleep + max_run
+    observed += float(fence_poll_seconds)
+    return observed
+
+
+def test_revisit_max_run_is_inside_the_renewal_budget(tmp_path, monkeypatch):
+    """QA-014-301. The revisit's own max run has to be inside the lease.
+
+    Startup must reject lease 60, interval 3, batch 1, ceiling 6, max run 4,
+    three missed cycles, fence 1, skew 0, margin 1, retry 0.25s and 4 attempts.
+    With the assert bypassed, the same controller loop commits the revisit at
+    12:01:01.75 and the 1s fence poll observes it at 12:01:02.75.
+    """
+
+    try:
+        Settings(**_qa_301_budget_kwargs())
+    except ValidationError as exc:
+        message = str(exc)
+        assert "renewal budget" in message.lower(), message
+        assert "required 63.75s >= lease 60s" in message, message
+    else:
+        raise AssertionError("budget 59.75s was accepted; the revisit still spends max_run")
+
+    async def scenario():
+        _configure_budget(
+            monkeypatch,
+            lease=60,
+            interval=3,
+            scan_batch=1,
+            renewal_batch=1,
+            max_assignments=6,
+            max_run=4,
+            missed_lock_cycles=3,
+            fence_poll=1,
+            clock_skew=0,
+            safety_margin=1,
+            lock_retry_seconds=0.25,
+            lock_retry_limit=4,
+        )
+        monkeypatch.setattr(placement, "assert_settings_renewal_budget", lambda _values: 0.0)
+        factory = await _session_factory(tmp_path, "revisit-timeline.db")
+        cameras = [f"cam-{index:02d}" for index in range(1, 7)]
+        await _seed(
+            factory,
+            [
+                _node(NODE_ID, T0),
+                *[_camera(camera_id) for camera_id in cameras],
+                *[
+                    _assignment(camera_id, NODE_ID, T0 + timedelta(seconds=50))
+                    for camera_id in cameras
+                ],
+            ],
+        )
+        monkeypatch.setattr(placement, "SessionLocal", factory)
+        monkeypatch.setattr(placement, "datetime", MutableClock)
+        controller = _load_controller()
+        state = {"phase": "pages", "page": 0, "attempt": 0, "miss": 0}
+
+        async def lock(_session):
+            if state["phase"] == "pages" and state["page"] == 0:
+                state["page"] = 1
+                acquired = True
+            elif state["phase"] == "pages":
+                if state["attempt"] < 3:
+                    state["attempt"] += 1
+                    return False
+                state["attempt"] = 0
+                state["page"] += 1
+                if state["page"] == 6:
+                    state["phase"] = "miss"
+                acquired = True
+            elif state["phase"] == "miss":
+                state["attempt"] += 1
+                if state["attempt"] < 4:
+                    return False
+                state["attempt"] = 0
+                state["miss"] += 1
+                if state["miss"] == 3:
+                    state["phase"] = "revisit"
+                return False
+            else:
+                if state["attempt"] < 3:
+                    state["attempt"] += 1
+                    return False
+                acquired = True
+            if acquired:
+                async with factory() as heartbeat_session:
+                    async with heartbeat_session.begin():
+                        node = await heartbeat_session.get(InfrastructureNodeEntity, NODE_ID)
+                        node.heartbeat_at = MutableClock.instant
+                MutableClock.instant = MutableClock.instant + timedelta(seconds=4)
+            return True
+
+        async def advance(delay):
+            MutableClock.instant = MutableClock.instant + timedelta(seconds=delay)
+
+        monkeypatch.setattr(placement, "_leader_lock", lock)
+        monkeypatch.setattr(placement.asyncio, "sleep", advance)
+        monkeypatch.setattr(controller.asyncio, "sleep", advance)
+        MutableClock.instant = T0
+        stamps = []
+        leases = []
+        for index in range(10):
+            await placement.run_placement_once()
+            stamps.append(MutableClock.instant)
+            row = {item.camera_id: item for item in await _assignments(factory)}["cam-01"]
+            leases.append(_as_utc(row.lease_expires_at))
+            if index < 9:
+                await controller.asyncio.sleep(
+                    controller.resolved_placement_interval_seconds(settings.placement_interval_seconds)
+                )
+        assert stamps[0] == T0 + timedelta(seconds=4)
+        assert stamps[5] == T0 + timedelta(seconds=42.75)
+        assert leases[6] == T0 + timedelta(seconds=60)
+        assert leases[8] == T0 + timedelta(seconds=60)
+        commit_at = stamps[9]
+        assert commit_at == T0 + timedelta(seconds=61.75)
+        observation = commit_at + timedelta(seconds=1)
+        lease_end = T0 + timedelta(seconds=60)
+        assert observation == T0 + timedelta(seconds=62.75)
+        assert observation > lease_end + timedelta(seconds=GRACE_SECONDS)
+        assert not effective_authority_active(lease_end, None, observation, 0)
+        assert not effective_authority_active(lease_end, None, observation, GRACE_SECONDS)
+        renewed = {item.camera_id: item for item in await _assignments(factory)}["cam-01"]
+        assert renewed.node_id == NODE_ID
+        assert renewed.generation == 1
+        assert _as_utc(renewed.lease_expires_at) == commit_at - timedelta(seconds=4) + timedelta(seconds=60)
+
+    asyncio.run(scenario())
+
+
+def test_every_accepted_renewal_budget_observes_before_lease_end():
+    """Accepted settings observe the revisit before lease end, without fence grace.
+
+    The timeline is independent of renewal_budget_seconds. QA-014-301's point
+    and the tight grid point that used to be accepted are in the set, and both
+    are rejected.
+    """
+
+    lease = 60
+    ceilings = (1, 4, 6, 21000)
+    batches = (1, 2, 21000)
+    intervals = (2, 3, 5, 10)
+    max_runs = (0, 2, 4, 10)
+    missed_cycles = (1, 3)
+    fences = (1, 5)
+    skews = (0, 5)
+    margins = (1, 5)
+    retries = ((0.25, 4), (0.75, 2), (2, 3), (3, 4))
+    accepted = 0
+    for ceiling in ceilings:
+        for batch in batches:
+            for interval in intervals:
+                for max_run in max_runs:
+                    for missed in missed_cycles:
+                        for fence in fences:
+                            for skew in skews:
+                                for margin in margins:
+                                    for retry_seconds, retry_limit in retries:
+                                        pages = math.ceil(ceiling / batch)
+                                        observed = _observed_renewal_seconds(
+                                            pages=pages,
+                                            interval_seconds=interval,
+                                            max_run_seconds=max_run,
+                                            missed_lock_cycles=missed,
+                                            fence_poll_seconds=fence,
+                                            lock_retry_seconds=retry_seconds,
+                                            lock_retry_limit=retry_limit,
+                                        )
+                                        try:
+                                            required = assert_placement_renewal_budget(
+                                                max_assignments=ceiling,
+                                                batch_size=batch,
+                                                interval_seconds=interval,
+                                                max_run_seconds=max_run,
+                                                missed_lock_cycles=missed,
+                                                fence_poll_seconds=fence,
+                                                clock_skew_seconds=skew,
+                                                safety_margin_seconds=margin,
+                                                lock_retry_seconds=retry_seconds,
+                                                lock_retry_limit=retry_limit,
+                                                lease_seconds=lease,
+                                            )
+                                        except PlacementRenewalBudgetError:
+                                            continue
+                                        accepted += 1
+                                        assert observed + skew + margin < lease, (
+                                            ceiling,
+                                            batch,
+                                            interval,
+                                            max_run,
+                                            observed,
+                                        )
+                                        assert abs(required - (observed + skew + margin)) < 1e-9, (
+                                            required,
+                                            observed,
+                                            skew,
+                                            margin,
+                                        )
+    assert accepted > 0
+
+    qa_observed = _observed_renewal_seconds(
+        pages=6,
+        interval_seconds=3,
+        max_run_seconds=4,
+        missed_lock_cycles=3,
+        fence_poll_seconds=1,
+        lock_retry_seconds=0.25,
+        lock_retry_limit=4,
+    )
+    assert qa_observed == 62.75
+    tight_observed = _observed_renewal_seconds(
+        pages=4,
+        interval_seconds=2,
+        max_run_seconds=10,
+        missed_lock_cycles=1,
+        fence_poll_seconds=5,
+        lock_retry_seconds=0.75,
+        lock_retry_limit=2,
+    )
+    assert tight_observed == 68.75
+    for kwargs, observed in (
+        (
+            dict(
+                max_assignments=6,
+                batch_size=1,
+                interval_seconds=3,
+                max_run_seconds=4,
+                missed_lock_cycles=3,
+                fence_poll_seconds=1,
+                clock_skew_seconds=0,
+                safety_margin_seconds=1,
+                lock_retry_seconds=0.25,
+                lock_retry_limit=4,
+            ),
+            qa_observed,
+        ),
+        (
+            dict(
+                max_assignments=4,
+                batch_size=1,
+                interval_seconds=2,
+                max_run_seconds=10,
+                missed_lock_cycles=1,
+                fence_poll_seconds=5,
+                clock_skew_seconds=0,
+                safety_margin_seconds=1,
+                lock_retry_seconds=0.75,
+                lock_retry_limit=2,
+            ),
+            tight_observed,
+        ),
+    ):
+        try:
+            assert_placement_renewal_budget(**kwargs, lease_seconds=60)
+        except PlacementRenewalBudgetError as exc:
+            assert "renewal budget" in str(exc).lower(), str(exc)
+        else:
+            raise AssertionError(f"observation {observed}s was accepted against a 60s lease")
+
+
+def test_max_run_overrun_is_logged_and_the_controller_continues(monkeypatch, caplog):
+    """A rolled-back max run is critical and does not stop the controller."""
+
+    controller = _load_controller()
+
+    async def scenario():
+        async def overrun():
+            return {
+                "scanned": 0,
+                "moved": 0,
+                "unplaced": 0,
+                "deferred_autonomy": 0,
+                "renewed": 0,
+                "renewal_budget_exceeded": False,
+                "renewal_lock_not_acquired": False,
+                "renewal_max_run_exceeded": True,
+                "cursor": None,
+            }
+
+        async def stop_after_one_cycle(_delay):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(controller, "run_placement_once", overrun)
+        monkeypatch.setattr(controller.asyncio, "sleep", stop_after_one_cycle)
+        caplog.set_level(logging.CRITICAL, logger="placement-controller")
+        try:
+            await controller.main()
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("controller did not reach the interval sleep")
+        assert "placement_renewal_max_run_exceeded" in caplog.text
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("database_url", _authority_database_urls())
+def test_max_run_overrun_rolls_the_lease_back(tmp_path, monkeypatch, caplog, database_url):
+    """QA-014-302. A run past max_run commits no lease, including an earlier chunk.
+
+    Two owners are due. The first chunk is written inside the transaction and
+    the second chunk finds the deadline already past. Both leases stay put.
+    On PostgreSQL the same rollback happens when statement_timeout cancels the
+    lease statement.
+    """
+
+    async def scenario():
+        factory, engine = await _open_database(tmp_path, "max-run.db", database_url)
+        try:
+            _configure_budget(
+                monkeypatch,
+                lease=60,
+                interval=10,
+                scan_batch=10,
+                renewal_batch=10,
+                max_assignments=10,
+                max_run=1,
+                lock_retry_limit=1,
+            )
+            monkeypatch.setattr(placement, "_RENEWAL_LEASE_WRITE_CHUNK", 1)
+            original_lease = T0 + timedelta(seconds=50)
+            await _seed(
+                factory,
+                [
+                    _node(NODE_ID, T0),
+                    _camera("cam-01"),
+                    _camera("cam-02"),
+                    _assignment("cam-01", NODE_ID, original_lease, assignment_id="pa-cam-01"),
+                    _assignment("cam-02", NODE_ID, original_lease, assignment_id="pa-cam-02"),
+                ],
+            )
+            monkeypatch.setattr(placement, "SessionLocal", factory)
+            monkeypatch.setattr(placement, "datetime", MutableClock)
+            original_hook = placement._before_renewal_lease_write
+            calls = {"n": 0}
+
+            async def trip_on_second_chunk():
+                calls["n"] += 1
+                if calls["n"] >= 2:
+                    placement._RUN_DEADLINE.set(time.monotonic() - 1)
+                await original_hook()
+
+            monkeypatch.setattr(placement, "_before_renewal_lease_write", trip_on_second_chunk)
+            caplog.set_level(logging.CRITICAL, logger="app.services.placement")
+            MutableClock.instant = T0 + timedelta(seconds=10)
+            await _touch_heartbeat(factory, NODE_ID, MutableClock.instant)
+            result = await placement.run_placement_once()
+            assert result["renewal_max_run_exceeded"] is True, result
+            assert result["renewed"] == 0
+            assert result["moved"] == 0
+            assert "placement_renewal_max_run_exceeded" in caplog.text
+            rows = {row.camera_id: row for row in await _assignments(factory)}
+            assert rows["cam-01"].node_id == NODE_ID
+            assert rows["cam-02"].node_id == NODE_ID
+            assert rows["cam-01"].generation == 1
+            assert rows["cam-02"].generation == 1
+            assert _as_utc(rows["cam-01"].lease_expires_at) == original_lease
+            assert _as_utc(rows["cam-02"].lease_expires_at) == original_lease
+
+            if database_url != "sqlite":
+                monkeypatch.setattr(placement, "_before_renewal_lease_write", original_hook)
+
+                async def cancelled_statement(session, _chunk, _new_lease, _autonomy):
+                    await session.execute(text("SELECT pg_sleep(2)"))
+                    return set()
+
+                monkeypatch.setattr(placement, "_extend_lease_chunk", cancelled_statement)
+                result = await placement.run_placement_once()
+                assert result["renewal_max_run_exceeded"] is True, result
+                assert result["renewed"] == 0
+                rows = {row.camera_id: row for row in await _assignments(factory)}
+                assert _as_utc(rows["cam-01"].lease_expires_at) == original_lease
+                assert _as_utc(rows["cam-02"].lease_expires_at) == original_lease
         finally:
             await engine.dispose()
 

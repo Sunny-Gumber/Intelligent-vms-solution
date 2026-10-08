@@ -36,7 +36,8 @@ async def main():
     renewal for the run and leaves scan and failover running. A missed
     execution lock is retried inside the run, with a short backoff, before
     this cycle sleeps out the full interval. Every attempt failing is logged
-    and does not change a lease.
+    and does not change a lease. A run that passes its configured max run is
+    rolled back, logged, and does not change a lease.
 
     Returns:
         None under normal operation; the coroutine runs until cancelled.
@@ -59,6 +60,8 @@ async def main():
                 )
             if result.get("renewal_lock_not_acquired"):
                 log.critical("placement_renewal_lock_not_acquired")
+            if result.get("renewal_max_run_exceeded"):
+                log.critical("placement_renewal_max_run_exceeded")
             log.info(
                 "placement_run scanned=%s moved=%s unplaced=%s renewed=%s "
                 "renewal_budget_exceeded=%s cursor=%s",

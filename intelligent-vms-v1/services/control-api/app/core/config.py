@@ -149,18 +149,27 @@ class Settings(BaseSettings):
     # Lease renewal budget (VMS-FIX-014). Independent of the camera-scan batch.
     # required = pages * (retry_sleep + max_run + interval)
     #   + missed_lock_cycles * (retry_sleep + interval)
+    #   + max_run
     #   + fence_poll + clock_skew + safety_margin, and required < lease.
-    # retry_sleep is (lock attempts - 1) * retry delay, paid on every cycle.
+    # retry_sleep is (lock attempts - 1) * retry delay. Later cycles pay it
+    # before the attempt that acquires the lock. The trailing max_run is the
+    # revisit of the first page, which pages * max_run does not include.
     # pages = ceil(ceiling / batch). missed_lock_cycles is at least 1.
     # Fence poll 5s and clock skew 5s match the node-agent defaults; this block
     # does not change the node. Fence grace is not extra lease life.
     # The batch equals the ceiling so the reviewed 21000 assignments are one
-    # page. That is a configured write bound, not a measured rate. Other fixes
-    # may add settings in this file; keep this block together.
+    # page. Lease writes on PostgreSQL are chunked statements, and a run that
+    # passes max_run rolls back instead of committing a partial page. max_run
+    # is that deadline, not a measured rate and not a fleet-capacity claim.
+    # Other fixes may add settings in this file; keep this block together.
     placement_interval_seconds: float = Field(default=10.0, gt=0)
     placement_renewal_batch_size: int = Field(default=21000, ge=1)
     placement_renewal_max_assignments: int = Field(default=21000, ge=1)
-    placement_renewal_max_run_seconds: float = Field(default=2.0, ge=0)
+    # 4s, not 2s: one PostgreSQL 16 sample of a 21000-row page on this host
+    # finished in 1.743s. That is inside 2s and leaves no margin, so the
+    # deadline the budget charges is 4s. The sample is this host only, not a
+    # capacity claim.
+    placement_renewal_max_run_seconds: float = Field(default=4.0, ge=0)
     placement_renewal_missed_lock_cycles: int = Field(default=1, ge=1)
     placement_renewal_fence_poll_seconds: float = Field(default=5.0, ge=1)
     placement_renewal_clock_skew_seconds: float = Field(default=5.0, ge=0)
@@ -179,10 +188,11 @@ class Settings(BaseSettings):
             This settings instance when the conservative budget holds.
 
         Raises:
-            PlacementRenewalBudgetError: When pages, the retry sleep every cycle
-                may spend before it acquires, reserved missed cycles, fence poll,
-                clock skew and the safety margin do not fit before lease expiry.
-                The lease is not reduced and fence grace is not spent to fit.
+            PlacementRenewalBudgetError: When pages, the retry sleep later cycles
+                may spend before they acquire, reserved missed cycles, the
+                revisit's own max run, fence poll, clock skew and the safety
+                margin do not fit before lease expiry. The lease is not reduced
+                and fence grace is not spent to fit.
         """
         assert_settings_renewal_budget(self)
         return self

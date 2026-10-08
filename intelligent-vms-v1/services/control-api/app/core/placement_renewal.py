@@ -2,12 +2,17 @@
 
 The node drops a cached lease at that lease's end. It learns a replacement
 only on its next fence poll, and clock skew can make the cached deadline
-arrive early. Every controller cycle can sleep its lock retries before the
-attempt that acquires the lock, and a fully missed cycle sleeps those retries
-and then the interval. The budget therefore requires:
+arrive early. The granting run can acquire the lock immediately. Every later
+cycle, including the revisit of the first page, can sleep its lock retries
+before the attempt that acquires the lock. A fully missed cycle sleeps those
+retries and then the interval, and it does not spend max_run. The revisit
+spends its own max_run between the stamp and the commit, and the node then
+waits a fence poll before it observes the new lease. There is no interval
+after that commit in the observation. The budget therefore requires:
 
     pages * (retry_sleep + max_run + interval)
         + missed_lock_cycles * (retry_sleep + interval)
+        + max_run
         + fence_poll
         + clock_skew
         + safety_margin
@@ -15,9 +20,7 @@ and then the interval. The budget therefore requires:
 
 pages is ceil(max_assignments / batch_size). missed_lock_cycles is at least 1.
 retry_sleep is (attempts - 1) times the retry delay. The last attempt does not
-sleep. A successful cycle still pays that sleep, then max_run, then the
-interval the controller sleeps after the run. A fully missed cycle does not
-spend max_run.
+sleep. The extra max_run is the revisit, which the pages term does not include.
 Fence grace is not added to the lease and is not spent as extra budget: using
 it would loosen the node side to make the arithmetic fit. The lease duration
 is never reduced to force a pass.
@@ -35,6 +38,15 @@ import math
 # The placement controller has always slept at least this long. The budget
 # uses the same floor so it cannot assume a faster loop than the process runs.
 MINIMUM_PLACEMENT_INTERVAL_SECONDS = 2.0
+
+
+class PlacementRenewalRunExceeded(RuntimeError):
+    """A locked placement run did not finish inside its configured max run.
+
+    The attempt is rolled back. No lease written by that attempt is committed.
+    Callers log this and leave the previous lease in place. The lease duration
+    is not shortened, and fence grace is not spent, to hide the overrun.
+    """
 
 
 class PlacementRenewalBudgetError(ValueError):
@@ -111,7 +123,8 @@ def renewal_budget_seconds(
     Returns:
         Tuple of required seconds, page count, one successful cycle's seconds
         (retry sleep plus max run plus the interval), and the retry sleep a
-        cycle spends before its last lock attempt.
+        cycle spends before its last lock attempt. Required seconds also
+        include the revisit's own max run, which is not part of the page cycle.
 
     Raises:
         PlacementRenewalBudgetError: When an input cannot be used in the formula.
@@ -136,11 +149,14 @@ def renewal_budget_seconds(
     retry_sleep = _retry_sleep_seconds(lock_retry_seconds, lock_retry_limit)
     # The granting run can acquire immediately. Every later cycle, including
     # the revisit, can burn every retry before the attempt that gets the lock.
+    # pages * max_run stops at the last other page. The revisit spends another
+    # max_run after its stamp and before its commit.
     page_cycle = retry_sleep + float(max_run_seconds) + interval
     miss_cycle = retry_sleep + interval
     required = (
         pages * page_cycle
         + int(missed_lock_cycles) * miss_cycle
+        + float(max_run_seconds)
         + float(fence_poll_seconds)
         + float(clock_skew_seconds)
         + float(safety_margin_seconds)
@@ -233,8 +249,9 @@ def assert_placement_renewal_budget(
             f"clock_skew={_seconds_text(clock_skew_seconds)}s, "
             f"safety_margin={_seconds_text(safety_margin_seconds)}s). "
             "A pages*interval bound inside the lease is not sufficient. Every "
-            "cycle may spend its lock retries before it acquires, and a fully "
-            "missed cycle adds that retry sleep plus the interval. "
+            "cycle may spend its lock retries before it acquires, a fully "
+            "missed cycle adds that retry sleep plus the interval, and the "
+            "revisit spends its own max run before the fence poll. "
             "Raise the renewal batch or lower the interval; do not shorten the lease "
             "and do not spend fence grace as extra life."
         )

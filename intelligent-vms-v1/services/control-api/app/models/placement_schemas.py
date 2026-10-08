@@ -227,8 +227,10 @@ class PlacementRunRead(BaseModel):
     deadline, was still live. renewed counts owners the scan would keep whose
     lease moved later on this run's renewal page. renewal_budget_exceeded is
     true when renewal was skipped because the live population is above the
-    configured ceiling; scan and failover still ran. renewal_lock_not_acquired
+    configured ceiling; scan and failover still ran.     renewal_lock_not_acquired
     is true when every lock attempt failed and this run changed nothing.
+    renewal_max_run_exceeded is true when the attempt passed its configured
+    max run and was rolled back, so no lease from that attempt was committed.
     Validation may raise for incompatible input types.
     """
 
@@ -239,6 +241,7 @@ class PlacementRunRead(BaseModel):
     renewed: int = 0
     renewal_budget_exceeded: bool = False
     renewal_lock_not_acquired: bool = False
+    renewal_max_run_exceeded: bool = False
     cursor: str | None = None
 
 

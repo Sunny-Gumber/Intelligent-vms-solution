@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Iterable
 
-from sqlalchemy import and_, exists, func, literal, select, update
+from sqlalchemy import and_, exists, func, literal, select, text, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.config import settings
@@ -16,7 +19,10 @@ from app.core.effective_authority import (
     effective_authority_active,
     effective_authority_deadline,
 )
-from app.core.placement_renewal import assert_settings_renewal_budget
+from app.core.placement_renewal import (
+    PlacementRenewalRunExceeded,
+    assert_settings_renewal_budget,
+)
 from app.db.session import SessionLocal
 from app.services.stream_keys import make_role_stream_key
 from app.services.coordination import try_placement_execution_lock
@@ -32,6 +38,63 @@ log = logging.getLogger(__name__)
 
 CURSOR_KEY = "placement_controller_cursor"
 RENEWAL_CURSOR_KEY = "placement_renewal_cursor"
+# One lease statement, not a second budget page. A 2,000-row statement on this
+# development host finished in a small fraction of the default max run; the
+# deadline below still cancels a statement that does not. This is one sample's
+# chunk size, not a fleet capacity claim.
+_RENEWAL_LEASE_WRITE_CHUNK = 2000
+_RUN_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "placement_renewal_run_deadline",
+    default=None,
+)
+_LEASE_UPDATE = text(
+    """
+    UPDATE placement_assignments AS a
+    SET lease_expires_at = :new_lease,
+        autonomy_expires_at = :autonomy
+    FROM unnest(
+        CAST(:ids AS varchar[]),
+        CAST(:node_ids AS varchar[]),
+        CAST(:generations AS integer[])
+    ) AS observed(id, node_id, generation)
+    WHERE a.id = observed.id
+      AND a.node_id = observed.node_id
+      AND a.generation = observed.generation
+      AND a.active IS TRUE
+      AND (a.lease_expires_at IS NULL OR a.lease_expires_at < :new_lease)
+      AND EXISTS (
+          SELECT 1 FROM infrastructure_nodes AS n
+          WHERE n.id = observed.node_id
+            AND n.region_id = COALESCE(
+                (
+                    SELECT sr.region_id
+                    FROM site_regions AS sr
+                    JOIN cameras AS c
+                      ON c.tenant_id = sr.tenant_id
+                     AND c.site_id = sr.site_id
+                    WHERE c.id = a.camera_id
+                    LIMIT 1
+                ),
+                :default_region
+            )
+      )
+      AND (
+          a.role <> 'recording'
+          OR EXISTS (
+              SELECT 1 FROM recording_policies AS rp
+              WHERE rp.camera_id = a.camera_id AND rp.enabled IS TRUE
+          )
+      )
+      AND (
+          a.role <> 'ai'
+          OR EXISTS (
+              SELECT 1 FROM camera_ai_policies AS ap
+              WHERE ap.camera_id = a.camera_id AND ap.enabled IS TRUE
+          )
+      )
+    RETURNING a.id
+    """
+)
 
 
 @dataclass(frozen=True)
@@ -260,6 +323,77 @@ async def _before_assignment_update() -> None:
     return None
 
 
+def _arm_run_deadline() -> contextvars.Token:
+    """Start the max-run clock for one locked attempt.
+
+    A max run of zero reserves no time in the budget and does not arm a
+    deadline. A positive max run is a real deadline: work past it is not
+    committed.
+
+    Returns:
+        Token used to reset the deadline when the attempt ends.
+    """
+    limit = float(settings.placement_renewal_max_run_seconds)
+    if limit <= 0:
+        return _RUN_DEADLINE.set(None)
+    return _RUN_DEADLINE.set(time.monotonic() + limit)
+
+
+def _raise_if_over_deadline() -> None:
+    """Raise when this attempt has spent its configured max run.
+
+    Raises:
+        PlacementRenewalRunExceeded: The monotonic deadline has passed. The
+            caller rolls the transaction back.
+    """
+    deadline = _RUN_DEADLINE.get()
+    if deadline is None:
+        return
+    if time.monotonic() > deadline:
+        raise PlacementRenewalRunExceeded(
+            "placement renewal max run exceeded: "
+            f"max_run={settings.placement_renewal_max_run_seconds}s"
+        )
+
+
+async def _before_renewal_lease_write() -> None:
+    """Stop a lease write that would land after the configured max run.
+
+    Production checks the deadline. A test may wrap this to move the deadline
+    between chunks. A chunk that already ran stays uncommitted when this raises,
+    because the placement transaction has not committed.
+    """
+    _raise_if_over_deadline()
+
+
+def _is_statement_timeout(error: BaseException) -> bool:
+    orig = getattr(error, "orig", None)
+    state = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return state == "57014"
+
+
+async def _arm_statement_timeout(session) -> None:
+    """Bound the next PostgreSQL statement by the time still left in max run.
+
+    SQLite has no statement_timeout. The deadline check between lease chunks
+    is what bounds that dialect, and a raise rolls the transaction back.
+    """
+    deadline = _RUN_DEADLINE.get()
+    if deadline is None:
+        return
+    bind = session.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        return
+    _raise_if_over_deadline()
+    remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+    await session.execute(select(func.set_config("statement_timeout", str(remaining_ms), True)))
+
+
+def _session_is_postgresql(session) -> bool:
+    bind = session.get_bind()
+    return getattr(getattr(bind, "dialect", None), "name", "") == "postgresql"
+
+
 def _policy_view(enabled: bool | None):
     if enabled is None:
         return None
@@ -341,7 +475,12 @@ async def _extend_owner_lease(
         True when that exact owner and generation had its lease moved later.
         False when the row already holds this full term, or when the row is
         no longer that owner.
+
+    Raises:
+        PlacementRenewalRunExceeded: This attempt is already past its max run.
+            The caller rolls the transaction back, so this write is not committed.
     """
+    await _before_renewal_lease_write()
     if row.node_id != node_id or row.generation != generation:
         return False
     new_lease = now + timedelta(seconds=settings.placement_lease_seconds)
@@ -744,8 +883,12 @@ async def _apply_renewal_candidates(
 
     Returns:
         How many of those leases moved later.
+
+    Raises:
+        PlacementRenewalRunExceeded: A lease chunk would start after max run.
+            Nothing from this transaction has been committed.
     """
-    renewed = 0
+    pending: list[tuple[_RenewalCandidate, dict, NodeSnapshot]] = []
     for candidate in candidates:
         row = candidate.row
         authority = committed.get(row.camera_id)
@@ -771,9 +914,14 @@ async def _apply_renewal_candidates(
         kept = _owner_if_kept(nodes, row, row.role, regions, now)
         if kept is None:
             continue
+        pending.append((candidate, recording, kept))
+    if _session_is_postgresql(session):
+        return await _extend_pending_leases_postgres(session, pending, now)
+    renewed = 0
+    for candidate, recording, kept in pending:
         if await _keep_owner(
             session,
-            row,
+            candidate.row,
             kept,
             recording,
             now,
@@ -782,6 +930,77 @@ async def _apply_renewal_candidates(
         ):
             renewed += 1
     return renewed
+
+
+async def _extend_pending_leases_postgres(session, pending, now: datetime) -> int:
+    """Extend kept owners in bounded PostgreSQL statements.
+
+    Each statement repeats the owner, generation, site, and policy predicates.
+    A statement that runs past the remaining max run is cancelled and the
+    transaction rolls back, so a chunk cannot commit on its own.
+
+    Args:
+        session: Open PostgreSQL placement transaction.
+        pending: Kept owners, the recording map their metadata uses, and the node.
+        now: Controller evaluation time.
+
+    Returns:
+        How many leases moved later.
+
+    Raises:
+        PlacementRenewalRunExceeded: The next chunk would start after max run.
+    """
+    new_lease = now + timedelta(seconds=settings.placement_lease_seconds)
+    autonomy = autonomy_deadline(now)
+    writable: list[tuple[_RenewalCandidate, dict, NodeSnapshot]] = []
+    for candidate, recording, kept in pending:
+        row = candidate.row
+        if row.node_id != candidate.node_id or row.generation != candidate.generation:
+            continue
+        current = row.lease_expires_at
+        if current is not None and _aware_utc(current) >= new_lease:
+            _note_recording_owner(candidate, recording, kept)
+            continue
+        writable.append((candidate, recording, kept))
+    extended: set[str] = set()
+    for offset in range(0, len(writable), _RENEWAL_LEASE_WRITE_CHUNK):
+        chunk = writable[offset : offset + _RENEWAL_LEASE_WRITE_CHUNK]
+        await _before_renewal_lease_write()
+        await _arm_statement_timeout(session)
+        extended.update(await _extend_lease_chunk(session, chunk, new_lease, autonomy))
+    for candidate, recording, kept in writable:
+        row = candidate.row
+        if row.id in extended:
+            set_committed_value(row, "lease_expires_at", new_lease)
+            set_committed_value(row, "autonomy_expires_at", autonomy)
+        _note_recording_owner(candidate, recording, kept)
+    return len(extended)
+
+
+def _note_recording_owner(candidate: _RenewalCandidate, recording: dict, kept: NodeSnapshot) -> None:
+    row = candidate.row
+    if row.role != "recording" or row.node_id != candidate.node_id or row.generation != candidate.generation:
+        return
+    policy = recording.get(row.camera_id)
+    if policy is not None:
+        policy.recording_node_id = kept.id
+
+
+async def _extend_lease_chunk(session, chunk, new_lease: datetime, autonomy) -> set[str]:
+    if not chunk:
+        return set()
+    result = await session.execute(
+        _LEASE_UPDATE,
+        {
+            "new_lease": new_lease,
+            "autonomy": autonomy,
+            "ids": [candidate.row.id for candidate, _recording, _kept in chunk],
+            "node_ids": [candidate.node_id for candidate, _recording, _kept in chunk],
+            "generations": [int(candidate.generation) for candidate, _recording, _kept in chunk],
+            "default_region": settings.placement_default_region,
+        },
+    )
+    return {row[0] for row in result.fetchall()}
 
 
 def _execution_keys(camera: CameraEntity, role: str) -> list:
@@ -1087,6 +1306,7 @@ def _placement_result(
     renewed: int = 0,
     renewal_budget_exceeded: bool = False,
     renewal_lock_not_acquired: bool = False,
+    renewal_max_run_exceeded: bool = False,
     cursor: str | None = None,
 ) -> dict:
     return {
@@ -1097,6 +1317,7 @@ def _placement_result(
         "renewed": renewed,
         "renewal_budget_exceeded": renewal_budget_exceeded,
         "renewal_lock_not_acquired": renewal_lock_not_acquired,
+        "renewal_max_run_exceeded": renewal_max_run_exceeded,
         "cursor": cursor,
     }
 
@@ -1111,14 +1332,18 @@ async def run_placement_once() -> dict:
     is retried with a
     short backoff before this cycle gives up. Every attempt failing is logged.
     A live population above the renewal ceiling skips renewal and still scans.
+    A positive max run is a deadline. Past it, this attempt rolls back and
+    reports renewal_max_run_exceeded. No partial lease page is committed.
 
     Returns:
         Dictionary containing scanned, moved, unplaced, deferred, and renewed
         counts, whether the live population exceeded the renewal ceiling,
-        whether every lock attempt failed, and the persisted camera-scan cursor.
-        Deferred counts are assignments whose previous effective authority is
-        still live. Renewed counts are owners the scan would keep whose lease
-        moved later on this run's renewal page.
+        whether every lock attempt failed, whether the attempt passed its max
+        run, and the persisted camera-scan cursor. Deferred counts are
+        assignments whose previous effective authority is still live. Renewed
+        counts are owners the scan would keep whose lease moved later on this
+        run's renewal page. An exceeded max run returns zeros because that
+        attempt was rolled back.
 
     Raises:
         PlacementRenewalBudgetError: The configured budget is not strictly
@@ -1129,7 +1354,14 @@ async def run_placement_once() -> dict:
     assert_settings_renewal_budget(settings)
     attempts = int(settings.placement_renewal_lock_retry_limit)
     for attempt in range(attempts):
-        result = await _run_placement_once_locked()
+        try:
+            result = await _run_placement_once_locked()
+        except PlacementRenewalRunExceeded:
+            log.critical(
+                "placement_renewal_max_run_exceeded max_run_seconds=%s",
+                settings.placement_renewal_max_run_seconds,
+            )
+            return _placement_result(renewal_max_run_exceeded=True)
         if result is not None:
             return result
         if attempt + 1 < attempts:
@@ -1148,252 +1380,268 @@ async def _run_placement_once_locked() -> dict | None:
         PlacementRenewalBudgetError: Propagated from callers that validate
             settings before this attempt. This function does not raise it for
             a population above the ceiling.
+        PlacementRenewalRunExceeded: The attempt passed its max run, or
+            PostgreSQL cancelled a statement for that reason. The transaction
+            is rolled back first.
         Exception: Database or placement mutation failures propagate.
     """
     now = datetime.now(timezone.utc)
     scanned = moved = unplaced = deferred_autonomy = renewed = 0
     renewal_budget_exceeded = False
     cursor: str | None = None
+    deadline_token = _arm_run_deadline()
+    try:
+        async with SessionLocal() as session:
+            async with session.begin():
+                if not await _leader_lock(session):
+                    return None
+                await _arm_statement_timeout(session)
 
-    async with SessionLocal() as session:
-        async with session.begin():
-            if not await _leader_lock(session):
-                return None
+                active_assignments = await _active_assignment_count(session)
+                ceiling = int(settings.placement_renewal_max_assignments)
+                if active_assignments > ceiling:
+                    renewal_budget_exceeded = True
+                    log.critical(
+                        "placement_renewal_budget_exceeded active_assignments=%s ceiling=%s",
+                        active_assignments,
+                        ceiling,
+                    )
 
-            active_assignments = await _active_assignment_count(session)
-            ceiling = int(settings.placement_renewal_max_assignments)
-            if active_assignments > ceiling:
-                renewal_budget_exceeded = True
-                log.critical(
-                    "placement_renewal_budget_exceeded active_assignments=%s ceiling=%s",
-                    active_assignments,
-                    ceiling,
-                )
+                node_rows = (
+                    await session.execute(
+                        select(InfrastructureNodeEntity).where(InfrastructureNodeEntity.enabled.is_(True))
+                    )
+                ).scalars().all()
+                nodes = [
+                    NodeSnapshot(
+                        id=n.id,
+                        region_id=n.region_id,
+                        roles=frozenset(n.roles_json or []),
+                        state=n.state,
+                        enabled=n.enabled,
+                        capacity=n.capacity_json or {},
+                        load=dict(n.load_json or {}),
+                        heartbeat_at=n.heartbeat_at,
+                        authority_mode=n.authority_mode or "fenced_degraded",
+                    )
+                    for n in node_rows
+                ]
+                candidates: list[_RenewalCandidate] = []
+                renewal_cursor: str | None = None
+                track_renewal_cursor = False
+                if not renewal_budget_exceeded:
+                    candidates, renewal_cursor = await _collect_renewal_candidates(session, nodes, now)
+                    track_renewal_cursor = True
 
-            node_rows = (
-                await session.execute(
-                    select(InfrastructureNodeEntity).where(InfrastructureNodeEntity.enabled.is_(True))
-                )
-            ).scalars().all()
-            nodes = [
-                NodeSnapshot(
-                    id=n.id,
-                    region_id=n.region_id,
-                    roles=frozenset(n.roles_json or []),
-                    state=n.state,
-                    enabled=n.enabled,
-                    capacity=n.capacity_json or {},
-                    load=dict(n.load_json or {}),
-                    heartbeat_at=n.heartbeat_at,
-                    authority_mode=n.authority_mode or "fenced_degraded",
-                )
-                for n in node_rows
-            ]
-            candidates: list[_RenewalCandidate] = []
-            renewal_cursor: str | None = None
-            track_renewal_cursor = False
-            if not renewal_budget_exceeded:
-                candidates, renewal_cursor = await _collect_renewal_candidates(session, nodes, now)
-                track_renewal_cursor = True
+                state = await session.get(ServiceStateEntity, CURSOR_KEY, with_for_update=True)
+                if state is None:
+                    state = ServiceStateEntity(key=CURSOR_KEY, value_json={})
+                    session.add(state)
+                    await session.flush()
+                current = (state.value_json or {}).get("camera_id")
 
-            state = await session.get(ServiceStateEntity, CURSOR_KEY, with_for_update=True)
-            if state is None:
-                state = ServiceStateEntity(key=CURSOR_KEY, value_json={})
-                session.add(state)
-                await session.flush()
-            current = (state.value_json or {}).get("camera_id")
+                def camera_query(after: str | None):
+                    q = select(CameraEntity).where(CameraEntity.enabled.is_(True))
+                    if after:
+                        q = q.where(CameraEntity.id > after)
+                    return q.order_by(CameraEntity.id).limit(settings.placement_batch_size)
 
-            def camera_query(after: str | None):
-                q = select(CameraEntity).where(CameraEntity.enabled.is_(True))
-                if after:
-                    q = q.where(CameraEntity.id > after)
-                return q.order_by(CameraEntity.id).limit(settings.placement_batch_size)
+                cameras = list((await session.execute(camera_query(current))).scalars().all())
+                if not cameras and current:
+                    cameras = list((await session.execute(camera_query(None))).scalars().all())
+                if not cameras:
+                    state.value_json = {"camera_id": None}
+                    committed = await _load_committed_authority(_cameras_for_authority([], candidates))
+                    renewed = await _apply_renewal_candidates(
+                        session,
+                        candidates,
+                        nodes,
+                        now,
+                        scan_camera_ids=set(),
+                        scan_recording={},
+                        scan_ai={},
+                        scan_site_regions={},
+                        committed=committed,
+                    )
+                    if track_renewal_cursor:
+                        await _save_renewal_cursor(session, renewal_cursor)
+                    _raise_if_over_deadline()
+                    return _placement_result(
+                        renewed=renewed,
+                        renewal_budget_exceeded=renewal_budget_exceeded,
+                    )
 
-            cameras = list((await session.execute(camera_query(current))).scalars().all())
-            if not cameras and current:
-                cameras = list((await session.execute(camera_query(None))).scalars().all())
-            if not cameras:
-                state.value_json = {"camera_id": None}
-                committed = await _load_committed_authority(_cameras_for_authority([], candidates))
+                camera_ids = [c.id for c in cameras]
+                recording = {
+                    p.camera_id: p
+                    for p in (
+                        await session.execute(
+                            select(RecordingPolicyEntity).where(RecordingPolicyEntity.camera_id.in_(camera_ids))
+                        )
+                    ).scalars().all()
+                }
+                ai = {
+                    p.camera_id: p
+                    for p in (
+                        await session.execute(
+                            select(CameraAIPolicyEntity).where(CameraAIPolicyEntity.camera_id.in_(camera_ids))
+                        )
+                    ).scalars().all()
+                }
+                assignments = {
+                    (a.camera_id, a.role): a
+                    for a in (
+                        await session.execute(
+                            select(PlacementAssignmentEntity).where(
+                                PlacementAssignmentEntity.camera_id.in_(camera_ids)
+                            )
+                        )
+                    ).scalars().all()
+                }
+                site_ids = sorted({c.site_id for c in cameras})
+                tenant_ids = sorted({c.tenant_id for c in cameras})
+                site_regions = {
+                    (s.tenant_id, s.site_id): s.region_id
+                    for s in (
+                        await session.execute(
+                            select(SiteRegionEntity).where(
+                                SiteRegionEntity.site_id.in_(site_ids),
+                                SiteRegionEntity.tenant_id.in_(tenant_ids),
+                            )
+                        )
+                    ).scalars().all()
+                }
+                committed = await _load_committed_authority(_cameras_for_authority(cameras, candidates))
                 renewed = await _apply_renewal_candidates(
                     session,
                     candidates,
                     nodes,
                     now,
-                    scan_camera_ids=set(),
-                    scan_recording={},
-                    scan_ai={},
-                    scan_site_regions={},
+                    scan_camera_ids=set(camera_ids),
+                    scan_recording=recording,
+                    scan_ai=ai,
+                    scan_site_regions=site_regions,
                     committed=committed,
                 )
+
+                last_processed: str | None = None
+                exhausted_moves = False
+                for camera in cameras:
+                    if moved >= settings.placement_max_moves_per_run:
+                        exhausted_moves = True
+                        break
+
+                    scan_region = _site_region_id(site_regions, camera)
+                    authority = committed[camera.id]
+                    fresh_recording = _policy_view(authority.recording_enabled)
+                    fresh_ai = _policy_view(authority.ai_enabled)
+
+                    for role in ("media", "recording", "ai"):
+                        if not _role_required(role, fresh_recording, fresh_ai):
+                            continue
+                        if not _role_required(role, recording.get(camera.id), ai.get(camera.id)):
+                            continue
+
+                        existing = assignments.get((camera.id, role))
+                        observed_node = existing.node_id if existing is not None else None
+                        observed_generation = existing.generation if existing is not None else None
+                        kept = _owner_if_kept(
+                            nodes,
+                            existing,
+                            role,
+                            [authority.region_id, scan_region],
+                            now,
+                        )
+                        if kept is not None and existing is not None:
+                            await _keep_owner(
+                                session,
+                                existing,
+                                kept,
+                                recording,
+                                now,
+                                node_id=observed_node,
+                                generation=observed_generation,
+                            )
+                            continue
+
+                        # A partitioned owner keeps executing until lease plus fence
+                        # grace, or until a later pre-granted autonomy deadline.
+                        # There is no revocation acknowledgement for a generation
+                        # that is still the active owner, so control must wait for
+                        # that shared boundary. Authorizing a successor earlier
+                        # overlaps the old lease.
+                        if existing is not None and effective_authority_active(
+                            existing.lease_expires_at,
+                            existing.autonomy_expires_at,
+                            now,
+                            settings.placement_fence_expiry_grace_seconds,
+                        ):
+                            deferred_autonomy += 1
+                            continue
+
+                        move_region = _failover_region(
+                            nodes, existing, role, authority.region_id, scan_region, now
+                        )
+                        target = choose_node(nodes, role, move_region, now)
+                        if target is None:
+                            unplaced += 1
+                            continue
+
+                        reason = "initial" if existing is None else "failover"
+                        try:
+                            row, changed = await _assign(
+                                session,
+                                camera,
+                                role,
+                                move_region,
+                                target,
+                                existing,
+                                reason=reason,
+                                now=now,
+                            )
+                        except _FailoverSuperseded as superseded:
+                            assignments[(camera.id, role)] = superseded.row
+                            deferred_autonomy += 1
+                            continue
+                        assignments[(camera.id, role)] = row
+                        if changed:
+                            moved += 1
+                            project_assignment(target, role)
+                        if role == "recording":
+                            recording[camera.id].recording_node_id = target.id
+
+                    scanned += 1
+                    last_processed = camera.id
+                    if moved >= settings.placement_max_moves_per_run:
+                        exhausted_moves = True
+                        break
+
+                if exhausted_moves:
+                    cursor = last_processed
+                elif len(cameras) >= settings.placement_batch_size:
+                    cursor = cameras[-1].id
+                else:
+                    cursor = None
+                state.value_json = {"camera_id": cursor}
                 if track_renewal_cursor:
                     await _save_renewal_cursor(session, renewal_cursor)
+
+                _raise_if_over_deadline()
                 return _placement_result(
+                    scanned=scanned,
+                    moved=moved,
+                    unplaced=unplaced,
+                    deferred_autonomy=deferred_autonomy,
                     renewed=renewed,
                     renewal_budget_exceeded=renewal_budget_exceeded,
+                    cursor=cursor,
                 )
-
-            camera_ids = [c.id for c in cameras]
-            recording = {
-                p.camera_id: p
-                for p in (
-                    await session.execute(
-                        select(RecordingPolicyEntity).where(RecordingPolicyEntity.camera_id.in_(camera_ids))
-                    )
-                ).scalars().all()
-            }
-            ai = {
-                p.camera_id: p
-                for p in (
-                    await session.execute(
-                        select(CameraAIPolicyEntity).where(CameraAIPolicyEntity.camera_id.in_(camera_ids))
-                    )
-                ).scalars().all()
-            }
-            assignments = {
-                (a.camera_id, a.role): a
-                for a in (
-                    await session.execute(
-                        select(PlacementAssignmentEntity).where(
-                            PlacementAssignmentEntity.camera_id.in_(camera_ids)
-                        )
-                    )
-                ).scalars().all()
-            }
-            site_ids = sorted({c.site_id for c in cameras})
-            tenant_ids = sorted({c.tenant_id for c in cameras})
-            site_regions = {
-                (s.tenant_id, s.site_id): s.region_id
-                for s in (
-                    await session.execute(
-                        select(SiteRegionEntity).where(
-                            SiteRegionEntity.site_id.in_(site_ids),
-                            SiteRegionEntity.tenant_id.in_(tenant_ids),
-                        )
-                    )
-                ).scalars().all()
-            }
-            committed = await _load_committed_authority(_cameras_for_authority(cameras, candidates))
-            renewed = await _apply_renewal_candidates(
-                session,
-                candidates,
-                nodes,
-                now,
-                scan_camera_ids=set(camera_ids),
-                scan_recording=recording,
-                scan_ai=ai,
-                scan_site_regions=site_regions,
-                committed=committed,
-            )
-
-            last_processed: str | None = None
-            exhausted_moves = False
-            for camera in cameras:
-                if moved >= settings.placement_max_moves_per_run:
-                    exhausted_moves = True
-                    break
-
-                scan_region = _site_region_id(site_regions, camera)
-                authority = committed[camera.id]
-                fresh_recording = _policy_view(authority.recording_enabled)
-                fresh_ai = _policy_view(authority.ai_enabled)
-
-                for role in ("media", "recording", "ai"):
-                    if not _role_required(role, fresh_recording, fresh_ai):
-                        continue
-                    if not _role_required(role, recording.get(camera.id), ai.get(camera.id)):
-                        continue
-
-                    existing = assignments.get((camera.id, role))
-                    observed_node = existing.node_id if existing is not None else None
-                    observed_generation = existing.generation if existing is not None else None
-                    kept = _owner_if_kept(
-                        nodes,
-                        existing,
-                        role,
-                        [authority.region_id, scan_region],
-                        now,
-                    )
-                    if kept is not None and existing is not None:
-                        await _keep_owner(
-                            session,
-                            existing,
-                            kept,
-                            recording,
-                            now,
-                            node_id=observed_node,
-                            generation=observed_generation,
-                        )
-                        continue
-
-                    # A partitioned owner keeps executing until lease plus fence
-                    # grace, or until a later pre-granted autonomy deadline.
-                    # There is no revocation acknowledgement for a generation
-                    # that is still the active owner, so control must wait for
-                    # that shared boundary. Authorizing a successor earlier
-                    # overlaps the old lease.
-                    if existing is not None and effective_authority_active(
-                        existing.lease_expires_at,
-                        existing.autonomy_expires_at,
-                        now,
-                        settings.placement_fence_expiry_grace_seconds,
-                    ):
-                        deferred_autonomy += 1
-                        continue
-
-                    move_region = _failover_region(
-                        nodes, existing, role, authority.region_id, scan_region, now
-                    )
-                    target = choose_node(nodes, role, move_region, now)
-                    if target is None:
-                        unplaced += 1
-                        continue
-
-                    reason = "initial" if existing is None else "failover"
-                    try:
-                        row, changed = await _assign(
-                            session,
-                            camera,
-                            role,
-                            move_region,
-                            target,
-                            existing,
-                            reason=reason,
-                            now=now,
-                        )
-                    except _FailoverSuperseded as superseded:
-                        assignments[(camera.id, role)] = superseded.row
-                        deferred_autonomy += 1
-                        continue
-                    assignments[(camera.id, role)] = row
-                    if changed:
-                        moved += 1
-                        project_assignment(target, role)
-                    if role == "recording":
-                        recording[camera.id].recording_node_id = target.id
-
-                scanned += 1
-                last_processed = camera.id
-                if moved >= settings.placement_max_moves_per_run:
-                    exhausted_moves = True
-                    break
-
-            if exhausted_moves:
-                cursor = last_processed
-            elif len(cameras) >= settings.placement_batch_size:
-                cursor = cameras[-1].id
-            else:
-                cursor = None
-            state.value_json = {"camera_id": cursor}
-            if track_renewal_cursor:
-                await _save_renewal_cursor(session, renewal_cursor)
-
-    return _placement_result(
-        scanned=scanned,
-        moved=moved,
-        unplaced=unplaced,
-        deferred_autonomy=deferred_autonomy,
-        renewed=renewed,
-        renewal_budget_exceeded=renewal_budget_exceeded,
-        cursor=cursor,
-    )
+    except DBAPIError as error:
+        if _is_statement_timeout(error):
+            raise PlacementRenewalRunExceeded(
+                "placement renewal max run exceeded: "
+                f"max_run={settings.placement_renewal_max_run_seconds}s"
+            ) from error
+        raise
+    finally:
+        _RUN_DEADLINE.reset(deadline_token)
