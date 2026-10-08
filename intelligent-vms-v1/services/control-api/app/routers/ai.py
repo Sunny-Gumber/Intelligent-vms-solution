@@ -9,7 +9,13 @@ from app.db.session import get_session
 from app.models.entities import AIModelEntity, CameraAIPolicyEntity, CameraEntity
 from app.models.schemas import AIIngestRead, AIModelCreate, AIModelRead, AIPolicyRead, AIPolicyUpdate, AIResultIn, AIStatusRead
 from app.routers.cameras import authorized_camera
-from app.services.ai import publish_ai_events, validate_artifact_ref, validate_provider_config, validate_sha256
+from app.services.ai import (
+    publish_ai_events,
+    redact_provider_config,
+    validate_artifact_ref,
+    validate_provider_config,
+    validate_sha256,
+)
 
 router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
 
@@ -39,12 +45,16 @@ def policy_read(row: CameraAIPolicyEntity) -> AIPolicyRead:
 
     Returns:
         AIPolicyRead containing normalized analytics, zones and provider config.
+        Secret-like provider keys are removed at every depth, including keys
+        stored before nested rejection, so GET and list-shaped callers cannot
+        read those values back.
     """
     return AIPolicyRead(
         camera_id=row.camera_id, enabled=row.enabled, source_mode=row.source_mode,
         model_id=row.model_id, stream_role=row.stream_role, sample_fps=row.sample_fps,
         min_confidence=row.min_confidence, analytics=list(row.analytics_json or []),
-        zones=list(row.zones_json or []), provider_config=dict(row.provider_config_json or {}),
+        zones=list(row.zones_json or []),
+        provider_config=redact_provider_config(row.provider_config_json),
         updated_at=row.updated_at,
     )
 
