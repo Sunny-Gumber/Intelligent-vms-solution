@@ -10,6 +10,7 @@ import platform
 import shutil
 import subprocess
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -93,13 +94,17 @@ def _canonical_number(value: Any) -> str:
         Fixed-precision decimal text. Negative zero is rendered as 0.
 
     Raises:
-        ValueError: If the value is not a finite number.
+        ValueError: If the value is not a finite number. OverflowError from an
+            integer that cannot be represented as a float uses this same path.
     """
     if isinstance(value, bool):
         value = 1 if value else 0
     if not isinstance(value, (int, float)):
         raise ValueError(_NON_FINITE_MEASUREMENT)
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError(_NON_FINITE_MEASUREMENT) from exc
     if not math.isfinite(number):
         raise ValueError(_NON_FINITE_MEASUREMENT)
     if number == 0.0:
@@ -107,16 +112,26 @@ def _canonical_number(value: Any) -> str:
     return format(number, ".17g")
 
 
-def _descriptor(value: Any) -> str:
-    """Strip, collapse whitespace, and casefold a hardware descriptor string.
+def canonical_descriptor(value: Any) -> str:
+    """Canonicalize descriptive text used to group hardware and environment.
+
+    build_report and build_matrix both group runs with this function. The steps
+    are Unicode NFKC, removal of every category-Cf format character (this covers
+    ZWSP, ZWNJ, ZWJ, the BOM, and the soft hyphen), mapping every Unicode space
+    to one space, trimming, and casefold. Dotted I (U+0130) and dotless I
+    (U+0131) are accepted as the same key as ASCII I.
 
     Args:
-        value: OS, CPU, or GPU descriptor.
+        value: Descriptive text such as an OS name, CPU model, or device name.
 
     Returns:
         Canonical descriptor text.
     """
-    return " ".join(str(value).split()).casefold()
+    text = unicodedata.normalize("NFKC", str(value))
+    text = "".join(character for character in text if unicodedata.category(character) != "Cf")
+    text = "".join(" " if character.isspace() else character for character in text)
+    text = " ".join(text.split()).casefold()
+    return text.replace("\u0307", "").replace("\u0131", "i")
 
 
 def _summary_numbers(block: Any) -> dict[str, str] | None:
@@ -142,6 +157,41 @@ def _put_number(target: dict[str, Any], key: str, value: Any) -> None:
         target[key] = _canonical_number(value)
 
 
+def _timestamp_key(key: str) -> bool:
+    folded = canonical_descriptor(key)
+    return folded.endswith("_at") or folded in {"timestamp", "time"}
+
+
+def _canonical_config_value(value: Any) -> Any:
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return _canonical_number(value)
+    if isinstance(value, str):
+        return canonical_descriptor(value)
+    if isinstance(value, dict):
+        canonical: dict[str, Any] = {}
+        for key, item in value.items():
+            if item is None or _timestamp_key(str(key)):
+                continue
+            canonical[canonical_descriptor(str(key))] = _canonical_config_value(item)
+        return canonical
+    if isinstance(value, list):
+        return [_canonical_config_value(item) for item in value]
+    raise ValueError(_NON_FINITE_MEASUREMENT)
+
+
+def _gpu_index(item: Any, field: str) -> str:
+    if not isinstance(item, dict) or item.get("index") is None:
+        raise ValueError(f"{field} index is required")
+    return _canonical_number(item["index"])
+
+
+def _indexed_gpu_records(items: list[Any], field: str) -> list[str]:
+    indexes = [_gpu_index(item, field) for item in items]
+    if len(indexes) != len(set(indexes)):
+        raise ValueError(f"{field} contains duplicate indices")
+    return indexes
+
+
 def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
     """Collect the allowlisted measured content of one benchmark result.
 
@@ -149,11 +199,12 @@ def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
         result: Benchmark result dictionary.
 
     Returns:
-        Canonical measured content. Omitted keys are labels, timestamps, notes,
-        or volatile host state and therefore collide across copies.
+        Canonical measured content plus workload-config identity. Descriptive
+        text, labels, timestamps, notes, and volatile host state are omitted.
 
     Raises:
-        ValueError: If an allowlisted measured value is not a finite number.
+        ValueError: If an allowlisted measured value is not a finite number, or
+            if resources.gpu indices are duplicated or do not match hardware.gpus.
     """
     workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
     metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
@@ -167,6 +218,17 @@ def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
     _put_number(durations, "duration_seconds", workload.get("duration_seconds"))
     if durations:
         content["durations"] = durations
+
+    workload_identity: dict[str, Any] = {}
+    if workload.get("type") is not None:
+        workload_identity["type"] = canonical_descriptor(str(workload["type"]))
+    config = workload.get("config")
+    if isinstance(config, dict) and config:
+        canonical_config = _canonical_config_value(config)
+        if canonical_config:
+            workload_identity["config"] = canonical_config
+    if workload_identity:
+        content["workload"] = workload_identity
 
     measured: dict[str, Any] = {}
     for key in _RESULT_MEASURED_KEYS:
@@ -192,68 +254,123 @@ def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
     for key in ("thermal_measured", "thermal_limit_exceeded", "gpu_measured"):
         if key in resources and resources[key] is not None:
             usage[key] = _canonical_number(resources[key])
-    gpu_usage = []
-    for item in resources.get("gpu") or []:
-        if not isinstance(item, dict):
-            continue
-        canonical_gpu: dict[str, Any] = {}
-        for key in _GPU_USAGE_KEYS:
-            summary = _summary_numbers(item.get(key))
-            if summary:
-                canonical_gpu[key] = summary
-            elif item.get(key) is not None and not isinstance(item.get(key), dict):
-                canonical_gpu[key] = _canonical_number(item[key])
-        if canonical_gpu:
+    inventory = list(hardware.get("gpus") or [])
+    usage_items = list(resources.get("gpu") or [])
+    if inventory or usage_items:
+        inventory_indexes = _indexed_gpu_records(inventory, "hardware.gpus")
+        usage_indexes = _indexed_gpu_records(usage_items, "resources.gpu")
+        if set(usage_indexes) != set(inventory_indexes):
+            raise ValueError("resources.gpu does not match hardware.gpus")
+        gpu_usage = []
+        for item in usage_items:
+            canonical_gpu: dict[str, Any] = {"index": _gpu_index(item, "resources.gpu")}
+            for key in _GPU_USAGE_KEYS:
+                summary = _summary_numbers(item.get(key))
+                if summary:
+                    canonical_gpu[key] = summary
+                elif item.get(key) is not None and not isinstance(item.get(key), dict):
+                    canonical_gpu[key] = _canonical_number(item[key])
             gpu_usage.append(canonical_gpu)
-    if gpu_usage:
         usage["gpu"] = _sorted_objects(gpu_usage)
     if usage:
         content["resources"] = usage
-
-    identity: dict[str, Any] = {}
-    if hardware.get("cpu_model") is not None:
-        identity["cpu_model"] = _descriptor(hardware["cpu_model"])
-    # The benchmark schema records processor count as logical cores only.
-    _put_number(identity, "cpu_logical_cores", hardware.get("cpu_logical_cores"))
-    _put_number(identity, "ram_total_bytes", hardware.get("ram_total_bytes"))
-    gpu_models = []
-    for gpu in hardware.get("gpus") or []:
-        if isinstance(gpu, str):
-            gpu_models.append({"name": _descriptor(gpu)})
-            continue
-        if not isinstance(gpu, dict) or gpu.get("name") is None:
-            continue
-        model = {"name": _descriptor(gpu["name"])}
-        _put_number(model, "memory_total_mib", gpu.get("memory_total_mib"))
-        gpu_models.append(model)
-    if gpu_models:
-        identity["gpus"] = _sorted_objects(gpu_models)
-    if environment.get("os") is not None:
-        identity["os"] = _descriptor(environment["os"])
-    if environment.get("os_release") is not None:
-        identity["os_release"] = _descriptor(environment["os_release"])
-    if identity:
-        content["hardware"] = identity
     return content
 
 
-def content_fingerprint(result: dict[str, Any]) -> str:
-    """Hash allowlisted measured content, not labels or volatile host state.
+def canonical_hardware_material(result: dict[str, Any]) -> dict[str, Any]:
+    """Build the hardware and environment identity shared by both gates.
 
-    The fingerprint uses only durations, throughput and capacity figures,
-    latency figures, failure_rate and error counts, resource-usage summaries,
-    and a stable hardware identity: CPU model, logical processor count, total
-    memory, GPU models, and OS name/version. The schema stores that processor
-    count as cpu_logical_cores. Unknown fields, notes, labels, timestamps at
-    any depth, and volatile host state such as storage_free_bytes or uptime
-    are left out. Leaving them out is stricter: copies that differ only there
+    Descriptive text is canonicalized with canonical_descriptor, so format
+    characters, Unicode spaces, and dotted or dotless I do not split one
+    machine. NIC and hardware.gpus inventories are sorted after that
+    canonicalization, so rotation does not split one machine either. OS name
+    and version live here, not in the repeat fingerprint. cpu_logical_cores is
+    the schema's processor count.
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        JSON-ready identity for the hardware key.
+
+    Raises:
+        ValueError: If an identity number is not finite or a GPU inventory
+            index is missing or duplicated.
+    """
+    environment = result.get("environment") if isinstance(result.get("environment"), dict) else {}
+    hardware = environment.get("hardware") if isinstance(environment.get("hardware"), dict) else {}
+    nics = []
+    for nic in hardware.get("network_interfaces") or []:
+        if not isinstance(nic, dict):
+            nics.append({"name": canonical_descriptor(nic)})
+            continue
+        canonical_nic: dict[str, Any] = {}
+        if nic.get("name") is not None:
+            canonical_nic["name"] = canonical_descriptor(nic["name"])
+        if nic.get("is_up") is not None:
+            canonical_nic["is_up"] = _canonical_number(nic["is_up"])
+        for key in ("speed_mbps", "mtu"):
+            if nic.get(key) is not None:
+                canonical_nic[key] = _canonical_number(nic[key])
+        if nic.get("duplex") is not None:
+            canonical_nic["duplex"] = canonical_descriptor(nic["duplex"])
+        nics.append(canonical_nic)
+    inventory = []
+    for gpu in hardware.get("gpus") or []:
+        index = _gpu_index(gpu, "hardware.gpus")
+        canonical_gpu = {"index": index}
+        if isinstance(gpu, dict):
+            if gpu.get("name") is not None:
+                canonical_gpu["name"] = canonical_descriptor(gpu["name"])
+            _put_number(canonical_gpu, "memory_total_mib", gpu.get("memory_total_mib"))
+            if gpu.get("driver_version") is not None:
+                canonical_gpu["driver_version"] = canonical_descriptor(gpu["driver_version"])
+        inventory.append(canonical_gpu)
+    _indexed_gpu_records(hardware.get("gpus") or [], "hardware.gpus")
+    material: dict[str, Any] = {
+        "commit_sha": canonical_descriptor(environment.get("commit_sha")),
+        "os": None if environment.get("os") is None else canonical_descriptor(environment.get("os")),
+        "os_release": (
+            None
+            if environment.get("os_release") is None
+            else canonical_descriptor(environment.get("os_release"))
+        ),
+        "cpu_model": (
+            None
+            if hardware.get("cpu_model") is None
+            else canonical_descriptor(hardware.get("cpu_model"))
+        ),
+        "network_interfaces": _sorted_objects(nics),
+        "gpus": _sorted_objects(inventory),
+    }
+    _put_number(material, "cpu_logical_cores", hardware.get("cpu_logical_cores"))
+    _put_number(material, "ram_total_bytes", hardware.get("ram_total_bytes"))
+    if hardware.get("storage_path") is not None:
+        material["storage_path"] = canonical_descriptor(hardware.get("storage_path"))
+    if hardware.get("storage_device") is not None:
+        material["storage_device"] = canonical_descriptor(hardware.get("storage_device"))
+    if hardware.get("storage_fstype") is not None:
+        material["storage_fstype"] = canonical_descriptor(hardware.get("storage_fstype"))
+    _put_number(material, "storage_total_bytes", hardware.get("storage_total_bytes"))
+    return material
+
+
+def content_fingerprint(result: dict[str, Any]) -> str:
+    """Hash allowlisted measurements and workload-config identity.
+
+    The fingerprint covers durations, throughput and capacity figures, latency
+    figures, failure_rate and error counts, resource-usage summaries, and the
+    workload type plus non-clock config. Descriptive identity text such as OS
+    name and version, CPU model, and NIC or GPU inventory names is not included.
+    That text belongs only to the hardware key. Copies that differ only there
     collide and cannot count as independent repeats.
 
-    Before hashing, every number becomes a finite float and -0.0 becomes 0.0.
-    NaN and infinity are rejected. Strings are stripped and internal whitespace
-    is collapsed. OS, CPU, and GPU descriptor strings are also casefolded.
-    Unordered GPU lists are sorted. Keys are sorted and floats use one fixed
-    repr, so 0, 0.0, and -0.0, or 1000 and 1000.0, are one measurement.
+    Per-GPU usage stays keyed by GPU index. Duplicate resources.gpu indices, and
+    usage records that do not match the hardware.gpus inventory, are rejected.
+    They are not silently deduplicated. Every number becomes a finite float,
+    -0.0 becomes 0.0, and an integer that overflows float uses that same
+    ValueError. NaN and infinity are rejected. Keys are sorted and floats use
+    one fixed repr, so 0, 0.0, and -0.0, or 1000 and 1000.0, are one measurement.
 
     This gate defends against duplicated or relabeled evidence. It does not
     defend against deliberately fabricated measurements; provenance or signing
@@ -268,7 +385,8 @@ def content_fingerprint(result: dict[str, Any]) -> str:
         Hexadecimal SHA-256 of the canonical allowlisted content.
 
     Raises:
-        ValueError: If an allowlisted measured value is not a finite number.
+        ValueError: If an allowlisted measured value is not a finite number, or
+            if GPU usage indices are duplicated or do not match the inventory.
     """
     material = json.dumps(
         _measured_content(result),

@@ -180,10 +180,12 @@ def review_group(
         Duplicate benchmark identities and duplicate allowlisted content
         fingerprints fail the group. repeat_count is the number of unique content
         fingerprints, not the number of submitted labels. The fingerprint omits
-        unknown fields, notes, timestamps, and volatile host state, so copies
-        that differ only there collide. Non-finite measurements fail the group.
-        The check defends against duplicated or relabeled evidence, not against
-        deliberately fabricated measurements.
+        descriptive hardware text, notes, timestamps, and volatile host state, so
+        copies that differ only there collide. Those descriptors are compared by
+        the shared hardware key instead. Non-finite measurements, including
+        integers that overflow float, fail the group. The check defends against
+        duplicated or relabeled evidence, not against deliberately fabricated
+        measurements.
     """
     reasons: list[str] = []
     warnings: list[str] = []

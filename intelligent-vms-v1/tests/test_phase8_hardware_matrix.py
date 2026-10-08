@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 TOOLS = Path(__file__).parents[1] / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
@@ -758,9 +760,15 @@ def test_rotated_gpu_usage_list_is_not_an_independent_repeat():
         for index in range(3)
     ]
 
+    inventory = [
+        {"index": index, "name": f"GPU {index}", "memory_total_mib": 8192 + index}
+        for index in range(3)
+    ]
+
     def mutate(item, index):
         item["resources"]["gpu"] = gpus[index:] + gpus[:index]
         item["resources"]["gpu_measured"] = True
+        item["environment"]["hardware"]["gpus"] = inventory
 
     copies = _spelled_copies(mutate)
     assert [gpu["index"] for gpu in copies[1]["resources"]["gpu"]] == [1, 2, 0]
@@ -841,3 +849,220 @@ def test_failure_rate_zero_spellings_fail_cli_gates(tmp_path):
 def test_unknown_note_field_fails_cli_gates(tmp_path):
     copies = _spelled_copies(lambda item, index: item.__setitem__("note", f"copy-{index}"))
     _assert_cli_rejects_copies(tmp_path, copies)
+
+
+_OS_TEXT_TRIOS = (
+    ("zwsp-zwnj", ("Linux", "Linux\u200b", "Linux\u200c")),
+    ("bom", ("Linux", "\ufeffLinux", "Linux\ufeff")),
+    ("soft-hyphen", ("Linux", "Lin\u00adux", "Linux\u00ad")),
+    ("dotted-dotless-i", ("LINUX", "L\u0130NUX", "L\u0131NUX")),
+)
+
+
+def _handoff_matrix(copies):
+    report = reproducibility.build_report(results=copies)
+    approved = {}
+    for group in report["groups"]:
+        if group["status"] == "PASS":
+            approved.update(group["benchmark_fingerprints"])
+    output = matrix.build_matrix(
+        results=copies,
+        demand=demand(1500),
+        approved_benchmark_fingerprints=approved,
+    )
+    return report, approved, output
+
+
+def _assert_descriptive_text_cannot_qualify(tmp_path, copies):
+    assert len({matrix.hardware_key(item) for item in copies}) == 1
+    _assert_allowlisted_copies_fail_both_gates(copies)
+    report, approved, handed = _handoff_matrix(copies)
+    assert report["summary"]["passed"] == 0
+    assert approved == {}
+    role = handed["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert handed["qualified_evidence"] == []
+    assert "nodes_required" not in role
+    _assert_cli_rejects_copies(tmp_path, copies)
+
+
+@pytest.mark.parametrize("field", ("os", "os_release"))
+@pytest.mark.parametrize("variant_name,values", _OS_TEXT_TRIOS)
+def test_format_and_i_variants_in_os_text_are_not_independent_repeats(tmp_path, field, variant_name, values):
+    del variant_name
+    copies = _spelled_copies(
+        lambda item, index: item["environment"].__setitem__(field, values[index])
+    )
+    _assert_descriptive_text_cannot_qualify(tmp_path, copies)
+
+
+def _gpu_usage(index):
+    return {
+        "index": index,
+        "utilization_pct": {"mean": 10.0, "p95": 20.0, "max": 30.0},
+        "memory_used_mib": {"mean": 100.0, "p95": 110.0, "max": 120.0},
+        "temperature_c": {"mean": 40.0, "p95": 50.0, "max": 60.0},
+    }
+
+
+def test_repeated_gpu_usage_records_are_not_independent_repeats(tmp_path):
+    record = _gpu_usage(0)
+
+    def mutate(item, index):
+        item["resources"]["gpu"] = [copy.deepcopy(record) for _ in range(index + 1)]
+        item["resources"]["gpu_measured"] = True
+        item["environment"]["hardware"]["gpus"] = [
+            {"index": 0, "name": "Test GPU", "memory_total_mib": 8192}
+        ]
+
+    copies = _spelled_copies(mutate)
+    assert [len(item["resources"]["gpu"]) for item in copies] == [1, 2, 3]
+    for item in copies[1:]:
+        with pytest.raises(ValueError, match="resources.gpu"):
+            common.content_fingerprint(item)
+    report = reproducibility.build_report(results=copies)
+    assert report["summary"]["passed"] == 0
+    assert report["groups"][0]["status"] == "FAIL"
+    assert "resources.gpu" in " ".join(report["groups"][0]["reasons"])
+    output = matrix.build_matrix(results=copies, demand=demand(1500))
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+    assert "nodes_required" not in role
+    assert any("resources.gpu" in reason for row in output["rejected_evidence"] for reason in row["reasons"])
+    _report, approved, handed = _handoff_matrix(copies)
+    assert approved == {}
+    assert handed["profiles"][0]["roles"]["event_ingest"]["status"] == "UNQUALIFIED"
+    reproducibility_cli, produced = _cli_outputs(tmp_path, copies)
+    assert reproducibility_cli.returncode != 0
+    assert produced["profiles"][0]["roles"]["event_ingest"]["status"] == "UNQUALIFIED"
+    assert produced["qualified_evidence"] == []
+
+
+def _genuine_capacity_copies(mutate):
+    capacities = (1000.0, 980.0, 1020.0)
+    copies = []
+    for index, capacity in enumerate(capacities):
+        item = fake_result(benchmark_id=f"genuine-{index}", capacity=capacity)
+        mutate(item, index)
+        copies.append(item)
+    return copies
+
+
+def _assert_genuine_variants_qualify(tmp_path, copies):
+    assert len({matrix.hardware_key(item) for item in copies}) == 1
+    assert len({common.content_fingerprint(item) for item in copies}) == 3
+    report = reproducibility.build_report(results=copies)
+    assert report["summary"] == {"groups": 1, "passed": 1, "failed": 0}
+    assert report["groups"][0]["status"] == "PASS"
+    assert report["groups"][0]["repeat_count"] == 3
+    output = matrix.build_matrix(results=copies, demand=demand(1500))
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "QUALIFIED_FROM_MEASURED_EVIDENCE"
+    assert role["evidence"]["repeat_count"] == 3
+    _report, approved, handed = _handoff_matrix(copies)
+    assert len(approved) == 3
+    handed_role = handed["profiles"][0]["roles"]["event_ingest"]
+    assert handed_role["status"] == "QUALIFIED_FROM_MEASURED_EVIDENCE"
+    assert handed_role["evidence"]["repeat_count"] == 3
+    reproducibility_cli, produced = _cli_outputs(tmp_path, copies, fail_on_rejected=True)
+    assert reproducibility_cli.returncode == 0, reproducibility_cli.stdout + reproducibility_cli.stderr
+    assert produced["profiles"][0]["roles"]["event_ingest"]["status"] == "QUALIFIED_FROM_MEASURED_EVIDENCE"
+    assert produced["profiles"][0]["roles"]["event_ingest"]["evidence"]["repeat_count"] == 3
+
+
+def test_cpu_model_case_and_whitespace_group_genuine_repeats(tmp_path):
+    models = ("Test CPU", "test cpu", "TEST  CPU")
+    copies = _genuine_capacity_copies(
+        lambda item, index: item["environment"]["hardware"].__setitem__("cpu_model", models[index])
+    )
+    _assert_genuine_variants_qualify(tmp_path, copies)
+
+
+def test_rotated_nic_inventory_groups_genuine_repeats(tmp_path):
+    nics = [
+        {"name": "eth0", "is_up": True, "speed_mbps": 10000, "mtu": 1500, "duplex": "full"},
+        {"name": "eth1", "is_up": True, "speed_mbps": 1000, "mtu": 1500, "duplex": "full"},
+    ]
+
+    def mutate(item, index):
+        order = nics[index:] + nics[:index] if index < 2 else list(reversed(nics))
+        item["environment"]["hardware"]["network_interfaces"] = order
+
+    _assert_genuine_variants_qualify(tmp_path, _genuine_capacity_copies(mutate))
+
+
+def test_rotated_gpu_inventory_groups_genuine_repeats(tmp_path):
+    inventory = [
+        {"index": 0, "name": "GPU A", "memory_total_mib": 8192},
+        {"index": 1, "name": "GPU B", "memory_total_mib": 16384},
+    ]
+    usage = [_gpu_usage(0), _gpu_usage(1)]
+
+    def mutate(item, index):
+        if index < 2:
+            item["environment"]["hardware"]["gpus"] = inventory[index:] + inventory[:index]
+        else:
+            item["environment"]["hardware"]["gpus"] = list(reversed(inventory))
+        item["resources"]["gpu"] = usage
+        item["resources"]["gpu_measured"] = True
+
+    _assert_genuine_variants_qualify(tmp_path, _genuine_capacity_copies(mutate))
+
+
+def test_huge_integer_measurement_is_controlled_invalid_evidence(tmp_path):
+    copies = _spelled_copies(
+        lambda item, index: item["result"].__setitem__("bytes_written", 10**400)
+    )
+    for item in copies:
+        with pytest.raises(ValueError, match="finite"):
+            common.content_fingerprint(item)
+    report = reproducibility.build_report(results=copies)
+    assert report["summary"]["passed"] == 0
+    assert report["groups"][0]["status"] == "FAIL"
+    assert "finite" in " ".join(report["groups"][0]["reasons"])
+    output = matrix.build_matrix(results=copies, demand=demand(1500))
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+    assert "nodes_required" not in role
+    assert any("finite" in reason for row in output["rejected_evidence"] for reason in row["reasons"])
+    _report, approved, handed = _handoff_matrix(copies)
+    assert approved == {}
+    assert handed["qualified_evidence"] == []
+    reproducibility_cli, produced = _cli_outputs(tmp_path, copies)
+    assert reproducibility_cli.returncode != 0
+    assert "OverflowError" not in reproducibility_cli.stderr
+    assert produced["profiles"][0]["roles"]["event_ingest"]["status"] == "UNQUALIFIED"
+    assert produced["qualified_evidence"] == []
+
+
+def _cli_outputs(tmp_path, copies, *, fail_on_rejected=True):
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    for index, item in enumerate(copies):
+        (result_dir / f"run-{index}.json").write_text(json.dumps(item), encoding="utf-8")
+    demand_path = tmp_path / "demand.json"
+    demand_path.write_text(json.dumps(demand(1500)), encoding="utf-8")
+    report_path = tmp_path / "reproducibility.json"
+    matrix_path = tmp_path / "hardware-matrix.json"
+    reproducibility_args = ["--results", str(result_dir), "--output", str(report_path)]
+    if fail_on_rejected:
+        reproducibility_args.append("--fail-on-rejected-groups")
+    reproducibility_cli = _run_phase8_cli("phase8_reproducibility.py", reproducibility_args)
+    matrix_cli = _run_phase8_cli(
+        "phase8_hardware_matrix.py",
+        [
+            "--results",
+            str(result_dir),
+            "--demand",
+            str(demand_path),
+            "--reproducibility-report",
+            str(report_path),
+            "--output",
+            str(matrix_path),
+        ],
+    )
+    assert matrix_cli.returncode == 0, matrix_cli.stdout + matrix_cli.stderr
+    produced = json.loads(matrix_path.read_text(encoding="utf-8"))
+    return reproducibility_cli, produced

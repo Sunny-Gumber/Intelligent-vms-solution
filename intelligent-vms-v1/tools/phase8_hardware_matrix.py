@@ -10,7 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from phase8_benchmark_common import content_fingerprint, result_fingerprint, validate_result
+from phase8_benchmark_common import (
+    canonical_hardware_material,
+    content_fingerprint,
+    result_fingerprint,
+    validate_result,
+)
 
 
 MATRIX_VERSION = "phase8-hardware-matrix-v1"
@@ -22,8 +27,8 @@ class Evidence:
 
     Attributes:
         benchmark_id: Source benchmark identifier.
-        content_fingerprint: Allowlisted measured-content fingerprint. Unknown
-            fields, notes, timestamps, and volatile host state are omitted.
+        content_fingerprint: Allowlisted measurement fingerprint. Descriptive
+            hardware text, notes, timestamps, and volatile host state are omitted.
         commit_sha: Benchmarked source revision.
         hardware_key: Stable hardware/environment identity.
         hardware: Captured hardware metadata.
@@ -138,28 +143,24 @@ def _role_duplicate_reason(
 def hardware_key(result: dict[str, Any]) -> str:
     """Build a stable identity for benchmark commit and hardware characteristics.
 
+    build_report and build_matrix both use this key. Descriptive text is
+    canonicalized, including OS name and version, and NIC and GPU inventories
+    are sorted. Letter case, repeated spaces, Unicode format characters, dotted
+    or dotless I, and inventory rotation therefore stay on one machine.
+
     Args:
         result: Validated Phase-8 benchmark result.
 
     Returns:
         Twenty-character SHA-256-derived hardware identity.
+
+    Raises:
+        ValueError: If a hardware number is not finite or a GPU index is missing
+            or duplicated.
     """
-    env = result["environment"]
-    hardware = env.get("hardware", {})
-    material = {
-        "commit_sha": env.get("commit_sha"),
-        "cpu_model": hardware.get("cpu_model"),
-        "cpu_logical_cores": hardware.get("cpu_logical_cores"),
-        "ram_total_bytes": hardware.get("ram_total_bytes"),
-        "network_interfaces": hardware.get("network_interfaces", []),
-        "gpus": hardware.get("gpus", []),
-        "storage_path": hardware.get("storage_path"),
-        "storage_device": hardware.get("storage_device"),
-        "storage_fstype": hardware.get("storage_fstype"),
-        "storage_total_bytes": hardware.get("storage_total_bytes"),
-    }
+    material = canonical_hardware_material(result)
     return hashlib.sha256(
-        json.dumps(material, sort_keys=True, separators=(",", ":"), default=str).encode()
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:20]
 
 
@@ -327,9 +328,10 @@ def grouped_qualified_evidence(
         Best conservative qualified evidence row for each role/dimension pair.
         Groups that reuse a benchmark identity or allowlisted content fingerprint
         are omitted. repeat_count is the number of unique content fingerprints.
-        Copies that differ only by labels, notes, timestamps, number spelling, or
-        volatile host state collide and are not qualified. Byte-identical genuine
-        aggregates fail closed. Distinct fabricated numbers are outside this gate.
+        Copies that differ only by descriptive hardware text, labels, notes,
+        timestamps, number spelling, or volatile host state collide and are not
+        qualified. Byte-identical genuine aggregates fail closed. Distinct
+        fabricated numbers are outside this gate.
     """
     groups: dict[tuple[str, str, str, str], list[Evidence]] = {}
     for item in evidence:
@@ -386,8 +388,9 @@ def build_matrix(
     are not independent repeats and cannot produce QUALIFIED_FROM_MEASURED_EVIDENCE.
     That uniqueness is enforced in this function, including when no reproducibility
     report is supplied. repeat_count is the number of unique content fingerprints.
-    The fingerprint omits unknown fields, notes, timestamps, and volatile host
-    state such as storage_free_bytes. Byte-identical aggregated measurements fail
+    The fingerprint omits descriptive hardware text, notes, timestamps, and
+    volatile host state such as storage_free_bytes. That text is part of the
+    shared hardware key instead. Byte-identical aggregated measurements fail
     closed. This gate does not defend against deliberately fabricated measurements.
 
     Args:
