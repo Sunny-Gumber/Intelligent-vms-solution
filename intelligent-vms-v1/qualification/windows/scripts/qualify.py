@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Safe stdlib-only qualification evidence tooling."""
 from __future__ import annotations
-import argparse, csv, datetime as dt, hashlib, json, os, re, struct, subprocess, sys
+import argparse, csv, datetime as dt, errno, hashlib, json, os, re, stat, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 STATES={"NOT_RUN","BLOCKED_EXTERNAL","PASS","FAIL","PASS_WITH_LIMITATION","NOT_APPLICABLE"}
@@ -344,6 +344,13 @@ _PE32PLUS_MAGIC=0x20B
 _SECURITY_DIRECTORY_INDEX=4
 _WIN_CERTIFICATE_HEADER=8
 _CERTIFICATE_ALIGNMENT=8
+# st_size above this is rejected before any read. 512 MiB covers a field-test
+# installer and stops a sparse multi-hundred-megabyte file from being loaded.
+_MAX_ARTIFACT_BYTES=512*1024*1024
+# Header fields materialized for one classification. The certificate blob is
+# not part of this budget.
+_MAX_PE_HEADER_BYTES=1024*1024
+_SNAPSHOT_CHUNK=1024*1024
 
 def _in_file(length:int, offset:int, size:int)->bool:
     """Return whether offset+size lies inside a buffer without wrapping.
@@ -386,58 +393,269 @@ def _optional_header_layout(magic:int)->tuple[int,int,int]|None:
     security_offset=directory_offset+(_SECURITY_DIRECTORY_INDEX*8)
     return rva_offset,directory_offset,security_offset+8
 
-def _authenticode_container(data:bytes)->tuple[str,str]:
-    """Classify a file before Authenticode status is trusted.
+class _HeaderWindowExceeded(Exception):
+    """Classification asked for more header bytes than the parse budget allows."""
 
-    UNSIGNED_EXPECTED is allowed only for a zero-length file and for a
-    well-formed PE32/PE32+ whose security directory is exactly (0, 0). Every
-    header offset required to read that directory must lie inside the file.
-    A non-zero directory that is truncated, misaligned, or past EOF is rejected
-    here so it cannot skip PowerShell.
+class _ShortRead(Exception):
+    """A regular file ended before the size recorded by fstat."""
+
+class _ByteView:
+    """File-sized view that reads only the header spans classification asks for.
 
     Args:
-        data: Raw artifact bytes.
+        fd: Open descriptor positioned by the caller. This view seeks as needed.
+        file_size: Logical size from fstat. Certificate bounds use this, not the
+            number of bytes pulled into memory.
+    """
+
+    def __init__(self, fd:int, file_size:int):
+        self.fd=fd
+        self.file_size=file_size
+        self.bytes_read=0
+        self._cache:dict[tuple[int,int],bytes]={}
+
+    def span(self, offset:int, size:int)->bytes|None:
+        """Return one in-file span, or None when the span is outside the file.
+
+        Args:
+            offset: Start offset.
+            size: Byte count.
+
+        Returns:
+            The bytes, or None when they are not inside the file.
+
+        Raises:
+            _HeaderWindowExceeded: The span would push materialized header
+                bytes past _MAX_PE_HEADER_BYTES.
+            _ShortRead: The descriptor returned fewer bytes than fstat promised.
+        """
+        if not _in_file(self.file_size, offset, size):
+            return None
+        key=(offset, size)
+        cached=self._cache.get(key)
+        if cached is not None:
+            return cached
+        if size>_MAX_PE_HEADER_BYTES or self.bytes_read>_MAX_PE_HEADER_BYTES-size:
+            raise _HeaderWindowExceeded()
+        os.lseek(self.fd, offset, os.SEEK_SET)
+        blob=_read_exact(self.fd, size)
+        self._cache[key]=blob
+        self.bytes_read+=size
+        return blob
+
+    def spans(self)->tuple[tuple[tuple[int,int],bytes],...]:
+        """Return the header spans already read, in insertion order.
+
+        Returns:
+            Offset, size, and bytes for each span.
+
+        Raises:
+            This function does not raise.
+        """
+        return tuple(self._cache.items())
+
+def _read_exact(fd:int, size:int)->bytes:
+    """Read exactly size bytes from the current descriptor position.
+
+    Args:
+        fd: Open descriptor.
+        size: Byte count.
 
     Returns:
-        A kind and detail pair. Kind is empty, unsigned_pe, certificate, or
-        reject. Reject details are NOT_A_PE_FILE, PE_SECURITY_DIR_OUT_OF_RANGE,
-        or PE_MALFORMED:<reason>.
+        The bytes.
+
+    Raises:
+        _ShortRead: EOF arrived before size bytes.
+    """
+    buf=bytearray()
+    while len(buf)<size:
+        chunk=os.read(fd, size-len(buf))
+        if not chunk:
+            raise _ShortRead()
+        buf+=chunk
+    return bytes(buf)
+
+def _write_exact(fd:int, blob:bytes)->None:
+    """Write every byte of blob.
+
+    Args:
+        fd: Open descriptor.
+        blob: Bytes to write.
+
+    Raises:
+        OSError: The write returns no progress.
+    """
+    view=memoryview(blob)
+    while view:
+        wrote=os.write(fd, view)
+        if wrote<=0:
+            raise OSError(errno.EIO, "short write")
+        view=view[wrote:]
+
+def _artifact_open_flags()->int:
+    """Return read flags that do not block on a FIFO and are not inherited.
+
+    Returns:
+        os.O_RDONLY plus O_CLOEXEC and O_NONBLOCK when this platform defines them.
 
     Raises:
         This function does not raise.
     """
-    if len(data)==0:
+    flags=os.O_RDONLY
+    flags|=getattr(os, "O_CLOEXEC", 0)
+    flags|=getattr(os, "O_NONBLOCK", 0)
+    return flags
+
+def _errno_name(err:int|None)->str:
+    """Return the stable errno name for an OSError.
+
+    Args:
+        err: OSError.errno. None becomes UNKNOWN.
+
+    Returns:
+        A name such as ENOENT, EACCES, ELOOP, or EISDIR.
+
+    Raises:
+        This function does not raise.
+    """
+    if err is None:
+        return "UNKNOWN"
+    return errno.errorcode.get(err, "UNKNOWN")
+
+class _Opened:
+    """One artifact descriptor, or a fail-closed reason found before parsing."""
+
+    def __init__(self, fd:int, view:_ByteView|None, fail:str|None):
+        self.fd=fd
+        self.view=view
+        self.fail=fail
+
+    def close(self)->None:
+        """Close the descriptor if it is still open.
+
+        Raises:
+            OSError: close fails.
+        """
+        if self.fd>=0:
+            os.close(self.fd)
+            self.fd=-1
+
+def _open_artifact(path:str)->_Opened:
+    """Open one artifact, require a bounded regular file, and do not read it yet.
+
+    Symlinks are followed. The empty placeholder is only st_size 0 on a
+    descriptor whose mode is stat.S_ISREG. Directories, devices, and FIFOs are
+    rejected here. Unix O_NONBLOCK keeps a FIFO from blocking in open.
+
+    Args:
+        path: Artifact path.
+
+    Returns:
+        An open descriptor. fail is ARTIFACT_UNREADABLE:EISDIR,
+        ARTIFACT_NOT_REGULAR_FILE, or ARTIFACT_TOO_LARGE when the path must
+        not be parsed. The caller closes the descriptor.
+
+    Raises:
+        OSError: The path cannot be opened.
+    """
+    fd=os.open(path, _artifact_open_flags())
+    try:
+        st=os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            return _Opened(fd, None, "ARTIFACT_UNREADABLE:EISDIR")
+        if not stat.S_ISREG(st.st_mode):
+            return _Opened(fd, None, "ARTIFACT_NOT_REGULAR_FILE")
+        if st.st_size>_MAX_ARTIFACT_BYTES:
+            return _Opened(fd, None, "ARTIFACT_TOO_LARGE")
+        return _Opened(fd, _ByteView(fd, st.st_size), None)
+    except Exception:
+        os.close(fd)
+        raise
+
+def _authenticode_container(view:_ByteView)->tuple[str,str]:
+    """Classify a file before Authenticode status is trusted.
+
+    UNSIGNED_EXPECTED is allowed only for a zero-length regular file and for a
+    well-formed PE32/PE32+ whose security directory is exactly (0, 0). Every
+    header offset required to read that directory must lie inside the file.
+    A non-zero directory that is truncated, misaligned, or past EOF is rejected
+    here so it cannot skip PowerShell. Only the header fields are read. The
+    certificate blob is checked against the fstat size and is not loaded.
+
+    Args:
+        view: Bounded view of a regular file.
+
+    Returns:
+        A kind and detail pair. Kind is empty, unsigned_pe, certificate, or
+        reject. Reject details are NOT_A_PE_FILE, PE_SECURITY_DIR_OUT_OF_RANGE,
+        or PE_MALFORMED:<reason>, including header_exceeds_parse_window.
+
+    Raises:
+        _ShortRead: A header span ended before fstat said it was present.
+    """
+    try:
+        return _classify_authenticode(view)
+    except _HeaderWindowExceeded:
+        return "reject","PE_MALFORMED:header_exceeds_parse_window"
+
+def _classify_authenticode(view:_ByteView)->tuple[str,str]:
+    """Apply the PE security-directory decision order to a bounded view.
+
+    Args:
+        view: Bounded view of a regular file.
+
+    Returns:
+        The kind and detail pair from _authenticode_container.
+
+    Raises:
+        _HeaderWindowExceeded: A header span exceeds the parse budget.
+        _ShortRead: A header span cannot be read.
+    """
+    length=view.file_size
+    if length==0:
         return "empty",_UNSIGNED_DETAIL
-    if not data.startswith(b"MZ"):
+    lead_n=2 if length>=2 else length
+    lead=view.span(0, lead_n)
+    if lead is None or not lead.startswith(b"MZ"):
         return "reject","NOT_A_PE_FILE"
-    if not _in_file(len(data),0,0x40):
+    if not _in_file(length, 0, 0x40):
         return "reject","PE_MALFORMED:truncated_dos_header"
-    pe_off=struct.unpack_from("<I",data,0x3C)[0]
+    dos=view.span(0, 0x40)
+    if dos is None:
+        return "reject","PE_MALFORMED:truncated_dos_header"
+    pe_off=struct.unpack_from("<I", dos, 0x3C)[0]
     if pe_off<0x40:
         return "reject","PE_MALFORMED:e_lfanew_overlaps_dos_header"
-    if not _in_file(len(data),pe_off,24):
+    if not _in_file(length, pe_off, 24):
         return "reject","PE_MALFORMED:e_lfanew_out_of_range"
-    if data[pe_off:pe_off+4]!=b"PE\x00\x00":
+    coff=view.span(pe_off, 24)
+    if coff is None or coff[:4]!=b"PE\x00\x00":
         return "reject","PE_MALFORMED:missing_pe_signature"
-    if not _in_file(len(data),pe_off+24,2):
+    if not _in_file(length, pe_off+24, 2):
         return "reject","PE_MALFORMED:truncated_optional_header"
-    magic=struct.unpack_from("<H",data,pe_off+24)[0]
+    magic_b=view.span(pe_off+24, 2)
+    if magic_b is None:
+        return "reject","PE_MALFORMED:truncated_optional_header"
+    magic=struct.unpack("<H", magic_b)[0]
     layout=_optional_header_layout(magic)
     if layout is None:
         return "reject","PE_MALFORMED:unknown_optional_header_magic"
     rva_offset,directory_offset,min_optional=layout
-    optional_size=struct.unpack_from("<H",data,pe_off+20)[0]
+    optional_size=struct.unpack_from("<H", coff, 20)[0]
     if optional_size<min_optional:
         return "reject","PE_MALFORMED:optional_header_excludes_security_directory"
     opt_off=pe_off+24
     security_rel=directory_offset+(_SECURITY_DIRECTORY_INDEX*8)
-    if not _in_file(len(data),opt_off,security_rel+8):
+    if not _in_file(length, opt_off, security_rel+8):
         return "reject","PE_MALFORMED:truncated_security_directory"
-    if not _in_file(len(data),opt_off,optional_size):
+    if not _in_file(length, opt_off, optional_size):
         return "reject","PE_MALFORMED:truncated_optional_header"
-    if not _in_file(len(data),opt_off+rva_offset,4):
+    if not _in_file(length, opt_off+rva_offset, 4):
         return "reject","PE_MALFORMED:truncated_optional_header"
-    directory_count=struct.unpack_from("<I",data,opt_off+rva_offset)[0]
+    rva_b=view.span(opt_off+rva_offset, 4)
+    if rva_b is None:
+        return "reject","PE_MALFORMED:truncated_optional_header"
+    directory_count=struct.unpack("<I", rva_b)[0]
     if directory_count<_SECURITY_DIRECTORY_INDEX+1:
         return "reject","PE_MALFORMED:security_directory_absent"
     if directory_count>0xFFFFFFFF//8:
@@ -445,12 +663,15 @@ def _authenticode_container(data:bytes)->tuple[str,str]:
     array_bytes=directory_count*8
     if directory_offset>optional_size or array_bytes>optional_size-directory_offset:
         return "reject","PE_MALFORMED:data_directory_array_exceeds_optional_header"
-    cert_offset,cert_size=struct.unpack_from("<II",data,opt_off+security_rel)
+    cert_b=view.span(opt_off+security_rel, 8)
+    if cert_b is None:
+        return "reject","PE_MALFORMED:truncated_security_directory"
+    cert_offset,cert_size=struct.unpack("<II", cert_b)
     if cert_offset==0 and cert_size==0:
         return "unsigned_pe",_UNSIGNED_DETAIL
     if cert_offset==0 or cert_size==0:
         return "reject","PE_MALFORMED:security_directory_incomplete"
-    if cert_size>0xFFFFFFFF-cert_offset or not _in_file(len(data),cert_offset,cert_size):
+    if cert_size>0xFFFFFFFF-cert_offset or not _in_file(length, cert_offset, cert_size):
         return "reject","PE_SECURITY_DIR_OUT_OF_RANGE"
     if cert_offset%_CERTIFICATE_ALIGNMENT!=0:
         return "reject","PE_MALFORMED:security_directory_misaligned"
@@ -462,17 +683,27 @@ def pe_has_authenticode(path:Path)->bool:
     """Return whether the PE security directory names a certificate inside the file.
 
     Args:
-        path: Artifact to read.
+        path: Artifact to inspect. The read is limited to header fields of a
+            regular file at most _MAX_ARTIFACT_BYTES.
 
     Returns:
         True only when the certificate blob is fully inside the file. A zero
-        security directory and every malformed container return False.
+        security directory, a non-regular file, an oversize file, and every
+        malformed container return False.
 
     Raises:
-        OSError: The artifact cannot be read.
+        OSError: The artifact cannot be opened.
     """
-    kind,_detail=_authenticode_container(path.read_bytes())
-    return kind=="certificate"
+    opened=_open_artifact(str(path))
+    try:
+        if opened.fail or opened.view is None:
+            return False
+        kind,_detail=_authenticode_container(opened.view)
+        return kind=="certificate"
+    except _ShortRead:
+        return False
+    finally:
+        opened.close()
 
 def _json_object_no_duplicate_keys(pairs:list)->dict:
     """Build one JSON object and reject a repeated key.
@@ -595,43 +826,146 @@ def _authenticode_verification_available()->bool:
     """
     return os.name=="nt"
 
-def verify_signature(path:str, expect_unsigned:bool)->tuple[str,str]:
-    """Verify Authenticode status without deciding publisher or timestamp policy.
+class _Snapshot:
+    """Private byte-for-byte copy of the artifact PowerShell will verify."""
 
-    With --expect-unsigned, UNSIGNED_EXPECTED before PowerShell is only a
-    zero-length file or a well-formed PE32/PE32+ whose security directory is
-    exactly (0, 0). Every other container fails closed. An in-file certificate
-    table is checked with Get-AuthenticodeSignature on Windows. Status is mapped
-    through SIGNATURE_STATUS_BY_VALUE, so numeric 0 and the name Valid are both
-    signed. Publisher identity and timestamp checks stay owner decisions.
+    def __init__(self, path:Path, directory:Path, digest:str, size:int):
+        self.path=path
+        self.directory=directory
+        self.digest=digest
+        self.size=size
+
+    def cleanup(self)->None:
+        """Remove the private copy.
+
+        Raises:
+            This function does not raise.
+        """
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+        try:
+            os.rmdir(self.directory)
+        except OSError:
+            pass
+
+def _snapshot_fd(fd:int, size:int)->_Snapshot:
+    """Stream exactly size bytes from fd into a private file and hash them.
 
     Args:
-        path: Artifact path to inspect.
-        expect_unsigned: When true, only a zero-length file, a well-formed
-            (0, 0) security directory, or NotSigned is UNSIGNED_EXPECTED.
-            UnknownError is FAIL. Boss default pending signing ADR owner
-            confirmation.
+        fd: Regular-file descriptor. It is seeked to the start.
+        size: Byte count from the fstat used for classification. At most
+            _MAX_ARTIFACT_BYTES.
 
     Returns:
-        A status and detail pair. Status is SIGNED_VALID, UNSIGNED_EXPECTED,
-        NOT_RUN, or FAIL. Container failures use NOT_A_PE_FILE,
-        PE_SECURITY_DIR_OUT_OF_RANGE, or PE_MALFORMED:<reason>. A certificate
-        FAIL detail starts with SIGNATURE_STATUS_REJECTED:<Name>,
-        SIGNATURE_STATUS_MISSING, SIGNATURE_STATUS_EMPTY,
-        SIGNATURE_STATUS_UNPARSED, or SIGNATURE_STATUS_AMBIGUOUS.
+        The private copy and the SHA-256 of the bytes written.
 
     Raises:
-        OSError: The artifact cannot be read.
+        _ShortRead: The descriptor ended before size bytes.
+        OSError: The private file cannot be created or written.
+    """
+    os.lseek(fd, 0, os.SEEK_SET)
+    directory=Path(tempfile.mkdtemp(prefix="vms-authenticode-"))
+    path=directory/"artifact.bin"
+    out=os.open(path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os, "O_CLOEXEC", 0), 0o600)
+    digest=hashlib.sha256()
+    try:
+        remaining=size
+        while remaining:
+            chunk=os.read(fd, min(_SNAPSHOT_CHUNK, remaining))
+            if not chunk:
+                raise _ShortRead()
+            digest.update(chunk)
+            _write_exact(out, chunk)
+            remaining-=len(chunk)
+        os.fsync(out)
+    except Exception:
+        os.close(out)
+        _Snapshot(path, directory, "", size).cleanup()
+        raise
+    os.close(out)
+    try:
+        os.chmod(path, 0o400)
+    except OSError:
+        _Snapshot(path, directory, "", size).cleanup()
+        raise
+    return _Snapshot(path, directory, digest.hexdigest(), size)
+
+def _snapshot_matches(path:Path, view:_ByteView)->bool:
+    """Return whether the private copy still has the classified header spans.
+
+    Args:
+        path: Private copy.
+        view: View whose spans were classified.
+
+    Returns:
+        True when the copy is a regular file of the same size and every
+        classified span matches.
+
+    Raises:
+        OSError: The copy cannot be opened.
+    """
+    fd=os.open(path, _artifact_open_flags())
+    try:
+        st=os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size!=view.file_size:
+            return False
+        for (offset, size), blob in view.spans():
+            os.lseek(fd, offset, os.SEEK_SET)
+            if _read_exact(fd, size)!=blob:
+                return False
+        return True
+    except _ShortRead:
+        return False
+    finally:
+        os.close(fd)
+
+def _hash_regular_exact(path:Path, size:int)->str:
+    """Hash a regular file that must still be exactly size bytes.
+
+    Args:
+        path: File to hash.
+        size: Expected size. The file is not read when the size differs.
+
+    Returns:
+        Lowercase SHA-256.
+
+    Raises:
+        _ShortRead: The file is no longer a regular file of that size, or the
+            read ended early.
+        OSError: The file cannot be opened.
+    """
+    fd=os.open(path, _artifact_open_flags())
+    try:
+        st=os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size!=size or st.st_size>_MAX_ARTIFACT_BYTES:
+            raise _ShortRead()
+        digest=hashlib.sha256()
+        remaining=size
+        while remaining:
+            chunk=os.read(fd, min(_SNAPSHOT_CHUNK, remaining))
+            if not chunk:
+                raise _ShortRead()
+            digest.update(chunk)
+            remaining-=len(chunk)
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+def _powershell_status(path:str, expect_unsigned:bool)->tuple[str,str]:
+    """Run Get-AuthenticodeSignature on one path and map its Status.
+
+    Args:
+        path: File the cmdlet must read. Callers pass the private copy.
+        expect_unsigned: Forwarded to authenticode_status_verdict.
+
+    Returns:
+        A status and detail pair. FAIL details keep the existing reason codes.
+
+    Raises:
         subprocess.TimeoutExpired: PowerShell does not finish within 30 seconds.
     """
-    artifact=Path(path)
-    kind,container_detail=_authenticode_container(artifact.read_bytes())
-    if kind in {"empty","unsigned_pe"}:
-        return ("UNSIGNED_EXPECTED" if expect_unsigned else "FAIL"),container_detail
-    if kind=="reject":
-        return "FAIL",container_detail
-    if not _authenticode_verification_available():
-        return "NOT_RUN","Authenticode cryptographic verification requires Windows"
     escaped=str(Path(path)).replace("'","''")
     ps=(
         "Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; "
@@ -646,19 +980,120 @@ def verify_signature(path:str, expect_unsigned:bool)->tuple[str,str]:
     if cp.returncode:
         return "FAIL",cp.stderr.strip()
     try:
-        data=json.loads(cp.stdout,object_pairs_hook=_json_object_no_duplicate_keys)
+        data=json.loads(cp.stdout, object_pairs_hook=_json_object_no_duplicate_keys)
     except json.JSONDecodeError:
         return "FAIL","Authenticode status output was not valid JSON"
     except ValueError:
         return "FAIL","SIGNATURE_STATUS_AMBIGUOUS"
-    if not isinstance(data,dict):
+    if not isinstance(data, dict):
         return "FAIL","Authenticode status output was not a JSON object"
     raw_status=data.get("Status")
-    verdict=authenticode_status_verdict(raw_status,expect_unsigned)
-    detail=json.dumps(data,sort_keys=True)
+    verdict=authenticode_status_verdict(raw_status, expect_unsigned)
+    detail=json.dumps(data, sort_keys=True)
     if verdict=="FAIL":
         detail=signature_rejection_reason(raw_status)+" "+detail
-    return verdict,detail
+    return verdict, detail
+
+def _verify_with_snapshot(opened:_Opened, expect_unsigned:bool)->tuple[str,str]:
+    """Verify the private copy of a certificate-table artifact.
+
+    Args:
+        opened: Open regular file whose container kind is certificate.
+        expect_unsigned: Forwarded to the status map.
+
+    Returns:
+        The PowerShell verdict, or FAIL / ARTIFACT_CHANGED when the copy does
+        not match the classified bytes.
+
+    Raises:
+        _ShortRead: The source or the copy changed length during the snapshot.
+        subprocess.TimeoutExpired: PowerShell does not finish within 30 seconds.
+        OSError: The private copy cannot be created.
+    """
+    view=opened.view
+    if view is None or not view.spans():
+        return "FAIL","ARTIFACT_CHANGED"
+    snap=_snapshot_fd(opened.fd, view.file_size)
+    try:
+        if not _snapshot_matches(snap.path, view):
+            return "FAIL","ARTIFACT_CHANGED"
+        status,detail=_powershell_status(str(snap.path), expect_unsigned)
+        if _hash_regular_exact(snap.path, snap.size)!=snap.digest:
+            return "FAIL","ARTIFACT_CHANGED"
+        return status,detail
+    finally:
+        snap.cleanup()
+
+def verify_signature(path:str, expect_unsigned:bool)->tuple[str,str]:
+    """Verify Authenticode status without deciding publisher or timestamp policy.
+
+    With --expect-unsigned, UNSIGNED_EXPECTED before PowerShell is only a
+    regular file of length 0, or a well-formed PE32/PE32+ whose security
+    directory is exactly (0, 0). Every other container fails closed. An in-file
+    certificate table is checked with Get-AuthenticodeSignature on Windows,
+    against a private copy of the bytes that were classified. Status is mapped
+    through SIGNATURE_STATUS_BY_VALUE, so numeric 0 and the name Valid are both
+    signed. Publisher identity and timestamp checks stay owner decisions.
+
+    Args:
+        path: Artifact path to inspect.
+        expect_unsigned: When true, only a regular file of length 0, a
+            well-formed (0, 0) security directory, or NotSigned is
+            UNSIGNED_EXPECTED. UnknownError is FAIL. Boss default pending
+            signing ADR owner confirmation.
+
+    Returns:
+        A status and detail pair. Status is SIGNED_VALID, UNSIGNED_EXPECTED,
+        NOT_RUN, or FAIL. Container failures use NOT_A_PE_FILE,
+        PE_SECURITY_DIR_OUT_OF_RANGE, or PE_MALFORMED:<reason>. A certificate
+        FAIL detail starts with SIGNATURE_STATUS_REJECTED:<Name>,
+        SIGNATURE_STATUS_MISSING, SIGNATURE_STATUS_EMPTY,
+        SIGNATURE_STATUS_UNPARSED, or SIGNATURE_STATUS_AMBIGUOUS. Unreadable
+        paths use ARTIFACT_UNREADABLE:<errno-name>. Non-regular files use
+        ARTIFACT_NOT_REGULAR_FILE. Oversize files use ARTIFACT_TOO_LARGE. A
+        copy that does not match the classified bytes uses ARTIFACT_CHANGED.
+
+    Raises:
+        subprocess.TimeoutExpired: PowerShell does not finish within 30 seconds.
+    """
+    try:
+        return _verify_signature_at(path, expect_unsigned)
+    except OSError as exc:
+        return "FAIL","ARTIFACT_UNREADABLE:"+_errno_name(exc.errno)
+    except _ShortRead:
+        return "FAIL","ARTIFACT_CHANGED"
+
+def _verify_signature_at(path:str, expect_unsigned:bool)->tuple[str,str]:
+    """Classify one opened artifact and, on Windows, verify its private copy.
+
+    Args:
+        path: Artifact path to inspect.
+        expect_unsigned: Forwarded to the unsigned short-circuit and the status map.
+
+    Returns:
+        The status and detail pair from verify_signature.
+
+    Raises:
+        OSError: The artifact or its private copy cannot be opened.
+        _ShortRead: The file changed length while it was being copied.
+        subprocess.TimeoutExpired: PowerShell does not finish within 30 seconds.
+    """
+    opened=_open_artifact(path)
+    try:
+        if opened.fail:
+            return "FAIL",opened.fail
+        if opened.view is None:
+            return "FAIL","ARTIFACT_CHANGED"
+        kind,container_detail=_authenticode_container(opened.view)
+        if kind in {"empty","unsigned_pe"}:
+            return ("UNSIGNED_EXPECTED" if expect_unsigned else "FAIL"),container_detail
+        if kind=="reject":
+            return "FAIL",container_detail
+        if not _authenticode_verification_available():
+            return "NOT_RUN","Authenticode cryptographic verification requires Windows"
+        return _verify_with_snapshot(opened, expect_unsigned)
+    finally:
+        opened.close()
 
 def main():
     """Dispatch qualification harness commands.
