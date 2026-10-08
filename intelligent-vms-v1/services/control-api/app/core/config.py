@@ -1,7 +1,30 @@
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.effective_authority import DEFAULT_FENCE_EXPIRY_GRACE_SECONDS
+
+
+def playback_record_path_accepted(record_path: str) -> bool:
+    """Return whether pinned MediaMTX playback will accept a recordPath template.
+
+    MediaMTX v1.21.1 (internal/conf/path.go) rejects a path while playback is
+    enabled unless recordPath contains %path, %f, and either %s or the calendar
+    set %Y %m %d %H %M %S. Product playback is enabled, so owner decision C3
+    requires every playback template to include %f.
+
+    Args:
+        record_path: MediaMTX recordPath template.
+
+    Returns:
+        True when the template satisfies those pinned playback rules.
+    """
+    if "%path" not in record_path:
+        return False
+    has_epoch = "%s" in record_path
+    has_calendar = all(token in record_path for token in ("%Y", "%m", "%d", "%H", "%M", "%S"))
+    if not (has_epoch or has_calendar):
+        return False
+    return "%f" in record_path
 
 
 class Settings(BaseSettings):
@@ -66,7 +89,10 @@ class Settings(BaseSettings):
     regional_spool_token: str = ""
     recording_hook_callback_url: str = "http://control-api:8000/internal/v1/recording/segments/complete"
     recording_hook_command: str = ""
-    recording_path_template: str = "/recordings/%path/%Y/%m/%d/%H/%s"
+    # Owner decision C3. MediaMTX v1.21.1 rejects recordPath without %f when
+    # playback is enabled. %s-%f keeps the Unix-second prefix and six-digit
+    # microseconds used by the Windows field-test template.
+    recording_path_template: str = "/recordings/%path/%Y/%m/%d/%H/%s-%f"
     recording_query_max_window_hours: int = 168
     recording_query_max_segments: int = 10000
     # Export safety guardrails, not measured production-capacity claims.
@@ -148,6 +174,16 @@ class Settings(BaseSettings):
     placement_execution_enabled: bool = False
     placement_local_node_id: str = "media-local-01"
     node_fence_snapshot_max_items: int = 10000
+
+    @field_validator("recording_path_template")
+    @classmethod
+    def _recording_path_template_enables_playback(cls, value: str) -> str:
+        if not playback_record_path_accepted(value):
+            raise ValueError(
+                "recording_path_template must satisfy MediaMTX v1.21.1 playback "
+                "recordPath rules: %path, %f, and either %s or %Y %m %d %H %M %S"
+            )
+        return value
 
 
 settings = Settings()

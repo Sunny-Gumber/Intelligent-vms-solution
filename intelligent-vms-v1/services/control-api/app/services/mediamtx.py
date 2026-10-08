@@ -6,7 +6,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from app.core.config import settings
+from app.core.config import playback_record_path_accepted, settings
 from app.services.mediamtx_list_page import MediaMTXListPageError, assess_mediamtx_list_page
 
 log = logging.getLogger(__name__)
@@ -130,9 +130,15 @@ class MediaMTXClient:
             None after the recording path configuration is accepted.
 
         Raises:
-            MediaMTXError: If the callback URL is unsafe or the node rejects the config.
+            MediaMTXError: If the recordPath template is not accepted for pinned
+                MediaMTX playback, the callback URL is unsafe, or the node rejects
+                the config.
             httpx.HTTPError: If the MediaMTX HTTP request fails at transport level.
         """
+        if not playback_record_path_accepted(settings.recording_path_template):
+            raise MediaMTXError(
+                "recordPath must contain %f and satisfy MediaMTX v1.21.1 playback rules"
+            )
         if settings.recording_hook_command:
             hook = settings.recording_hook_command
         else:
