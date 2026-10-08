@@ -1,6 +1,8 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.effective_authority import DEFAULT_FENCE_EXPIRY_GRACE_SECONDS
+
 
 class Settings(BaseSettings):
     """Load validated control-plane configuration from environment settings.\n\n    Parameters are supplied through environment variables or the local .env file.\n    Instantiation returns a validated Settings object and may raise Pydantic\n    validation errors when configured values do not match their declared types.\n    """
@@ -126,6 +128,14 @@ class Settings(BaseSettings):
     placement_node_stale_seconds: float = 30.0
     placement_headroom: float = 0.75
     placement_lease_seconds: int = 60
+    # Same grace the node-agent adds after lease expiry. Failover waits until
+    # lease plus this grace, or a later autonomy deadline. Do not shorten the
+    # lease to close that window; a healthy node would be fenced early.
+    placement_fence_expiry_grace_seconds: float = Field(
+        default=DEFAULT_FENCE_EXPIRY_GRACE_SECONDS,
+        ge=0,
+        validation_alias="FENCE_EXPIRY_GRACE_SECONDS",
+    )
     # 0 disables offline authority extension. Production enables this only
     # after Step 1C-C validation.
     placement_offline_autonomy_seconds: int = 0
