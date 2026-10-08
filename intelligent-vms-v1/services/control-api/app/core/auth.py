@@ -97,13 +97,40 @@ def _decode_token_sync(token: str) -> dict:
     raise HTTPException(503, "Authentication is enabled but no JWKS URL or local test secret is configured")
 
 
+def _string_list_claim(claim_value: object, claim_name: str) -> list[str]:
+    """Return string entries for one claim, or reject a malformed shape.
+
+    A JSON object decodes to a dict. Iterating that dict yields its keys, so
+    {"admin": false} would become the role admin and {"*": false} would become
+    every site. Only a string or a list of strings is accepted. Null, numbers,
+    booleans, and lists that contain a non-string are refused with HTTP 401
+    before a principal exists. Callers must not replace a rejected claim with
+    a wildcard.
+    """
+    if isinstance(claim_value, str):
+        return [claim_value]
+    if isinstance(claim_value, list) and all(isinstance(item, str) for item in claim_value):
+        return claim_value
+    raise HTTPException(
+        401,
+        f"Token {claim_name} claim has an invalid shape",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 def _principal_from_claims(claims: dict) -> Principal:
-    raw_roles = claims.get("roles", claims.get("role", []))
-    if isinstance(raw_roles, str):
-        raw_roles = [raw_roles]
-    roles = frozenset(str(r) for r in raw_roles if r)
+    if "roles" in claims:
+        raw_roles = claims["roles"]
+        role_claim_name = "roles"
+    elif "role" in claims:
+        raw_roles = claims["role"]
+        role_claim_name = "role"
+    else:
+        raw_roles = []
+        role_claim_name = "roles"
+    role_names = _string_list_claim(raw_roles, role_claim_name)
     allowed = {"admin", "operator", "viewer", "service"}
-    roles = frozenset(r for r in roles if r in allowed)
+    roles = frozenset(name for name in role_names if name in allowed)
     if not roles:
         raise HTTPException(403, "Token has no recognized VMS role")
 
@@ -111,15 +138,16 @@ def _principal_from_claims(claims: dict) -> Principal:
     if not tenant_id:
         raise HTTPException(403, "Token has no tenant scope")
 
-    raw_sites = claims.get("site_ids", ["*"])
-    if isinstance(raw_sites, str):
-        raw_sites = [raw_sites]
+    if "site_ids" in claims:
+        site_names = _string_list_claim(claims["site_ids"], "site_ids")
+    else:
+        site_names = ["*"]
 
     return Principal(
         subject=str(claims["sub"]),
         roles=roles,
         tenant_id=tenant_id,
-        site_ids=frozenset(str(s) for s in raw_sites),
+        site_ids=frozenset(site_names),
         node_id=str(claims["node_id"]) if claims.get("node_id") else None,
     )
 
@@ -141,7 +169,9 @@ async def get_principal(
 
     Raises:
         HTTPException: If credentials are missing, invalid, expired, or cannot
-            be validated with configured authentication settings.
+            be validated with configured authentication settings. A malformed
+            role or site_ids claim shape is rejected with HTTP 401 before a
+            principal is built.
     """
     if settings.auth_disabled:
         principal = _dev_principal()
