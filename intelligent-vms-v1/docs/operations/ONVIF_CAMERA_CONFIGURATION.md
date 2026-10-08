@@ -13,7 +13,87 @@ credentials are decrypted server-side only for the device request and are never
 returned to API clients.
 
 Public errors are bounded. Camera SOAP fault text, credential-bearing URLs and
-blocked target details are not exposed.
+blocked target details are not exposed. Every ONVIF handler that calls device
+or service code runs that call through one wrapper, `_device_call`. That covers
+discovery, probe, onboarding, QR onboarding, serial discovery and
+identification, media-path provisioning, profile apply, the codec route's first
+probe and its second probe inside profile apply, capability refresh, and every
+configuration read or write. A new handler that calls those functions outside
+the wrapper fails the route scan test.
+
+A FastAPI or Starlette `HTTPException` raised by the device or service call is
+discarded. The client receives HTTP 502 `ONVIF_ERROR`, "ONVIF operation
+failed". The caught status and detail are not copied, including when that
+status is 404, 409, or 422. Any other unexpected exception from the same call,
+including `RuntimeError`, uses that same 502. Discovery previously let a
+non-HTTP `RuntimeError` escape to the process-wide handler, which returned HTTP
+500 `INTERNAL_SERVER_ERROR`, "Internal server error", without the exception
+text. Discovery is a device call. That 500 used a different status from every
+other ONVIF device failure and depended on the unhandled handler, so discovery
+`RuntimeError` now uses the same 502. The exception text is still not copied.
+
+Device results that the ONVIF client already maps stay as follows. The caught
+text is not copied. A connect timeout, a read timeout, and the bounded
+operation timeout share one public message:
+
+| Device result | HTTP | Code | Message |
+| --- | --- | --- | --- |
+| SOAP fault | 502 | `SOAP_FAULT` | Camera returned an ONVIF SOAP fault |
+| Response body that is not valid ONVIF XML | 502 | `DEVICE_SERVICE_INVALID` | Camera returned invalid ONVIF XML |
+| Connect timeout, read timeout, or bounded operation timeout | 504 | `NETWORK_UNREACHABLE` | ONVIF operation timed out |
+| Connect error | 502 | `NETWORK_UNREACHABLE` | ONVIF device could not be reached |
+| Other unexpected device or service exception, including `HTTPException` and discovery `RuntimeError` | 502 | `ONVIF_ERROR` | ONVIF operation failed |
+| Blocked target (`TargetNotAllowed`) | 400 | `TARGET_NOT_ALLOWED` | ONVIF target is not allowed |
+| Bounded `OnvifError` | the error's status | the error's code | the error's fixed message |
+
+WS-Discovery `OSError` is separate, and `TimeoutError` is an `OSError`.
+`POST /discover` and `POST /onboard/serial` return HTTP 503
+`DISCOVERY_UNAVAILABLE`, "WS-Discovery socket is unavailable on this
+host/network". The exception text is not copied. Any other exception the
+wrapper re-raises from `POST /discover`, including `ValueError` and
+`OnvifError`, uses the public mapping in the table above. A `TimeoutError` or
+`ValueError` from serial identification is skipped for that candidate. The
+search deadline itself is the router 504 below.
+
+Router-owned errors are raised before the device call, or after a call that
+already returned. They keep the detail in this table. They do not contain
+device body, credentials, or URLs:
+
+| Handler | Condition | HTTP | Code | Message |
+| --- | --- | --- | --- | --- |
+| Managed-role configuration, profile apply, and codec select | role is not main, sub, or third | 422 | `INVALID_STREAM_ROLE` | Role must be main, sub or third |
+| Configuration routes that load a snapshot | snapshot missing | 404 | `ONVIF_CAPABILITY_NOT_FOUND` | ONVIF capability snapshot not found |
+| `GET /cameras/{id}/capabilities` and `POST /cameras/{id}/refresh` before the probe | snapshot missing | 404 | string detail, not a code object | ONVIF capability snapshot not found |
+| Configuration routes | selected profile missing from the snapshot | 409 | `CAPABILITY_REFRESH_REQUIRED` | Selected profile is not present in the stored ONVIF snapshot |
+| Configuration routes | role has no selected profile | 422 | `UNSUPPORTED_CAPABILITY` | Requested managed stream role has no selected profile |
+| OSD create, camera-name create, and privacy masks | video source configuration token missing | 409 | `CAPABILITY_REFRESH_REQUIRED` | Video source configuration token is missing; refresh capabilities |
+| `PUT /profiles/{role}` | selected profile has no RTSP URI | 422 | `NO_STREAM_URI` | Selected profile has no RTSP stream URI |
+| Onboarding | selected main profile has no RTSP URI | 422 | `NO_STREAM_URI` | Selected main profile has no RTSP URI |
+| Onboarding | selected sub profile has no RTSP URI | 422 | `NO_STREAM_URI` | Selected sub profile has no RTSP URI |
+| Onboarding | selected third profile has no RTSP URI | 422 | `NO_STREAM_URI` | Selected third profile has no RTSP URI |
+| `PUT /profiles/{role}` | token already used by another role | 422 | `PROFILE_ROLE_CONFLICT` | Managed stream roles must use distinct ONVIF profiles |
+| `PUT /profiles/{role}` | RTSP endpoint does not match the camera | 422 | `PROFILE_TARGET_MISMATCH` | Selected profile must use the same camera RTSP endpoint |
+| Codec select | preferred token is not an unused profile for that codec | 422 | `CODEC_PROFILE_NOT_AVAILABLE` | Preferred profile does not provide the requested codec for this role |
+| Codec select | no unused profile for the codec | 422 | `CODEC_PROFILE_NOT_AVAILABLE` | Camera exposes no unused profile for the requested codec |
+| Onboarding | third profile uses a different RTSP endpoint | 422 | `THIRD_STREAM_TARGET_MISMATCH` | Third profile must use the same camera RTSP endpoint |
+| Onboarding | third token equals main or sub | 422 | `PROFILE_ROLE_CONFLICT` | Third profile must be distinct from main and sub profiles |
+| Onboarding | same device already stored | 409 | `DUPLICATE_CAMERA` | This ONVIF device is already onboarded for the site |
+| Onboarding with an expected serial | observed serial differs | 409 | `SERIAL_CHANGED` | Camera serial no longer matches the requested device |
+| Serial onboard | no exact serial match | 404 | `SERIAL_NOT_FOUND` | No site-local ONVIF device matched the requested serial number |
+| Serial onboard | more than one match | 409 | `SERIAL_NOT_UNIQUE` | Multiple site-local ONVIF devices reported the requested serial number |
+| Serial onboard | search deadline exceeded | 504 | `SERIAL_SEARCH_TIMEOUT` | Site-local ONVIF serial search exceeded its bounded deadline |
+| QR onboard | unsupported version | 422 | `INVALID_QR_PAYLOAD` | QR payload version is not supported |
+| QR onboard | payload fails onboarding field validation | 422 | `INVALID_QR_PAYLOAD` | QR payload does not contain valid onboarding fields |
+| Discover, probe, and onboard | multi-site or wildcard caller omits site | 422 | `SITE_REQUIRED` | site_id is required for multi-site or wildcard ONVIF access |
+
+`PUT /osds/camera-name` checks the managed-stream role only when `osd_token` is
+absent. An update that already names an OSD does not resolve the role. A device
+failure on that update is still HTTP 502 `ONVIF_ERROR`.
+
+Auth failures stay outside this mapping. A missing bearer token is HTTP 401
+`Bearer token required`. A viewer write is HTTP 403 `Insufficient VMS role`. A
+camera outside the caller tenant is HTTP 404 `Resource not found`. Request-body
+validation is HTTP 422 `REQUEST_VALIDATION_ERROR`.
 
 ## Managed stream roles
 
