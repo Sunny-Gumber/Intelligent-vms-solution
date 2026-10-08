@@ -219,12 +219,14 @@ class CameraHealth(BaseModel):
     """Serialize immediate media-path health for one camera.
 
     Fields expose camera/stream identity, path readiness, tracks and bounded
-    diagnostic detail. Validation may raise for incompatible input types.
+    diagnostic detail. ``path_present`` is null when the MediaMTX walk was
+    truncated or inconsistent, because a partial page is not proof of absence.
+    Validation may raise for incompatible input types.
     """
 
     camera_id: str
     stream_key: str
-    path_present: bool
+    path_present: bool | None = None
     ready: bool = False
     tracks: list[str] = Field(default_factory=list)
     detail: dict[str, Any] = Field(default_factory=dict)
@@ -1144,7 +1146,8 @@ class AIPolicyRead(BaseModel):
     """Serialize the active AI policy for one camera.
 
     Fields expose source/model selection, sampling/confidence, analytics, zones,
-    provider configuration and update time.
+    provider configuration and update time. ``provider_config`` on this public
+    model is readback: the policy serializer removes secret-like keys first.
     """
 
     camera_id: str
