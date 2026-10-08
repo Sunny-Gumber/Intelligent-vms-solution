@@ -47,12 +47,16 @@ async def health():
     """Return basic media-node health without requiring authentication.
 
     Returns:
-        Status object reporting overall/media-node health. Media failure is
-        represented as degraded rather than raised to the caller.
+        Status object reporting overall/media-node health. A raised walk, a
+        truncated walk, or an inconsistent walk is degraded rather than ok.
     """
     media = "ok"
     try:
-        await mediamtx.list_paths()
+        listed = await mediamtx.list_paths()
+        if isinstance(listed, dict) and (
+            listed.get("truncated") is True or listed.get("inconsistent") is True
+        ):
+            media = "degraded"
     except Exception:
         media = "degraded"
     return {"status": "ok" if media == "ok" else "degraded", "media_node": media}
