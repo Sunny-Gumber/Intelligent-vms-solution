@@ -83,6 +83,22 @@ _RESOURCE_SUMMARY_KEYS = (
 )
 _GPU_USAGE_KEYS = ("utilization_pct", "memory_used_mib", "temperature_c")
 _SUMMARY_KEYS = ("mean", "p95", "max")
+# JSON null is accepted only for sensors the phase-8 writers set when the
+# hardware cannot measure them. A null here is omitted from the content
+# fingerprint, the same as a missing key. Every other present null in a
+# measured field is not evidence and cannot count as a repeat.
+#
+# resources.cpu_freq_max_mhz.{mean,p95,max}
+#   SystemSampler.sample writes None when cpu_freq.max is missing or 0:
+#   float(cpu_freq.max) if cpu_freq and cpu_freq.max else None
+#   resource_summary keeps that through _metric_summary.
+# resources.max_temperature_c.{mean,p95,max}
+#   SystemSampler.sample writes None when sensors_temperatures() is empty.
+# resources.cpu_freq_ratio_min
+#   resource_summary: min(freq_ratios) if freq_ratios else None
+# environment.hardware.network_interfaces[].speed_mbps
+#   environment_metadata: int(stat.speed) if stat and stat.speed > 0 else None
+_UNAVAILABLE_SENSOR_NULL_SUMMARIES = frozenset({"cpu_freq_max_mhz", "max_temperature_c"})
 
 
 def _canonical_number(value: Any) -> str:
@@ -366,7 +382,11 @@ def _checked_number(value: Any, bounds: tuple[float, float], field: str) -> floa
 
 
 def _present_number(container: Any, key: str, kind: str, field: str) -> float | None:
-    """Parse one optional number. JSON null means the sensor was not measured.
+    """Parse one optional number.
+
+    A missing key and JSON null both return None. None is not zero. Measured
+    fields other than the unavailable-sensor allowlist must not treat that
+    null as evidence; _null_measured_reasons records those fields.
 
     Args:
         container: Object that may hold the field.
@@ -673,10 +693,13 @@ def content_fingerprint(result: dict[str, Any]) -> str:
     The fingerprint covers durations, throughput and capacity figures, latency
     figures, failure_rate and error counts, resource-usage summaries, and the
     workload type plus WORKLOAD_SHAPING_CONFIG_FIELDS. That same constant is
-    the workload key. Free-text config keys are ignored. JSON null on an
-    optional sensor is omitted, the same as a missing key, so two unavailable
-    readings match. A number in that field is included, so null and a number
-    are different measured content. Descriptive identity
+    the workload key. Free-text config keys are ignored. JSON null on the
+    unavailable-sensor allowlist is omitted, the same as a missing key, so two
+    unavailable readings match. A number in that field is included, so null
+    and a number are different measured content. A null in any other measured
+    field is not evidence: the gates exclude that record from repeat_count, so
+    the omitted null cannot become a distinct qualifying fingerprint.
+    Descriptive identity
     text such as OS name and version, CPU model, and NIC or GPU inventory names
     is not included.
     That text belongs only to the hardware key. Copies that differ only there
@@ -713,6 +736,79 @@ def content_fingerprint(result: dict[str, Any]) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
+def _summary_null_reasons(block: Any, field: str, *, allow_null: bool) -> list[str]:
+    """Return reasons for JSON nulls inside one summary.
+
+    Args:
+        block: Summary object, or None when the whole summary is null.
+        field: Dotted field name.
+        allow_null: Whether this summary is an unavailable-sensor allowlist entry.
+
+    Returns:
+        Empty when null is allowlisted or the summary holds numbers. One reason
+        per present null otherwise.
+    """
+    if allow_null or not isinstance(block, (dict, type(None))):
+        return []
+    if block is None:
+        return [f"{field} is null"]
+    return [
+        f"{field}.{key} is null"
+        for key in _SUMMARY_KEYS
+        if key in block and block[key] is None
+    ]
+
+
+def _null_measured_reasons(result: dict[str, Any]) -> tuple[str, ...]:
+    """List present nulls that are not unavailable-sensor readings.
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        Stable reasons. Includes "no operations measured" when failure_rate is
+        null and both operation counts are zero. Allowlisted sensor nulls are
+        absent from the tuple.
+    """
+    metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
+    resources = result.get("resources") if isinstance(result.get("resources"), dict) else {}
+    reasons: list[str] = []
+    for key in _RESULT_MEASURED_KEYS:
+        if key in metrics and metrics[key] is None:
+            reasons.append(f"result.{key} is null")
+    if metrics.get("failure_rate") is None and "failure_rate" in metrics:
+        ok = metrics.get("operations_ok")
+        failed = metrics.get("operations_failed")
+        if ok in (None, 0) and failed in (None, 0):
+            reasons.insert(0, "no operations measured")
+    latency = metrics.get("latency") if isinstance(metrics.get("latency"), dict) else {}
+    for key in _LATENCY_KEYS:
+        if key in latency and latency[key] is None:
+            reasons.append(f"result.latency.{key} is null")
+    for key in _RESOURCE_SUMMARY_KEYS:
+        if key not in resources:
+            continue
+        reasons.extend(
+            _summary_null_reasons(
+                resources[key],
+                f"resources.{key}",
+                allow_null=key in _UNAVAILABLE_SENSOR_NULL_SUMMARIES,
+            )
+        )
+    if "samples" in resources and resources["samples"] is None:
+        reasons.append("resources.samples is null")
+    for item in resources.get("gpu") or []:
+        if not isinstance(item, dict):
+            continue
+        for key in _GPU_USAGE_KEYS:
+            if key not in item:
+                continue
+            reasons.extend(
+                _summary_null_reasons(item[key], f"resources.gpu.{key}", allow_null=False)
+            )
+    return tuple(reasons)
+
+
 def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
     """Check every allowlisted numeric field and return the values gates read.
 
@@ -720,7 +816,9 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
         result: Benchmark result dictionary.
 
     Returns:
-        Parsed duration, warmup, failure rate, resource percentiles and flags.
+        Parsed duration, warmup, failure rate, resource percentiles, flags, and
+        reasons for present nulls outside the unavailable-sensor allowlist.
+        A present null failure_rate stays None and is never stored as zero.
 
     Raises:
         ValueError: If a present numeric field is not a finite in-range number.
@@ -740,7 +838,11 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
         _NUMBER_BOUNDS["duration"],
         "workload.warmup_seconds",
     )
-    failure = _present_number(metrics, "failure_rate", "unit_interval", "result.failure_rate")
+    if "failure_rate" in metrics and metrics["failure_rate"] is None:
+        failure_rate: float | None = None
+    else:
+        failure = _present_number(metrics, "failure_rate", "unit_interval", "result.failure_rate")
+        failure_rate = 0.0 if failure is None else failure
     for key, kind in _RESULT_FIELD_BOUNDS.items():
         if key == "failure_rate":
             continue
@@ -780,7 +882,8 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "duration_seconds": duration,
         "warmup_seconds": warmup,
-        "failure_rate": 0.0 if failure is None else failure,
+        "failure_rate": failure_rate,
+        "null_measured_reasons": _null_measured_reasons(result),
         "cpu_p95_pct": _present_number(cpu_pct, "p95", "percent", "resources.cpu_pct.p95"),
         "ram_p95_pct": _present_number(ram_pct, "p95", "percent", "resources.ram_pct.p95"),
         "cpu_freq_ratio_min": ratio,
@@ -856,13 +959,16 @@ class ValidatedRecord:
         commit_sha: Benchmarked source revision.
         duration_seconds: Parsed workload duration.
         warmup_seconds: Parsed warmup.
-        failure_rate: Parsed failure rate, or zero when the field is absent.
+        failure_rate: Parsed failure rate. None when the field is present and
+            JSON null. Zero only when the field is absent.
         cpu_p95_pct: Parsed CPU p95 when present.
         ram_p95_pct: Parsed RAM p95 when present.
         cpu_freq_ratio_min: Parsed minimum CPU frequency ratio when present.
         p95_ms: Parsed p95 latency when present.
         thermal_measured: Whether thermal evidence was recorded.
         thermal_limit_exceeded: Whether a thermal limit was recorded.
+        null_measured_reasons: Present nulls outside the unavailable-sensor
+            allowlist. Empty when the record's nulls are allowlisted or absent.
     """
 
     source: dict[str, Any]
@@ -874,13 +980,14 @@ class ValidatedRecord:
     commit_sha: str
     duration_seconds: float
     warmup_seconds: float
-    failure_rate: float
+    failure_rate: float | None
     cpu_p95_pct: float | None
     ram_p95_pct: float | None
     cpu_freq_ratio_min: float | None
     p95_ms: float | None
     thermal_measured: bool
     thermal_limit_exceeded: bool
+    null_measured_reasons: tuple[str, ...] = ()
 
 
 def parse_benchmark_record(result: dict[str, Any]) -> ValidatedRecord | Rejection:
@@ -888,11 +995,13 @@ def parse_benchmark_record(result: dict[str, Any]) -> ValidatedRecord | Rejectio
 
     Container types, nesting depth, numeric conversion, bounds, GPU index
     rules, the hardware key, and the workload key all happen here. JSON null
-    on an optional sensor is unavailable, not malformed. Null duration and
-    warmup are still rejected. A wrong container, a document deeper than
+    on the unavailable-sensor allowlist is unavailable, not malformed. A null
+    in any other measured field still parses, and null_measured_reasons names
+    it so the gates do not count the record. Null duration and warmup are
+    still rejected. A wrong container, a document deeper than
     MAX_STRUCTURE_DEPTH, and OverflowError, ValueError, TypeError, KeyError,
     or AttributeError from record content become a Rejection. Gates do not
-    see them.
+    see those rejections.
 
     Args:
         result: Candidate benchmark result.
@@ -924,6 +1033,7 @@ def parse_benchmark_record(result: dict[str, Any]) -> ValidatedRecord | Rejectio
             p95_ms=parsed["p95_ms"],
             thermal_measured=parsed["thermal_measured"],
             thermal_limit_exceeded=parsed["thermal_limit_exceeded"],
+            null_measured_reasons=parsed["null_measured_reasons"],
         )
     except (
         ValueError,

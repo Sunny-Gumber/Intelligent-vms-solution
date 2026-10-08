@@ -38,7 +38,8 @@ class Evidence:
         observed_capacity: Observed workload capacity.
         duration_seconds: Measured workload duration.
         warmup_seconds: Warmup duration.
-        failure_rate: Observed operation failure rate.
+        failure_rate: Observed operation failure rate, or None when that field
+            was JSON null. Qualified rows always carry a number.
         cpu_p95_pct: CPU p95 utilization when measured.
         ram_p95_pct: RAM p95 utilization when measured.
         qualified: Whether policy thresholds are satisfied.
@@ -56,7 +57,7 @@ class Evidence:
     observed_capacity: float
     duration_seconds: float
     warmup_seconds: float
-    failure_rate: float
+    failure_rate: float | None
     cpu_p95_pct: float | None
     ram_p95_pct: float | None
     qualified: bool
@@ -257,12 +258,12 @@ def extract_evidence(
     cpu_p95 = parsed.cpu_p95_pct
     ram_p95 = parsed.ram_p95_pct
 
-    reasons = []
+    reasons = list(parsed.null_measured_reasons)
     if duration < min_duration_seconds:
         reasons.append(f"duration {duration:.1f}s < required {min_duration_seconds:.1f}s")
     if warmup < min_warmup_seconds:
         reasons.append(f"warmup {warmup:.1f}s < required {min_warmup_seconds:.1f}s")
-    if failure_rate > max_failure_rate:
+    if failure_rate is not None and failure_rate > max_failure_rate:
         reasons.append(
             f"failure_rate {failure_rate:.6f} > allowed {max_failure_rate:.6f}"
         )

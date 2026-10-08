@@ -408,6 +408,55 @@ def _rejection_group(result: Any, rejection: Rejection) -> dict[str, Any]:
     }
 
 
+def _unmeasured_group(record: Any) -> dict[str, Any]:
+    """Build a failed group for nulls outside the unavailable-sensor allowlist.
+
+    The record parsed. A null failure rate, latency, byte count, or cpu/ram
+    sample is not evidence. repeat_count stays zero, so the record cannot
+    satisfy a repeat minimum or reach QUALIFIED_FROM_MEASURED_EVIDENCE.
+
+    Args:
+        record: Validated record whose null_measured_reasons is non-empty.
+
+    Returns:
+        FAIL group with repeat_count zero and those null-field reasons.
+    """
+    result = record.source if isinstance(record.source, dict) else {}
+    workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
+    return {
+        "status": "FAIL",
+        "commit_sha": record.commit_sha,
+        "hardware_key": record.hardware_key,
+        "workload_key": record.workload_key,
+        "workload": {
+            "type": workload.get("type"),
+            "config": safe_workload_config(result),
+        },
+        "repeat_count": 0,
+        "benchmark_ids": [record.benchmark_id],
+        "benchmark_fingerprints": {},
+        "source_files": [result.get("_source_file")],
+        "reasons": list(record.null_measured_reasons),
+        "warnings": [],
+        "metrics": {
+            "duration_seconds_min": record.duration_seconds,
+            "warmup_seconds_min": record.warmup_seconds,
+            "failure_rate_max": record.failure_rate,
+            "capacity": {
+                "dimension": None,
+                "values": [],
+                "mean": None,
+                "cv": None,
+                "relative_range": None,
+            },
+            "p95_latency_ms": {"values": [], "mean": None, "cv": None},
+            "thermal_measured_all": False,
+            "thermal_limit_exceeded": False,
+            "cpu_freq_ratio_min": record.cpu_freq_ratio_min,
+        },
+    }
+
+
 def build_report(
     *,
     results: list[dict[str, Any]],
@@ -448,10 +497,14 @@ def build_report(
 
     groups: dict[tuple[str, str, str], list[Any]] = {}
     rejections: list[tuple[dict[str, Any], Rejection]] = []
+    nonqualifying: list[Any] = []
     for result in results:
         parsed = parse_benchmark_record(result)
         if isinstance(parsed, Rejection):
             rejections.append((result, parsed))
+            continue
+        if parsed.null_measured_reasons:
+            nonqualifying.append(parsed)
             continue
         groups.setdefault(
             (parsed.commit_sha, parsed.hardware_key, parsed.workload_key),
@@ -459,6 +512,7 @@ def build_report(
         ).append(parsed)
 
     reviewed = [_rejection_group(result, rejection) for result, rejection in rejections]
+    reviewed.extend(_unmeasured_group(record) for record in nonqualifying)
     reviewed.extend(
         review_group(
             group,

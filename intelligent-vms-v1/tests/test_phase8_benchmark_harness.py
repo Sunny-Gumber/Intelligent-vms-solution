@@ -399,3 +399,301 @@ def test_phase8_driver_null_sensors_are_measurable(tmp_path, writer):
     assert matrix_path.is_file(), matrix_cli.stderr
     assert "Traceback" not in matrix_cli.stderr
     assert "not a finite number" not in matrix_path.read_text(encoding="utf-8")
+
+
+def _storage_demand():
+    return {
+        "required_roles": {"storage": "storage_write_mbps"},
+        "profiles": [
+            {
+                "name": "probe",
+                "cameras": 1,
+                "demands": {"storage_write_mbps": 1500},
+            }
+        ],
+    }
+
+
+def _qa601_measured_base():
+    """Build one storage result whose unavailable sensors are null by construction.
+
+    Samples set cpu_freq_max_mhz and max_temperature_c to null, so the ratio is
+    null as well. NIC speed_mbps is then set null even when this host reports a
+    speed. cpu_pct, ram_pct, failure_rate, bytes, and latency stay numbers.
+    """
+    result = common.build_result(
+        workload_type="synthetic-storage-write",
+        workload_config={
+            "path": "/tmp/qa601",
+            "streams": 1,
+            "mib_per_stream": 1,
+            "chunk_mib": 0.25,
+            "fsync_each_chunk": False,
+        },
+        started_at="2026-10-08T00:00:00+00:00",
+        duration_seconds=1.0,
+        warmup_seconds=0.0,
+        operations_ok=4,
+        operations_failed=0,
+        latencies_seconds=[0.001, 0.002, 0.003, 0.004],
+        samples=[
+            {
+                "cpu_pct": 10.0,
+                "cpu_freq_mhz": 2400.0,
+                "cpu_freq_max_mhz": None,
+                "max_temperature_c": None,
+                "ram_used_bytes": 1024,
+                "ram_pct": 40.0,
+                "net_rx_mbps": 0.0,
+                "net_tx_mbps": 0.0,
+                "disk_read_mbps": 0.0,
+                "disk_write_mbps": 0.0,
+                "gpu": [],
+            }
+        ],
+        extra_metrics={
+            "bytes_written": 1048576,
+            "aggregate_write_mbps": 2000.0,
+            "aggregate_write_MBps": 250.0,
+        },
+    )
+    hardware = result["environment"]["hardware"]
+    interfaces = list(hardware.get("network_interfaces") or [])
+    if not interfaces:
+        interfaces = [{"name": "eth0", "is_up": True, "mtu": 1500}]
+    for nic in interfaces:
+        nic["speed_mbps"] = None
+    hardware["network_interfaces"] = interfaces
+    return result
+
+
+def _install_allowlisted_nulls(payload):
+    """Force the documented sensor nulls and numeric cpu/ram summaries.
+
+    The base is real driver JSON. Overwriting these fields keeps the repro
+    independent of whichever sensors this host can read.
+    """
+    resources = payload["resources"]
+    for key in ("cpu_freq_max_mhz", "max_temperature_c"):
+        resources[key] = {"mean": None, "p95": None, "max": None}
+    resources["cpu_freq_ratio_min"] = None
+    resources["cpu_pct"] = {"mean": 10.0, "p95": 20.0, "max": 30.0}
+    resources["ram_pct"] = {"mean": 40.0, "p95": 50.0, "max": 60.0}
+    hardware = payload["environment"]["hardware"]
+    interfaces = list(hardware.get("network_interfaces") or [])
+    if not interfaces:
+        interfaces = [{"name": "eth0", "is_up": True, "mtu": 1500}]
+    for nic in interfaces:
+        if isinstance(nic, dict):
+            nic["speed_mbps"] = None
+    hardware["network_interfaces"] = interfaces
+    return payload
+
+
+def _null_swap_copies(base, edits):
+    copies = []
+    for index, edit in enumerate(edits):
+        item = copy.deepcopy(base)
+        item["benchmark_id"] = f"nullswap-{index}"
+        if edit is not None:
+            edit(item)
+        copies.append(item)
+    return copies
+
+
+def _edit_cpu_mean(item):
+    item["resources"]["cpu_pct"]["mean"] = None
+
+
+def _edit_ram_mean(item):
+    item["resources"]["ram_pct"]["mean"] = None
+
+
+def _edit_bytes(item):
+    item["result"]["bytes_written"] = None
+
+
+def _edit_p95(item):
+    item["result"]["latency"]["p95_ms"] = None
+
+
+def _edit_failure_rate(item):
+    item["result"]["failure_rate"] = None
+    item["result"]["operations_ok"] = 0
+    item["result"]["operations_failed"] = 4
+
+
+_QA601_REPROS = (
+    ("cpu_ram_mean", (None, _edit_cpu_mean, _edit_ram_mean)),
+    ("bytes_and_p95", (None, _edit_bytes, _edit_p95)),
+    ("failure_rate", (_edit_failure_rate, _edit_bytes, _edit_p95)),
+)
+
+
+def _assert_null_copies_do_not_qualify(tmp_path, copies):
+    report = reproducibility.build_report(
+        results=copies,
+        min_repeats=3,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    assert report["summary"]["passed"] == 0
+    assert all(group["status"] != "PASS" for group in report["groups"])
+    assert all(group["repeat_count"] < 3 for group in report["groups"])
+    output = matrix.build_matrix(
+        results=copies,
+        demand=_storage_demand(),
+        min_repeats=3,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    rendered = json.dumps(output)
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in rendered
+    result_dir = tmp_path / "results"
+    result_dir.mkdir(parents=True)
+    for index, item in enumerate(copies):
+        (result_dir / f"{index}.json").write_text(json.dumps(item), encoding="utf-8")
+    report_path = tmp_path / "reproducibility.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_reproducibility.py"),
+            "--results",
+            str(result_dir),
+            "--output",
+            str(report_path),
+            "--fail-on-rejected-groups",
+            "--min-repeats",
+            "3",
+            "--min-duration-seconds",
+            "0",
+            "--min-warmup-seconds",
+            "0",
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert report_path.is_file(), completed.stderr
+    assert "Traceback" not in completed.stderr
+    assert completed.returncode != 0
+    written = json.loads(report_path.read_text(encoding="utf-8"))
+    assert written["summary"]["passed"] == 0
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in rendered
+    return report
+
+
+def test_allowlisted_sensor_null_matches_missing_key_and_not_a_number():
+    base = _qa601_measured_base()
+    missing = copy.deepcopy(base)
+    for key in ("cpu_freq_ratio_min", "cpu_freq_max_mhz", "max_temperature_c"):
+        missing["resources"].pop(key, None)
+    assert common.content_fingerprint(base) == common.content_fingerprint(missing)
+    numbered = copy.deepcopy(base)
+    numbered["resources"]["cpu_freq_ratio_min"] = 0.5
+    assert common.content_fingerprint(numbered) != common.content_fingerprint(base)
+    parsed = common.parse_benchmark_record(base)
+    assert not isinstance(parsed, common.Rejection)
+    report = reproducibility.build_report(
+        results=[base],
+        min_repeats=1,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    assert report["summary"]["passed"] == 1
+
+
+@pytest.mark.parametrize("name,edits", _QA601_REPROS)
+def test_qa_012_601_build_result_null_swap_is_not_a_repeat(tmp_path, name, edits):
+    del name
+    base = _qa601_measured_base()
+    copies = _null_swap_copies(base, edits)
+    report = _assert_null_copies_do_not_qualify(tmp_path, copies)
+    reasons = _gate_reasons(report)
+    assert "not a finite number" not in reasons
+    if _edit_failure_rate in edits:
+        nulled = next(item for item in copies if item["result"]["operations_failed"] == 4)
+        parsed = common.parse_benchmark_record(nulled)
+        assert not isinstance(parsed, common.Rejection)
+        assert parsed.failure_rate is None
+        assert "result.failure_rate is null" in reasons
+        assert "no operations measured" not in reasons
+
+
+def test_qa_012_601_storage_driver_null_swap_is_not_a_repeat(tmp_path):
+    output_json = tmp_path / "storage.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_storage_benchmark.py"),
+            *_writer_command("storage", tmp_path, output_json),
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = _install_allowlisted_nulls(json.loads(output_json.read_text(encoding="utf-8")))
+    assert payload["result"]["bytes_written"]
+    assert payload["result"]["latency"]["p95_ms"] is not None
+    assert payload["result"]["failure_rate"] == 0.0
+    solo = reproducibility.build_report(
+        results=[payload],
+        min_repeats=1,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    assert solo["summary"]["passed"] == 1
+    for name, edits in _QA601_REPROS:
+        copies = _null_swap_copies(payload, edits)
+        report = _assert_null_copies_do_not_qualify(tmp_path / name, copies)
+        reasons = _gate_reasons(report)
+        assert "not a finite number" not in reasons
+        if _edit_failure_rate in edits:
+            nulled = next(item for item in copies if item["result"]["operations_failed"] == 4)
+            parsed = common.parse_benchmark_record(nulled)
+            assert parsed.failure_rate is None
+            assert "result.failure_rate is null" in reasons
+
+
+def test_recording_driver_null_metrics_do_not_qualify(tmp_path):
+    output_json = tmp_path / "recording.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_recording_benchmark.py"),
+            *_writer_command("recording", tmp_path, output_json),
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(output_json.read_text(encoding="utf-8"))
+    common.validate_result(payload)
+    parsed = common.parse_benchmark_record(payload)
+    assert not isinstance(parsed, common.Rejection)
+    assert parsed.failure_rate is None
+    report = reproducibility.build_report(
+        results=[payload],
+        min_repeats=1,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    reasons = _gate_reasons(report)
+    assert "not a finite number" not in reasons
+    assert report["summary"]["passed"] == 0
+    assert report["groups"][0]["repeat_count"] == 0
+    assert "no operations measured" in reasons
+    assert "result.failure_rate is null" in reasons
+    output = matrix.build_matrix(
+        results=[payload],
+        demand=_demand(),
+        min_repeats=1,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in json.dumps(output)
