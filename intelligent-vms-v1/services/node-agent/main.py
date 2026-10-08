@@ -25,8 +25,8 @@ ALLOWED_ROLES = {"media", "recording", "ai"}
 LOG = logging.getLogger("node_agent")
 MIN_BACKOFF_SLEEP_SECONDS = 0.001
 # Pinned MediaMTX v1.21.1 paginate.go / openapi: page defaults to 0,
-# itemsPerPage defaults to 100. Duplicated here because the node image
-# copies only this file and effective_authority.py.
+# itemsPerPage defaults to 100. The count contract lives in
+# mediamtx_list_page.py, which this process loads and the node image copies.
 _MEDIAMTX_LIST_DEFAULT_PAGE = 0
 _MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE = 100
 
@@ -63,6 +63,40 @@ def _load_effective_authority():
 
 
 _AUTHORITY = _load_effective_authority()
+
+
+def _load_mediamtx_list_page():
+    """Load the single MediaMTX list-page contract.
+
+    Control imports app.services.mediamtx_list_page. This process loads that
+    same file from the repository tree, or the copy placed beside main.py in
+    the node image. There is no second count formula.
+
+    Returns:
+        The loaded list-page module.
+
+    Raises:
+        ImportError: If the shared module is not available.
+    """
+    import importlib.util
+
+    candidates = (
+        Path(__file__).resolve().parents[1] / "control-api" / "app" / "services" / "mediamtx_list_page.py",
+        Path(__file__).resolve().with_name("mediamtx_list_page.py"),
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location("vms_mediamtx_list_page", path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    raise ImportError("shared MediaMTX list-page module is not available")
+
+
+_LIST_PAGE = _load_mediamtx_list_page()
 
 
 def _safe_number(value: object) -> float:
@@ -282,50 +316,6 @@ class _MediaMTXListError(RuntimeError):
     """Raised when a MediaMTX list page is not the v1.21.1 object shape."""
 
 
-def _optional_mediamtx_count(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
-
-
-def _expected_mediamtx_page_count(item_count: int) -> int:
-    if item_count == 0:
-        return 0
-    return (item_count + _MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE - 1) // _MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
-
-
-def _parse_mediamtx_list_page(body: object) -> tuple[int, int, list] | None:
-    """Parse one v1.21.1 list page. ``paths`` is not a valid items key.
-
-    Returns:
-        Item count, page count, and items, or None when either total is missing.
-
-    Raises:
-        _MediaMTXListError: If the body is not an object or ``items`` is not a list.
-    """
-    if not isinstance(body, dict):
-        raise _MediaMTXListError("MediaMTX list response was not an object")
-    if "items" not in body or not isinstance(body["items"], list):
-        raise _MediaMTXListError("MediaMTX list items was not a list")
-    item_count = _optional_mediamtx_count(body.get("itemCount"))
-    page_count = _optional_mediamtx_count(body.get("pageCount"))
-    if item_count is None or page_count is None:
-        return None
-    return item_count, page_count, body["items"]
-
-
-def _mediamtx_item_names(items: list) -> list[str]:
-    names: list[str] = []
-    for item in items:
-        if not isinstance(item, dict):
-            raise _MediaMTXListError("MediaMTX list item was not an object")
-        name = item.get("name")
-        if not isinstance(name, str) or not name:
-            raise _MediaMTXListError("MediaMTX list item was missing a name")
-        names.append(name)
-    return names
-
-
 def _mediamtx_list_payload(
     *,
     items: list,
@@ -397,47 +387,34 @@ async def _walk_mediamtx_list_once(fetch_page, *, bound: int) -> dict:
         response = await fetch_page(page, per_page)
         response.raise_for_status()
         body = response.json()
-        parsed = _parse_mediamtx_list_page(body)
-        if parsed is None:
-            if page != 0 or not isinstance(body, dict):
+        try:
+            assessed = _LIST_PAGE.assess_mediamtx_list_page(body, page=page, per_page=per_page)
+        except _LIST_PAGE.MediaMTXListPageError as exc:
+            raise _MediaMTXListError(str(exc)) from exc
+        if not assessed["accepted"]:
+            if baseline_items is None:
                 return _mediamtx_list_payload(
-                    items=collected,
-                    item_count=baseline_items,
-                    page_count=baseline_pages,
+                    items=assessed["items"],
+                    item_count=assessed["item_count"],
+                    page_count=assessed["page_count"],
                     truncated=False,
                     inconsistent=True,
                 )
-            page_items = body["items"]
-            if len(page_items) >= per_page:
-                return _mediamtx_list_payload(
-                    items=[],
-                    item_count=None,
-                    page_count=None,
-                    truncated=False,
-                    inconsistent=True,
-                )
-            names = _mediamtx_item_names(page_items)
             return _mediamtx_list_payload(
-                items=page_items,
-                item_count=len(page_items),
-                page_count=1,
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
                 truncated=False,
-                inconsistent=_mediamtx_names_conflict(set(), names),
+                inconsistent=True,
             )
 
-        item_count, page_count, page_items = parsed
-        names = _mediamtx_item_names(page_items)
+        item_count = assessed["item_count"]
+        page_count = assessed["page_count"]
+        page_items = assessed["items"]
+        names = assessed["names"]
         if baseline_items is None:
             baseline_items = item_count
             baseline_pages = page_count
-            if page_count != _expected_mediamtx_page_count(item_count):
-                return _mediamtx_list_payload(
-                    items=page_items,
-                    item_count=item_count,
-                    page_count=page_count,
-                    truncated=False,
-                    inconsistent=True,
-                )
         elif item_count != baseline_items or page_count != baseline_pages:
             return _mediamtx_list_payload(
                 items=collected,
@@ -465,16 +442,7 @@ async def _walk_mediamtx_list_once(fetch_page, *, bound: int) -> dict:
                 inconsistent=True,
             )
 
-        remaining = baseline_items - (page * per_page)
-        if remaining <= 0:
-            return _mediamtx_list_payload(
-                items=collected,
-                item_count=baseline_items,
-                page_count=baseline_pages,
-                truncated=False,
-                inconsistent=True,
-            )
-        expected_len = min(per_page, remaining)
+        expected_len = len(names)
         room = bound - len(collected)
         if room < expected_len:
             if len(names) < room or _mediamtx_names_conflict(seen, names[:room]):
@@ -493,7 +461,7 @@ async def _walk_mediamtx_list_once(fetch_page, *, bound: int) -> dict:
                 truncated=True,
                 inconsistent=False,
             )
-        if len(names) != expected_len or _mediamtx_names_conflict(seen, names):
+        if _mediamtx_names_conflict(seen, names):
             return _mediamtx_list_payload(
                 items=collected,
                 item_count=baseline_items,
@@ -1102,6 +1070,7 @@ class NodeAgent:
                 "mediamtx_reachable": 1.0,
                 "mediamtx_list_truncated": 0.0,
                 "mediamtx_list_inconsistent": 1.0,
+                "mediamtx_list_failed": 1.0,
             }
         if listed.get("truncated") is True:
             # A partial count would understate load and let placement overfill

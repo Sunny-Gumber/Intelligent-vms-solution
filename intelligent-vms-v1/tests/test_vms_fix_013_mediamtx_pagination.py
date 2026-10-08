@@ -1080,3 +1080,282 @@ def test_enumeration_boundaries_agree_on_both_walks():
             assert len(seen) == calls_expected
             assert result["items"][0]["name"] == "path-0000"
             assert result["items"][-1]["name"] == f"path-{kept - 1:04d}"
+
+
+def _named_paths(count):
+    return [{"name": f"path-{index:04d}"} for index in range(count)]
+
+
+# Upstream counts are reported as given. None means the field was missing or
+# was not an exact non-negative int, not that the walk invented a total.
+QA_013_101_CASES = (
+    ("missing-both-empty", {"items": []}, None, None),
+    (
+        "itemcount-only",
+        {"itemCount": 500, "items": [{"name": "path-0000"}, {"name": "path-0000-main"}]},
+        500,
+        None,
+    ),
+    ("pagecount-only", {"pageCount": 5, "items": _named_paths(3)}, None, 5),
+    ("negative", {"itemCount": -1, "pageCount": -1, "items": []}, None, None),
+    ("bool", {"itemCount": True, "pageCount": False, "items": _named_paths(1)}, None, None),
+    ("float", {"itemCount": 500.0, "pageCount": 5.0, "items": _named_paths(1)}, None, None),
+    ("numeric-string", {"itemCount": "500", "pageCount": "5", "items": _named_paths(1)}, None, None),
+    (
+        "short-above-total",
+        {"itemCount": 500, "pageCount": 5, "items": [{"name": "path-0000"}, {"name": "path-0000-main"}]},
+        500,
+        5,
+    ),
+    ("pagecount-above-short", {"itemCount": 3, "pageCount": 5, "items": _named_paths(3)}, 3, 5),
+)
+
+
+class FixedPageClient:
+    """Return one fixed list body for every page."""
+
+    body = {"items": []}
+    gets = []
+    mutations = []
+
+    def __init__(self, *args, **kwargs):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url, params=None, **kwargs):
+        del url, kwargs
+        page = UPSTREAM_DEFAULT_PAGE if not params else int(params.get("page", UPSTREAM_DEFAULT_PAGE))
+        FixedPageClient.gets.append(page)
+        return JsonResponse(FixedPageClient.body)
+
+    async def post(self, url, json=None, **kwargs):
+        del json, kwargs
+        FixedPageClient.mutations.append(url)
+        return JsonResponse({}, status_code=201)
+
+    async def patch(self, url, json=None, **kwargs):
+        del json, kwargs
+        FixedPageClient.mutations.append(url)
+        return JsonResponse({}, status_code=200)
+
+    async def delete(self, url, **kwargs):
+        del kwargs
+        FixedPageClient.mutations.append(url)
+        return JsonResponse({}, status_code=204)
+
+
+def test_qa_013_101_bad_counts_are_not_rewritten_on_either_walk():
+    """QA-013-101: a short page must not become a complete catalog."""
+    for label, walk in _walkers():
+        for name, body, item_count, page_count in QA_013_101_CASES:
+            calls = []
+
+            async def fetch(page, per_page, calls=calls, body=body):
+                del per_page
+                calls.append(page)
+                return JsonResponse(body)
+
+            result = asyncio.run(walk(fetch, bound=10000))
+            assert calls == [0, 0], (label, name)
+            assert result["inconsistent"] is True, (label, name)
+            assert result["truncated"] is False, (label, name)
+            assert result["itemCount"] == item_count, (label, name, result["itemCount"])
+            assert result["pageCount"] == page_count, (label, name, result["pageCount"])
+            assert result["pageCount"] != 1 or page_count == 1
+
+
+def test_valid_empty_catalog_stays_complete_on_either_walk():
+    body = {"itemCount": 0, "pageCount": 0, "items": []}
+    for label, walk in _walkers():
+        calls = []
+
+        async def fetch(page, per_page, calls=calls, body=body):
+            del per_page
+            calls.append(page)
+            return JsonResponse(body)
+
+        result = asyncio.run(walk(fetch, bound=10000))
+        assert calls == [0], label
+        assert result["inconsistent"] is False
+        assert result["truncated"] is False
+        assert result["itemCount"] == 0
+        assert result["pageCount"] == 0
+
+
+def test_list_page_contract_is_one_module():
+    from pathlib import Path
+
+    from app.services import mediamtx_list_page as shared
+
+    node_agent = _load_node_agent()
+    assert Path(node_agent._LIST_PAGE.__file__).resolve() == Path(shared.__file__).resolve()
+    dockerfile = Path(__file__).parents[1].joinpath("services", "node-agent", "Dockerfile").read_text()
+    assert "services/control-api/app/services/mediamtx_list_page.py" in dockerfile
+
+
+def test_qa_013_101_empty_items_omits_spare_capacity(monkeypatch):
+    node_agent = _load_node_agent()
+    agent = node_agent.NodeAgent(node_agent.NodeAgentSettings.model_validate({
+        "NODE_ID": "node-a",
+        "REGION_ID": "region-a",
+        "NODE_ROLES": "media,recording",
+        "CONTROL_API_URL": "http://control-api:8000",
+        "NODE_AGENT_TOKEN": "secret-token",
+        "MEDIAMTX_API_URL": "http://mediamtx:9997",
+    }))
+    calls = []
+
+    async def fake_get(url, params=None, **kwargs):
+        del url, kwargs
+        page = UPSTREAM_DEFAULT_PAGE if not params else int(params.get("page", UPSTREAM_DEFAULT_PAGE))
+        calls.append(page)
+        return JsonResponse({"items": []})
+
+    monkeypatch.setattr(agent, "_measure_host", lambda: {"net_rx_bps": 0.0, "net_tx_bps": 0.0})
+    monkeypatch.setattr(agent._client, "get", fake_get)
+    payload = asyncio.run(agent.build_heartbeat_payload())
+    asyncio.run(agent.close())
+    assert calls == [0, 0]
+    load = payload["load"]
+    assert load["mediamtx_reachable"] == 1.0
+    assert load["mediamtx_list_failed"] == 1.0
+    for key in (
+        "active_sources",
+        "active_recordings",
+        "mediamtx_configured_paths",
+        "mediamtx_live_sources",
+        "mediamtx_recording_paths",
+    ):
+        assert key not in load
+    capacity = {
+        "max_sources": 100,
+        "max_ingress_mbps": 1000,
+        "max_egress_mbps": 1000,
+        "max_recordings": 100,
+    }
+    failed_node = NodeSnapshot(
+        id="node-a",
+        region_id="region-a",
+        roles=frozenset({"media", "recording"}),
+        state="active",
+        enabled=True,
+        capacity=capacity,
+        load=dict(load),
+        heartbeat_at=FIXED_NOW,
+        authority_mode="central_online",
+    )
+    assert node_eligible(failed_node, "media", "region-a", FIXED_NOW) is False
+    assert node_eligible(failed_node, "recording", "region-a", FIXED_NOW) is False
+    spare = dict(load)
+    spare["active_sources"] = 0
+    spare["active_recordings"] = 0
+    spare_node = NodeSnapshot(
+        id="node-a",
+        region_id="region-a",
+        roles=frozenset({"media", "recording"}),
+        state="active",
+        enabled=True,
+        capacity=capacity,
+        load=spare,
+        heartbeat_at=FIXED_NOW,
+        authority_mode="central_online",
+    )
+    assert node_eligible(spare_node, "media", "region-a", FIXED_NOW) is True
+    assert node_eligible(spare_node, "recording", "region-a", FIXED_NOW) is True
+
+
+def test_qa_013_101_short_page_does_not_publish_partial_load(monkeypatch):
+    node_agent = _load_node_agent()
+    agent = node_agent.NodeAgent(node_agent.NodeAgentSettings.model_validate({
+        "NODE_ID": "node-a",
+        "REGION_ID": "region-a",
+        "NODE_ROLES": "media",
+        "CONTROL_API_URL": "http://control-api:8000",
+        "NODE_AGENT_TOKEN": "secret-token",
+        "MEDIAMTX_API_URL": "http://mediamtx:9997",
+    }))
+
+    async def fake_get(url, params=None, **kwargs):
+        del url, params, kwargs
+        return JsonResponse({"pageCount": 5, "items": _named_paths(3)})
+
+    monkeypatch.setattr(agent, "_measure_host", lambda: {"net_rx_bps": 0.0, "net_tx_bps": 0.0})
+    monkeypatch.setattr(agent._client, "get", fake_get)
+    payload = asyncio.run(agent.build_heartbeat_payload())
+    asyncio.run(agent.close())
+    load = payload["load"]
+    assert "active_sources" not in load
+    assert load.get("mediamtx_live_sources") != 3.0
+    assert "mediamtx_live_sources" not in load
+    assert load["mediamtx_list_failed"] == 1.0
+
+
+def test_qa_013_101_bad_counts_do_not_reconcile_or_clear_health(monkeypatch):
+    """A rewritten short page must not add, delete, or clear path_present."""
+    observed = _install_fixed_clock(monkeypatch)
+    monkeypatch.setattr(health_monitor.settings, "placement_execution_enabled", False)
+    monkeypatch.setattr(health_monitor.settings, "event_pipeline_enabled", False)
+    monkeypatch.setattr(health_monitor.settings, "event_local_store_enabled", False)
+    monkeypatch.setattr(cameras_router.settings, "placement_execution_enabled", False)
+    monkeypatch.setattr("app.services.mediamtx.httpx.AsyncClient", FixedPageClient)
+
+    async def ready(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(health_monitor, "probe_rtsp_transport", ready)
+    bodies = (
+        {"items": []},
+        {"itemCount": 500, "items": [{"name": "path-0000"}, {"name": "path-0000-main"}]},
+        {"pageCount": 5, "items": _named_paths(3)},
+    )
+    for body in bodies:
+        FixedPageClient.body = body
+        FixedPageClient.gets = []
+        FixedPageClient.mutations = []
+        changed, failed, last = asyncio.run(
+            reconciler._legacy_reconcile(
+                [camera("path-0000"), camera("path-0100")],
+                {},
+                max_changes=10,
+            )
+        )
+        assert changed == 0
+        assert failed == 1
+        assert last is None
+        assert FixedPageClient.mutations == []
+        assert FixedPageClient.gets == [0, 0]
+
+        engine, factory = _health_session_factory()
+        before_errors = health_monitor.stats.media_errors
+
+        async def once(factory=factory):
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            monkeypatch.setattr(health_monitor, "SessionLocal", factory)
+            await _prepare_health_db(
+                factory,
+                [camera("path-0120")],
+                [_prior_health("path-0120", observed)],
+            )
+            await HealthMonitor().run_once()
+            async with factory() as session:
+                return await session.get(CameraHealthStateEntity, "path-0120")
+
+        row = asyncio.run(once())
+        assert row.path_present is True
+        assert row.detail_json["media_path_present"] is True
+        assert health_monitor.stats.media_errors > before_errors
+        result = asyncio.run(
+            cameras_router.camera_health("path-0120", LookupSession(camera("path-0120")), _operator())
+        )
+        assert result.path_present is None
+        assert result.path_present is not False
+        assert result.detail["enumeration"] == "inconsistent"
+        system = asyncio.run(system_health())
+        assert system["status"] == "degraded"
+        assert system["media_node"] == "degraded"
