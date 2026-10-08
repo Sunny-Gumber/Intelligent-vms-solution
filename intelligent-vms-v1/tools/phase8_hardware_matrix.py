@@ -21,6 +21,17 @@ from phase8_benchmark_common import hardware_key as shared_hardware_key
 
 MATRIX_VERSION = "phase8-hardware-matrix-v1"
 
+# Role, dimension, and result key for workloads the matrix can qualify.
+# Capacity must be a positive finite number. Reconnect has no entry.
+_WORKLOAD_CAPACITY = {
+    "event-ingest-http": ("event_ingest", "events_per_second", "throughput_ops_s"),
+    "recording-directory-growth": ("recording", "recording_mbps", "observed_recording_mbps"),
+    "synthetic-storage-write": ("storage", "storage_write_mbps", "aggregate_write_mbps"),
+    "media-relay": ("media", "media_mbps", "observed_media_mbps"),
+    "ai-inference": ("ai", "ai_mpix_s", "observed_ai_mpix_s"),
+    "control-api": ("control_api", "control_ops_per_second", "throughput_ops_s"),
+}
+
 
 @dataclass(frozen=True)
 class Evidence:
@@ -39,7 +50,7 @@ class Evidence:
         duration_seconds: Measured workload duration.
         warmup_seconds: Warmup duration.
         failure_rate: Observed operation failure rate, or None when that field
-            was JSON null. Qualified rows always carry a number.
+            is absent, empty, or JSON null. Qualified rows always carry a number.
         cpu_p95_pct: CPU p95 utilization when measured.
         ram_p95_pct: RAM p95 utilization when measured.
         qualified: Whether policy thresholds are satisfied.
@@ -84,6 +95,22 @@ def _repeated_values(values: list[str]) -> list[str]:
     for value in values:
         counts[value] = counts.get(value, 0) + 1
     return sorted(value for value, count in counts.items() if count > 1)
+
+
+def _ensure_path_reason(reasons: list[str], path: str) -> None:
+    """Add a missing-field reason when no reason already names the path.
+
+    Args:
+        reasons: Qualification reasons collected for one record.
+        path: Required measured path that was not parsed as a number.
+
+    Returns:
+        None. The list gains MISSING_MEASURED_FIELD:<path> only when that path
+        is not already named by a null or missing-field reason.
+    """
+    if any(path in reason for reason in reasons):
+        return
+    reasons.append(f"MISSING_MEASURED_FIELD:{path}")
 
 
 def _duplicate_repeat_reason(items: list[Evidence]) -> str | None:
@@ -174,33 +201,12 @@ def capacity_dimension(result: dict[str, Any]) -> tuple[str, str, float] | None:
         return None
     workload_type = workload["type"]
     metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
-
-    if workload_type == "event-ingest-http":
-        capacity = _num(metrics.get("throughput_ops_s"))
-        return ("event_ingest", "events_per_second", capacity) if capacity and capacity > 0 else None
-
-    if workload_type == "recording-directory-growth":
-        capacity = _num(metrics.get("observed_recording_mbps"))
-        return ("recording", "recording_mbps", capacity) if capacity and capacity > 0 else None
-
-    if workload_type == "synthetic-storage-write":
-        capacity = _num(metrics.get("aggregate_write_mbps"))
-        return ("storage", "storage_write_mbps", capacity) if capacity and capacity > 0 else None
-
-    # Future media/AI benchmark drivers must emit explicit measured capacity.
-    if workload_type == "media-relay":
-        capacity = _num(metrics.get("observed_media_mbps"))
-        return ("media", "media_mbps", capacity) if capacity and capacity > 0 else None
-
-    if workload_type == "ai-inference":
-        capacity = _num(metrics.get("observed_ai_mpix_s"))
-        return ("ai", "ai_mpix_s", capacity) if capacity and capacity > 0 else None
-
-    if workload_type == "control-api":
-        capacity = _num(metrics.get("throughput_ops_s"))
-        return ("control_api", "control_ops_per_second", capacity) if capacity and capacity > 0 else None
-
-    return None
+    spec = _WORKLOAD_CAPACITY.get(workload_type)
+    if spec is None:
+        return None
+    role, dimension, key = spec
+    capacity = _num(metrics.get(key))
+    return (role, dimension, capacity) if capacity and capacity > 0 else None
 
 
 def extract_evidence(
@@ -225,7 +231,9 @@ def extract_evidence(
     Returns:
         Evidence object with qualification reasons. Malformed content is an
         unqualified evidence row, not an exception. None means the workload
-        has no capacity mapping.
+        has no capacity mapping and is not an incomplete mapped workload. A
+        mapped workload with a missing required field is unqualified and names
+        that field.
     """
     parsed = parse_benchmark_record(result)
     if isinstance(parsed, Rejection):
@@ -249,16 +257,22 @@ def extract_evidence(
         )
     result = parsed.source
     mapping = capacity_dimension(result)
-    if mapping is None:
-        return None
-    role, dimension, capacity = mapping
     failure_rate = parsed.failure_rate
     duration = parsed.duration_seconds
     warmup = parsed.warmup_seconds
     cpu_p95 = parsed.cpu_p95_pct
     ram_p95 = parsed.ram_p95_pct
-
     reasons = list(parsed.null_measured_reasons)
+    if mapping is None:
+        workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
+        workload_type = workload.get("type") if isinstance(workload.get("type"), str) else ""
+        spec = _WORKLOAD_CAPACITY.get(workload_type)
+        if spec is None or not reasons:
+            return None
+        role, dimension, _capacity_key = spec
+        capacity = 0.0
+    else:
+        role, dimension, capacity = mapping
     if duration < min_duration_seconds:
         reasons.append(f"duration {duration:.1f}s < required {min_duration_seconds:.1f}s")
     if warmup < min_warmup_seconds:
@@ -268,11 +282,11 @@ def extract_evidence(
             f"failure_rate {failure_rate:.6f} > allowed {max_failure_rate:.6f}"
         )
     if cpu_p95 is None:
-        reasons.append("CPU p95 not measured")
+        _ensure_path_reason(reasons, "resources.cpu_pct.p95")
     elif cpu_p95 > max_cpu_p95_pct:
         reasons.append(f"CPU p95 {cpu_p95:.1f}% > allowed {max_cpu_p95_pct:.1f}%")
     if ram_p95 is None:
-        reasons.append("RAM p95 not measured")
+        _ensure_path_reason(reasons, "resources.ram_pct.p95")
     elif ram_p95 > max_ram_p95_pct:
         reasons.append(f"RAM p95 {ram_p95:.1f}% > allowed {max_ram_p95_pct:.1f}%")
 

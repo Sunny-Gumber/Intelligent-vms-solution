@@ -412,8 +412,10 @@ def _unmeasured_group(record: Any) -> dict[str, Any]:
     """Build a failed group for nulls outside the unavailable-sensor allowlist.
 
     The record parsed. A null failure rate, latency, byte count, or cpu/ram
-    sample is not evidence. repeat_count stays zero, so the record cannot
-    satisfy a repeat minimum or reach QUALIFIED_FROM_MEASURED_EVIDENCE.
+    sample is not evidence. A missing required field, or one whose value is an
+    object or list, is not evidence either. repeat_count stays zero, so the
+    record cannot satisfy a repeat minimum or reach
+    QUALIFIED_FROM_MEASURED_EVIDENCE.
 
     Args:
         record: Validated record whose null_measured_reasons is non-empty.

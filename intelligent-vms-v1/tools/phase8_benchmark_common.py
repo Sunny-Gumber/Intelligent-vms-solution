@@ -50,7 +50,17 @@ def result_fingerprint(result: dict[str, Any]) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
-_NON_FINITE_MEASUREMENT = "measured value is not a finite number"
+def _non_finite_reason(field: str) -> str:
+    """Return the path-named reason for a value that is not a finite number.
+
+    Args:
+        field: Full dotted path of the measured leaf.
+
+    Returns:
+        ``<field> is not a finite number``. The path is always included.
+    """
+    return f"{field} is not a finite number"
+
 
 # Explicit measured-result fields. Anything absent from these tuples is a label,
 # note, timestamp, or volatile host fact and must not affect independence.
@@ -106,30 +116,81 @@ _FINGERPRINT_IGNORED_SENSOR_FIELDS = _UNAVAILABLE_SENSOR_NULL_SUMMARIES | frozen
     {"cpu_freq_ratio_min"}
 )
 
+# Finite numbers build_result and resource_summary write on a measured run.
+# Optional sensor nulls are not required: cpu_freq_max_mhz, max_temperature_c,
+# cpu_freq_ratio_min, and NIC speed_mbps. A missing key, an object, or a list
+# is not a measured scalar.
+_REQUIRED_RESULT_FIELDS = (
+    "operations_ok",
+    "operations_failed",
+    "failure_rate",
+    "throughput_ops_s",
+)
+_REQUIRED_RESOURCE_SUMMARIES = (
+    "cpu_pct",
+    "cpu_freq_mhz",
+    "ram_used_bytes",
+    "ram_pct",
+    "net_rx_mbps",
+    "net_tx_mbps",
+    "disk_read_mbps",
+    "disk_write_mbps",
+)
+_REQUIRED_RESOURCE_SCALARS = ("samples",)
+_STORAGE_RESULT_FIELDS = (
+    "bytes_written",
+    "aggregate_write_mbps",
+    "aggregate_write_MBps",
+)
+_WORKLOAD_EXTRA_RESULT_FIELDS = {
+    "synthetic-storage-write": _STORAGE_RESULT_FIELDS,
+    "recording-directory-growth": ("observed_recording_mbps",),
+    "media-relay": ("observed_media_mbps",),
+    "ai-inference": ("observed_ai_mpix_s",),
+}
+EVIDENCE_KIND_STORAGE = "storage"
+EVIDENCE_KIND_RECONNECT = "reconnect"
+EVIDENCE_KIND_HARDWARE_MATRIX = "hardware-matrix"
+EVIDENCE_KIND_REPRODUCIBILITY = "reproducibility"
+_EVIDENCE_KINDS = (
+    EVIDENCE_KIND_STORAGE,
+    EVIDENCE_KIND_RECONNECT,
+    EVIDENCE_KIND_HARDWARE_MATRIX,
+    EVIDENCE_KIND_REPRODUCIBILITY,
+)
+MISSING_MEASURED_FIELD_PREFIX = "MISSING_MEASURED_FIELD:"
 
-def _canonical_number(value: Any) -> str:
+
+def _canonical_number(value: Any, field: str) -> str:
     """Render one measured number as a finite float with a fixed repr.
 
+    Identity flags such as thermal_measured and NIC is_up still map a boolean
+    to 0 or 1 here. Required measured leaves never reach this function with a
+    boolean: the required-field check rejects them first.
+
     Args:
-        value: Boolean, integer, or float measurement. Booleans become 0 or 1.
+        value: Integer, float, or identity-flag boolean.
+        field: Full dotted path used when the value is not a finite number.
 
     Returns:
         Fixed-precision decimal text. Negative zero is rendered as 0.
 
     Raises:
-        ValueError: If the value is not a finite number. OverflowError from an
-            integer that cannot be represented as a float uses this same path.
+        ValueError: If the value is not a finite number. The reason names
+            field. OverflowError from an integer that cannot be represented as
+            a float uses this same path.
     """
+    reason = _non_finite_reason(field)
     if isinstance(value, bool):
         value = 1 if value else 0
     if not isinstance(value, (int, float)):
-        raise ValueError(_NON_FINITE_MEASUREMENT)
+        raise ValueError(reason)
     try:
         number = float(value)
     except OverflowError as exc:
-        raise ValueError(_NON_FINITE_MEASUREMENT) from exc
+        raise ValueError(reason) from exc
     if not math.isfinite(number):
-        raise ValueError(_NON_FINITE_MEASUREMENT)
+        raise ValueError(reason)
     if number == 0.0:
         number = 0.0
     return format(number, ".17g")
@@ -247,14 +308,38 @@ def safe_workload_config(result: Any) -> dict[str, Any]:
     return dict(config)
 
 
-def _summary_numbers(block: Any) -> dict[str, str] | None:
+def _is_measured_container(value: Any) -> bool:
+    """Return whether a leaf is an object or list rather than a scalar.
+
+    Args:
+        value: Value stored at a measured path.
+
+    Returns:
+        True for every dict or list, including {} and []. Those values are
+        missing measurements, not malformed numbers.
+    """
+    return isinstance(value, (dict, list))
+
+
+def _summary_numbers(block: Any, field: str) -> dict[str, str] | None:
+    """Canonicalize finite summary leaves and skip containers.
+
+    Args:
+        block: Summary object, or some other JSON value.
+        field: Dotted path of the summary, used when a leaf is not finite.
+
+    Returns:
+        Canonical mean/p95/max text, or None when no finite leaf is present.
+        Objects and lists are omitted so a missing measurement is not hashed.
+    """
     if not isinstance(block, dict):
         return None
-    summary = {
-        key: _canonical_number(block[key])
-        for key in _SUMMARY_KEYS
-        if key in block and block[key] is not None
-    }
+    summary = {}
+    for key in _SUMMARY_KEYS:
+        value = block.get(key) if key in block else None
+        if value is None or _is_measured_container(value):
+            continue
+        summary[key] = _canonical_number(value, f"{field}.{key}")
     return summary or None
 
 
@@ -265,9 +350,18 @@ def _sorted_objects(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-def _put_number(target: dict[str, Any], key: str, value: Any) -> None:
-    if value is not None:
-        target[key] = _canonical_number(value)
+def _put_number(target: dict[str, Any], key: str, value: Any, field: str) -> None:
+    """Store one finite number, skipping nulls and non-scalar containers.
+
+    Args:
+        target: Canonical object being built.
+        key: Key to set when value is a finite scalar.
+        value: Raw measurement.
+        field: Full dotted path named if value is not a finite number.
+    """
+    if value is None or _is_measured_container(value):
+        return
+    target[key] = _canonical_number(value, field)
 
 
 # Workload-shaping fields written by the phase-8 drivers. Free-text labels,
@@ -353,13 +447,24 @@ _GPU_SUMMARY_BOUNDS = {
 }
 
 
-def _checked_number(value: Any, bounds: tuple[float, float], field: str) -> float:
-    """Convert one numeric field. Bools follow the documented 0/1 mapping.
+def _checked_number(
+    value: Any,
+    bounds: tuple[float, float],
+    field: str,
+    *,
+    allow_bool: bool = True,
+) -> float:
+    """Convert one numeric field.
+
+    Identity flags keep the 0/1 boolean mapping. A required measured leaf sets
+    allow_bool to false so a boolean is rejected with the leaf path instead of
+    being stored as 0 or 1.
 
     Args:
         value: Raw measurement or hardware number.
         bounds: Inclusive minimum and maximum.
         field: Dotted field name used in the rejection reason.
+        allow_bool: Whether True and False map to 1 and 0.
 
     Returns:
         Finite float inside bounds. Negative zero is returned as zero.
@@ -367,18 +472,22 @@ def _checked_number(value: Any, bounds: tuple[float, float], field: str) -> floa
     Raises:
         ValueError: If the value is missing, non-numeric, non-finite, out of
             range, or an integer too large to convert. OverflowError and
-            TypeError are caught here and are not propagated.
+            TypeError are caught here and are not propagated. Every reason
+            names field.
     """
+    reason = _non_finite_reason(field)
     if isinstance(value, bool):
+        if not allow_bool:
+            raise ValueError(reason)
         value = 1 if value else 0
     if value is None or isinstance(value, str) or not isinstance(value, (int, float)):
-        raise ValueError(f"{field} is not a finite number")
+        raise ValueError(reason)
     try:
         number = float(value)
     except (OverflowError, ValueError, TypeError) as exc:
-        raise ValueError(f"{field} is not a finite number") from exc
+        raise ValueError(reason) from exc
     if not math.isfinite(number):
-        raise ValueError(f"{field} is not a finite number")
+        raise ValueError(reason)
     low, high = bounds
     if number < low or number > high:
         raise ValueError(f"{field} is out of range")
@@ -387,38 +496,93 @@ def _checked_number(value: Any, bounds: tuple[float, float], field: str) -> floa
     return number
 
 
-def _present_number(container: Any, key: str, kind: str, field: str) -> float | None:
+def _present_number(
+    container: Any,
+    key: str,
+    kind: str,
+    field: str,
+    *,
+    allow_bool: bool = True,
+    skip_containers: bool = False,
+) -> float | None:
     """Parse one optional number.
 
     A missing key and JSON null both return None. None is not zero. Measured
     fields other than the unavailable-sensor allowlist must not treat that
-    null as evidence; _null_measured_reasons records those fields.
+    null as evidence; _null_measured_reasons records those fields. An object
+    or list on a required leaf is also skipped here so the missing-field
+    reason can name it. A boolean on a required leaf is rejected by name.
 
     Args:
         container: Object that may hold the field.
         key: Field name.
         kind: Bounds table key.
         field: Dotted name used when the value is present but not numeric.
+        allow_bool: Whether True and False map to 1 and 0.
+        skip_containers: Whether an object or list returns None instead of
+            raising. Required leaves set this so {} and [] stay missing fields.
 
     Returns:
-        Parsed float, or None when the field is absent or JSON null.
+        Parsed float, or None when the field is absent, JSON null, or a
+        skipped container.
 
     Raises:
-        ValueError: If the value is a string, non-finite, or out of range.
+        ValueError: If the value is a string, boolean when disallowed,
+            non-finite, out of range, or a container that is not skipped.
+            The reason names field.
     """
     if not isinstance(container, dict) or key not in container or container[key] is None:
         return None
-    return _checked_number(container[key], _NUMBER_BOUNDS[kind], field)
+    value = container[key]
+    if _is_measured_container(value):
+        if skip_containers:
+            return None
+        raise ValueError(_non_finite_reason(field))
+    return _checked_number(value, _NUMBER_BOUNDS[kind], field, allow_bool=allow_bool)
 
 
-def _check_summary(block: Any, kind: str, field: str) -> None:
+def _check_summary(
+    block: Any,
+    kind: str,
+    field: str,
+    *,
+    allow_bool: bool = True,
+    skip_containers: bool = False,
+) -> None:
+    """Check finite leaves inside one resource summary.
+
+    Args:
+        block: Summary object, JSON null, or another value.
+        kind: Bounds table key.
+        field: Dotted path of the summary.
+        allow_bool: Whether a boolean leaf maps to 0 or 1.
+        skip_containers: Whether an object or list leaf is left for the
+            missing-field classifier. Required summaries set this.
+
+    Returns:
+        None when every present scalar leaf is a finite in-range number.
+
+    Raises:
+        ValueError: If a present scalar is not a finite in-range number, or a
+            container is not being classified as missing. The reason names the
+            leaf path.
+    """
     if block is None:
         return
     if not isinstance(block, dict):
-        raise ValueError(f"{field} is not a finite number")
+        if skip_containers and _is_measured_container(block):
+            return
+        raise ValueError(_non_finite_reason(field))
     for key in _SUMMARY_KEYS:
-        if key in block and block[key] is not None:
-            _checked_number(block[key], _NUMBER_BOUNDS[kind], f"{field}.{key}")
+        if key not in block or block[key] is None:
+            continue
+        value = block[key]
+        leaf = f"{field}.{key}"
+        if _is_measured_container(value):
+            if skip_containers:
+                continue
+            raise ValueError(_non_finite_reason(leaf))
+        _checked_number(value, _NUMBER_BOUNDS[kind], leaf, allow_bool=allow_bool)
 
 
 def workload_config_identity(config: Any) -> dict[str, Any]:
@@ -461,7 +625,7 @@ def workload_config_identity(config: Any) -> dict[str, Any]:
             _checked_number(value, _NUMBER_BOUNDS["unit_interval"], field)
         else:
             _checked_number(value, _NUMBER_BOUNDS[_SHAPING_NUMBER_FIELDS[key]], field)
-        identity[key] = _canonical_number(value)
+        identity[key] = _canonical_number(value, field)
     return identity
 
 
@@ -500,7 +664,7 @@ def workload_key(result: dict[str, Any]) -> str:
 def _gpu_index(item: Any, field: str) -> str:
     if not isinstance(item, dict) or item.get("index") is None:
         raise ValueError(f"{field} index is required")
-    return _canonical_number(item["index"])
+    return _canonical_number(item["index"], f"{field}.index")
 
 
 def _indexed_gpu_records(items: list[Any], field: str) -> list[str]:
@@ -532,8 +696,18 @@ def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
 
     content: dict[str, Any] = {}
     durations: dict[str, str] = {}
-    _put_number(durations, "warmup_seconds", workload.get("warmup_seconds"))
-    _put_number(durations, "duration_seconds", workload.get("duration_seconds"))
+    _put_number(
+        durations,
+        "warmup_seconds",
+        workload.get("warmup_seconds"),
+        "workload.warmup_seconds",
+    )
+    _put_number(
+        durations,
+        "duration_seconds",
+        workload.get("duration_seconds"),
+        "workload.duration_seconds",
+    )
     if durations:
         content["durations"] = durations
 
@@ -548,29 +722,32 @@ def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
 
     measured: dict[str, Any] = {}
     for key in _RESULT_MEASURED_KEYS:
-        _put_number(measured, key, metrics.get(key))
+        _put_number(measured, key, metrics.get(key), f"result.{key}")
     latency = metrics.get("latency") if isinstance(metrics.get("latency"), dict) else {}
-    latency_numbers = {
-        key: _canonical_number(latency[key])
-        for key in _LATENCY_KEYS
-        if key in latency and latency[key] is not None
-    }
+    latency_numbers = {}
+    for key in _LATENCY_KEYS:
+        if key not in latency:
+            continue
+        value = latency[key]
+        if value is None or _is_measured_container(value):
+            continue
+        latency_numbers[key] = _canonical_number(value, f"result.latency.{key}")
     if latency_numbers:
         measured["latency"] = latency_numbers
     if measured:
         content["result"] = measured
 
     usage: dict[str, Any] = {}
-    _put_number(usage, "samples", resources.get("samples"))
+    _put_number(usage, "samples", resources.get("samples"), "resources.samples")
     for key in _RESOURCE_SUMMARY_KEYS:
         if key in _FINGERPRINT_IGNORED_SENSOR_FIELDS:
             continue
-        summary = _summary_numbers(resources.get(key))
+        summary = _summary_numbers(resources.get(key), f"resources.{key}")
         if summary:
             usage[key] = summary
     for key in ("thermal_measured", "thermal_limit_exceeded", "gpu_measured"):
         if key in resources and resources[key] is not None:
-            usage[key] = _canonical_number(resources[key])
+            usage[key] = _canonical_number(resources[key], f"resources.{key}")
     inventory = list(hardware.get("gpus") or [])
     usage_items = list(resources.get("gpu") or [])
     if inventory or usage_items:
@@ -582,11 +759,11 @@ def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
         for item in usage_items:
             canonical_gpu: dict[str, Any] = {"index": _gpu_index(item, "resources.gpu")}
             for key in _GPU_USAGE_KEYS:
-                summary = _summary_numbers(item.get(key))
+                summary = _summary_numbers(item.get(key), f"resources.gpu.{key}")
                 if summary:
                     canonical_gpu[key] = summary
-                elif item.get(key) is not None and not isinstance(item.get(key), dict):
-                    canonical_gpu[key] = _canonical_number(item[key])
+                elif item.get(key) is not None and not _is_measured_container(item.get(key)):
+                    canonical_gpu[key] = _canonical_number(item[key], f"resources.gpu.{key}")
             gpu_usage.append(canonical_gpu)
         usage["gpu"] = _sorted_objects(gpu_usage)
     if usage:
@@ -625,10 +802,16 @@ def canonical_hardware_material(result: dict[str, Any]) -> dict[str, Any]:
         if nic.get("name") is not None:
             canonical_nic["name"] = canonical_descriptor(nic["name"])
         if nic.get("is_up") is not None:
-            canonical_nic["is_up"] = _canonical_number(nic["is_up"])
+            canonical_nic["is_up"] = _canonical_number(
+                nic["is_up"],
+                "hardware.network_interfaces.is_up",
+            )
         for key in ("speed_mbps", "mtu"):
-            if nic.get(key) is not None:
-                canonical_nic[key] = _canonical_number(nic[key])
+            if nic.get(key) is not None and not _is_measured_container(nic.get(key)):
+                canonical_nic[key] = _canonical_number(
+                    nic[key],
+                    f"hardware.network_interfaces.{key}",
+                )
         if nic.get("duplex") is not None:
             canonical_nic["duplex"] = canonical_descriptor(nic["duplex"])
         nics.append(canonical_nic)
@@ -639,7 +822,12 @@ def canonical_hardware_material(result: dict[str, Any]) -> dict[str, Any]:
         if isinstance(gpu, dict):
             if gpu.get("name") is not None:
                 canonical_gpu["name"] = canonical_descriptor(gpu["name"])
-            _put_number(canonical_gpu, "memory_total_mib", gpu.get("memory_total_mib"))
+            _put_number(
+                canonical_gpu,
+                "memory_total_mib",
+                gpu.get("memory_total_mib"),
+                "hardware.gpus.memory_total_mib",
+            )
             if gpu.get("driver_version") is not None:
                 canonical_gpu["driver_version"] = canonical_descriptor(gpu["driver_version"])
         inventory.append(canonical_gpu)
@@ -660,15 +848,30 @@ def canonical_hardware_material(result: dict[str, Any]) -> dict[str, Any]:
         "network_interfaces": _sorted_objects(nics),
         "gpus": _sorted_objects(inventory),
     }
-    _put_number(material, "cpu_logical_cores", hardware.get("cpu_logical_cores"))
-    _put_number(material, "ram_total_bytes", hardware.get("ram_total_bytes"))
+    _put_number(
+        material,
+        "cpu_logical_cores",
+        hardware.get("cpu_logical_cores"),
+        "hardware.cpu_logical_cores",
+    )
+    _put_number(
+        material,
+        "ram_total_bytes",
+        hardware.get("ram_total_bytes"),
+        "hardware.ram_total_bytes",
+    )
     if hardware.get("storage_path") is not None:
         material["storage_path"] = canonical_descriptor(hardware.get("storage_path"))
     if hardware.get("storage_device") is not None:
         material["storage_device"] = canonical_descriptor(hardware.get("storage_device"))
     if hardware.get("storage_fstype") is not None:
         material["storage_fstype"] = canonical_descriptor(hardware.get("storage_fstype"))
-    _put_number(material, "storage_total_bytes", hardware.get("storage_total_bytes"))
+    _put_number(
+        material,
+        "storage_total_bytes",
+        hardware.get("storage_total_bytes"),
+        "hardware.storage_total_bytes",
+    )
     return material
 
 
@@ -742,6 +945,124 @@ def content_fingerprint(result: dict[str, Any]) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
+def _core_measured_paths() -> tuple[str, ...]:
+    """Return measured paths every complete driver repeat must carry.
+
+    Returns:
+        Dotted paths for result counters, latency, samples, and resource
+        summaries. Optional sensor fields are not included.
+    """
+    paths = [f"result.{name}" for name in _REQUIRED_RESULT_FIELDS]
+    paths.extend(f"result.latency.{name}" for name in _LATENCY_KEYS)
+    paths.extend(f"resources.{name}" for name in _REQUIRED_RESOURCE_SCALARS)
+    for summary in _REQUIRED_RESOURCE_SUMMARIES:
+        paths.extend(f"resources.{summary}.{stat}" for stat in _SUMMARY_KEYS)
+    return tuple(paths)
+
+
+def _extra_result_paths(names: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(f"result.{name}" for name in names)
+
+
+def required_measured_fields(evidence_kind: str) -> tuple[str, ...]:
+    """Return the required measured-field paths for one evidence kind.
+
+    storage is the synthetic-storage-write driver: the shared measured core
+    plus bytes_written, aggregate_write_mbps, and aggregate_write_MBps.
+    reconnect is the tcp-reconnect-storm driver: the shared core only, because
+    that driver writes no extra result metrics. hardware-matrix and
+    reproducibility use the same shared core for every repeat. Workload
+    capacity fields beyond the core come from
+    required_measured_fields_for_workload. Optional sensor nulls are omitted.
+    A required path classifies as MISSING_MEASURED_FIELD when it is absent, an
+    object, or a list; as "<path> is null" when it is JSON null; and as
+    "<path> is not a finite number" when it is a boolean, string, or non-finite
+    number.
+
+    Args:
+        evidence_kind: storage, reconnect, hardware-matrix, or reproducibility.
+
+    Returns:
+        Dotted paths that must be present and finite before a repeat counts.
+
+    Raises:
+        ValueError: If evidence_kind is not one of the four kinds.
+    """
+    if evidence_kind not in _EVIDENCE_KINDS:
+        raise ValueError(f"unknown evidence kind: {evidence_kind}")
+    core = _core_measured_paths()
+    if evidence_kind == EVIDENCE_KIND_STORAGE:
+        return core + _extra_result_paths(_STORAGE_RESULT_FIELDS)
+    return core
+
+
+def required_measured_fields_for_workload(workload_type: str) -> tuple[str, ...]:
+    """Return required measured paths for one benchmark workload type.
+
+    synthetic-storage-write uses the storage schema. tcp-reconnect-storm uses
+    the reconnect schema. Recording, media, and AI workloads add their capacity
+    field to the shared core. Event ingest and control-api use the shared core
+    because throughput_ops_s is already required there. The hardware matrix and
+    the reproducibility gate both call this function, so neither one keeps a
+    second copy of the field list.
+
+    Args:
+        workload_type: workload.type from a benchmark result.
+
+    Returns:
+        Dotted paths required before that workload can count as a repeat.
+    """
+    if workload_type == "synthetic-storage-write":
+        return required_measured_fields(EVIDENCE_KIND_STORAGE)
+    if workload_type == "tcp-reconnect-storm":
+        return required_measured_fields(EVIDENCE_KIND_RECONNECT)
+    extras = _WORKLOAD_EXTRA_RESULT_FIELDS.get(workload_type, ())
+    return _core_measured_paths() + _extra_result_paths(extras)
+
+
+def _lookup_path(result: dict[str, Any], path: str) -> tuple[bool, Any]:
+    """Return whether a dotted path exists and the value stored there.
+
+    Args:
+        result: Benchmark result dictionary.
+        path: Dotted path such as resources.cpu_pct.mean.
+
+    Returns:
+        Found flag and value. The value is None when the path is absent.
+        A present JSON null is found and is not treated as absence.
+    """
+    cursor: Any = result
+    for part in path.split("."):
+        if not isinstance(cursor, dict) or part not in cursor:
+            return False, None
+        cursor = cursor[part]
+    return True, cursor
+
+
+def missing_measured_field_reasons(result: dict[str, Any]) -> tuple[str, ...]:
+    """Name required measured fields that are absent, objects, or lists.
+
+    A present JSON null keeps the existing "<path> is null" reason and is not
+    repeated here. A missing key, {}, [], or any other object or list uses
+    MISSING_MEASURED_FIELD:<path>. A non-finite number, string, or boolean is
+    rejected by the numeric parser as "<path> is not a finite number".
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        Stable reasons. Empty when every required path is a present scalar.
+    """
+    workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
+    workload_type = workload.get("type") if isinstance(workload.get("type"), str) else ""
+    reasons = []
+    for path in required_measured_fields_for_workload(workload_type):
+        found, value = _lookup_path(result, path)
+        if not found or _is_measured_container(value):
+            reasons.append(f"{MISSING_MEASURED_FIELD_PREFIX}{path}")
+    return tuple(reasons)
+
+
 def _summary_null_reasons(block: Any, field: str, *, allow_null: bool) -> list[str]:
     """Return reasons for JSON nulls inside one summary.
 
@@ -774,7 +1095,8 @@ def _null_measured_reasons(result: dict[str, Any]) -> tuple[str, ...]:
     Returns:
         Stable reasons. Includes "no operations measured" when failure_rate is
         null and both operation counts are zero. Allowlisted sensor nulls are
-        absent from the tuple.
+        absent from the tuple. Missing keys are reported separately as
+        MISSING_MEASURED_FIELD reasons.
     """
     metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
     resources = result.get("resources") if isinstance(result.get("resources"), dict) else {}
@@ -824,7 +1146,10 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Parsed duration, warmup, failure rate, resource percentiles, flags, and
         reasons for present nulls outside the unavailable-sensor allowlist.
-        A present null failure_rate stays None and is never stored as zero.
+        A present null failure_rate stays None. A missing failure_rate, or one
+        that is an object or list, also stays None and is never stored as zero.
+        A boolean failure_rate is rejected with result.failure_rate in the
+        reason.
 
     Raises:
         ValueError: If a present numeric field is not a finite in-range number.
@@ -834,6 +1159,8 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
     resources = result.get("resources") if isinstance(result.get("resources"), dict) else {}
     environment = result.get("environment") if isinstance(result.get("environment"), dict) else {}
     hardware = environment.get("hardware") if isinstance(environment.get("hardware"), dict) else {}
+    workload_type = workload.get("type") if isinstance(workload.get("type"), str) else ""
+    required = set(required_measured_fields_for_workload(workload_type))
     duration = _checked_number(
         workload.get("duration_seconds"),
         _NUMBER_BOUNDS["duration"],
@@ -844,21 +1171,61 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
         _NUMBER_BOUNDS["duration"],
         "workload.warmup_seconds",
     )
-    if "failure_rate" in metrics and metrics["failure_rate"] is None:
+    raw_rate = metrics.get("failure_rate", None)
+    rate_absent = "failure_rate" not in metrics
+    if rate_absent or raw_rate is None or _is_measured_container(raw_rate):
         failure_rate: float | None = None
     else:
-        failure = _present_number(metrics, "failure_rate", "unit_interval", "result.failure_rate")
-        failure_rate = 0.0 if failure is None else failure
+        failure_rate = _checked_number(
+            raw_rate,
+            _NUMBER_BOUNDS["unit_interval"],
+            "result.failure_rate",
+            allow_bool=False,
+        )
     for key, kind in _RESULT_FIELD_BOUNDS.items():
         if key == "failure_rate":
             continue
-        _present_number(metrics, key, kind, f"result.{key}")
+        field = f"result.{key}"
+        leaf_required = field in required
+        _present_number(
+            metrics,
+            key,
+            kind,
+            field,
+            allow_bool=not leaf_required,
+            skip_containers=leaf_required,
+        )
     latency = metrics.get("latency") if isinstance(metrics.get("latency"), dict) else {}
     for key, kind in _LATENCY_FIELD_BOUNDS.items():
-        _present_number(latency, key, kind, f"result.latency.{key}")
+        field = f"result.latency.{key}"
+        leaf_required = field in required
+        _present_number(
+            latency,
+            key,
+            kind,
+            field,
+            allow_bool=not leaf_required,
+            skip_containers=leaf_required,
+        )
     for key, kind in _SUMMARY_FIELD_BOUNDS.items():
-        _check_summary(resources.get(key), kind, f"resources.{key}")
-    _present_number(resources, "samples", "samples", "resources.samples")
+        field = f"resources.{key}"
+        leaf_required = any(f"{field}.{stat}" in required for stat in _SUMMARY_KEYS)
+        _check_summary(
+            resources.get(key),
+            kind,
+            field,
+            allow_bool=not leaf_required,
+            skip_containers=leaf_required,
+        )
+    samples_required = "resources.samples" in required
+    _present_number(
+        resources,
+        "samples",
+        "samples",
+        "resources.samples",
+        allow_bool=not samples_required,
+        skip_containers=samples_required,
+    )
     ratio = _present_number(resources, "cpu_freq_ratio_min", "ratio", "resources.cpu_freq_ratio_min")
     for key in ("thermal_measured", "thermal_limit_exceeded", "gpu_measured"):
         if key in resources:
@@ -889,11 +1256,34 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
         "duration_seconds": duration,
         "warmup_seconds": warmup,
         "failure_rate": failure_rate,
-        "null_measured_reasons": _null_measured_reasons(result),
-        "cpu_p95_pct": _present_number(cpu_pct, "p95", "percent", "resources.cpu_pct.p95"),
-        "ram_p95_pct": _present_number(ram_pct, "p95", "percent", "resources.ram_pct.p95"),
+        "null_measured_reasons": (
+            _null_measured_reasons(result) + missing_measured_field_reasons(result)
+        ),
+        "cpu_p95_pct": _present_number(
+            cpu_pct,
+            "p95",
+            "percent",
+            "resources.cpu_pct.p95",
+            allow_bool=False,
+            skip_containers=True,
+        ),
+        "ram_p95_pct": _present_number(
+            ram_pct,
+            "p95",
+            "percent",
+            "resources.ram_pct.p95",
+            allow_bool=False,
+            skip_containers=True,
+        ),
         "cpu_freq_ratio_min": ratio,
-        "p95_ms": _present_number(latency, "p95_ms", "latency_ms", "result.latency.p95_ms"),
+        "p95_ms": _present_number(
+            latency,
+            "p95_ms",
+            "latency_ms",
+            "result.latency.p95_ms",
+            allow_bool=False,
+            skip_containers=True,
+        ),
         "thermal_measured": bool(resources.get("thermal_measured")),
         "thermal_limit_exceeded": bool(resources.get("thermal_limit_exceeded")),
     }
@@ -965,8 +1355,8 @@ class ValidatedRecord:
         commit_sha: Benchmarked source revision.
         duration_seconds: Parsed workload duration.
         warmup_seconds: Parsed warmup.
-        failure_rate: Parsed failure rate. None when the field is present and
-            JSON null. Zero only when the field is absent.
+        failure_rate: Parsed failure rate. None when the field is absent, an
+            object, a list, or JSON null. Zero only when the file contains zero.
         cpu_p95_pct: Parsed CPU p95 when present.
         ram_p95_pct: Parsed RAM p95 when present.
         cpu_freq_ratio_min: Parsed minimum CPU frequency ratio when present.
@@ -974,7 +1364,9 @@ class ValidatedRecord:
         thermal_measured: Whether thermal evidence was recorded.
         thermal_limit_exceeded: Whether a thermal limit was recorded.
         null_measured_reasons: Present nulls outside the unavailable-sensor
-            allowlist. Empty when the record's nulls are allowlisted or absent.
+            allowlist, plus MISSING_MEASURED_FIELD reasons for a required path
+            that is absent, an object, or a list. Empty when those gaps are
+            absent.
     """
 
     source: dict[str, Any]
@@ -1003,9 +1395,13 @@ def parse_benchmark_record(result: dict[str, Any]) -> ValidatedRecord | Rejectio
     rules, the hardware key, and the workload key all happen here. JSON null
     on the unavailable-sensor allowlist is unavailable, not malformed. A null
     in any other measured field still parses, and null_measured_reasons names
-    it so the gates do not count the record. Null duration and warmup are
-    still rejected. A wrong container, a document deeper than
-    MAX_STRUCTURE_DEPTH, and OverflowError, ValueError, TypeError, KeyError,
+    it so the gates do not count the record. A required measured field that is
+    missing, an object, or a list is named MISSING_MEASURED_FIELD:<path> in
+    that same tuple. A boolean, string, or non-finite number on a required
+    leaf is rejected as "<path> is not a finite number".
+    Null duration and warmup are still rejected. A wrong container, a document
+    deeper than MAX_STRUCTURE_DEPTH, and OverflowError, ValueError, TypeError,
+    KeyError,
     or AttributeError from record content become a Rejection. Gates do not
     see those rejections.
 
@@ -1545,7 +1941,9 @@ def validate_result(result: dict[str, Any]) -> None:
     environment, hardware, workload, result, resources, and result.latency must
     be objects before any attribute access. hardware null is invalid and must
     not collapse to an empty machine identity. Nesting deeper than
-    MAX_STRUCTURE_DEPTH is invalid.
+    MAX_STRUCTURE_DEPTH is invalid. Missing latency percentiles are not a
+    schema exception here; the required-field schema reports them as
+    MISSING_MEASURED_FIELD.
 
     Args:
         result: Benchmark result dictionary.
@@ -1585,9 +1983,6 @@ def validate_result(result: dict[str, Any]) -> None:
     latency = metrics.get("latency", {})
     if not isinstance(latency, dict):
         raise ValueError("result.latency is not an object")
-    for key in ("p50_ms", "p95_ms", "p99_ms"):
-        if key not in latency:
-            raise ValueError(f"latency.{key} is required")
     if not isinstance(result["resources"], dict):
         raise ValueError("resources is not an object")
 
