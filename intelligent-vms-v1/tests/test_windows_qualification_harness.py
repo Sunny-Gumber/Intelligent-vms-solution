@@ -68,6 +68,8 @@ def test_pe_authenticode_table_detection(tmp_path):
         data[0x80:0x84]=b"PE\x00\x00"
         # COFF header is 20 bytes; optional header starts at 0x98.
         struct.pack_into("<H",data,0x98,0x10B)
+        struct.pack_into("<H",data,0x94,224)
+        struct.pack_into("<I",data,0xF4,16)
         security=0x98+96+(4*8)
         cert_offset=0x180 if cert_size else 0
         struct.pack_into("<II",data,security,cert_offset,cert_size)

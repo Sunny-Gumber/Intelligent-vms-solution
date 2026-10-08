@@ -3,7 +3,8 @@
 Windows PowerShell ConvertTo-Json can emit SignatureStatus as a number
 (Valid = 0). A numeric 0 must not be rejected once the PE certificate table
 says the file is signed. String names and numeric values share one table.
-Anything outside that table fails closed.
+Anything outside that table fails closed. With --expect-unsigned, only
+NotSigned is UNSIGNED_EXPECTED. UnknownError fails closed in every form.
 
 The values are documented at
 https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.signaturestatus?view=powershellsdk-7.4.0
@@ -42,6 +43,8 @@ def _write_pe(path: Path, cert_size: int) -> None:
     struct.pack_into("<I", data, 0x3C, 0x80)
     data[0x80:0x84] = b"PE\x00\x00"
     struct.pack_into("<H", data, 0x98, 0x10B)
+    struct.pack_into("<H", data, 0x94, 224)
+    struct.pack_into("<I", data, 0xF4, 16)
     security = 0x98 + 96 + (4 * 8)
     cert_offset = 0x180 if cert_size else 0
     struct.pack_into("<II", data, security, cert_offset, cert_size)
@@ -139,9 +142,9 @@ def test_unexpected_status_values_are_not_signed_names(raw):
     ("NotTrusted", True, "FAIL"),
     (4, False, "FAIL"),
     ("NotTrusted", False, "FAIL"),
-    (1, True, "UNSIGNED_EXPECTED"),
-    ("1", True, "UNSIGNED_EXPECTED"),
-    ("UnknownError", True, "UNSIGNED_EXPECTED"),
+    (1, True, "FAIL"),
+    ("1", True, "FAIL"),
+    ("UnknownError", True, "FAIL"),
     (1, False, "FAIL"),
     ("UnknownError", False, "FAIL"),
     (5, True, "FAIL"),

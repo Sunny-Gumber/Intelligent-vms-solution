@@ -338,26 +338,160 @@ def release_manifest(d:dict)->dict:
       "qualification_status":d.get("overall_result"),"signing_status":d.get("signing_status","UNSIGNED_EXPECTED"),
       "known_limitations":d.get("known_limitations",[])}
 
-def pe_has_authenticode(path:Path)->bool:
-    data=path.read_bytes()
-    if len(data)<0x40 or data[:2]!=b"MZ":
+_UNSIGNED_DETAIL="PE has no Authenticode certificate table"
+_PE32_MAGIC=0x10B
+_PE32PLUS_MAGIC=0x20B
+_SECURITY_DIRECTORY_INDEX=4
+_WIN_CERTIFICATE_HEADER=8
+_CERTIFICATE_ALIGNMENT=8
+
+def _in_file(length:int, offset:int, size:int)->bool:
+    """Return whether offset+size lies inside a buffer without wrapping.
+
+    Args:
+        length: Buffer length in bytes.
+        offset: Start offset.
+        size: Byte count.
+
+    Returns:
+        True when both values are non-negative and the span fits.
+
+    Raises:
+        This function does not raise.
+    """
+    if offset<0 or size<0 or offset>length:
         return False
-    pe_off=struct.unpack_from("<I",data,0x3C)[0]
-    if pe_off+24>len(data) or data[pe_off:pe_off+4]!=b"PE\x00\x00":
-        return False
-    opt_off=pe_off+24
-    magic=struct.unpack_from("<H",data,opt_off)[0]
-    if magic==0x10B:
-        directory_off=opt_off+96
-    elif magic==0x20B:
-        directory_off=opt_off+112
+    return size<=length-offset
+
+def _optional_header_layout(magic:int)->tuple[int,int,int]|None:
+    """Return PE32 or PE32+ offsets for the security data directory.
+
+    Args:
+        magic: Optional-header magic.
+
+    Returns:
+        NumberOfRvaAndSizes offset, data-directory offset, and the optional
+        header size required to include security directory index 4. None when
+        magic is not PE32 (0x10B) or PE32+ (0x20B).
+
+    Raises:
+        This function does not raise.
+    """
+    if magic==_PE32_MAGIC:
+        rva_offset,directory_offset=92,96
+    elif magic==_PE32PLUS_MAGIC:
+        rva_offset,directory_offset=108,112
     else:
-        return False
-    security_entry=directory_off+(4*8)
-    if security_entry+8>len(data):
-        return False
-    cert_offset,cert_size=struct.unpack_from("<II",data,security_entry)
-    return cert_offset>0 and cert_size>0 and cert_offset+cert_size<=len(data)
+        return None
+    security_offset=directory_offset+(_SECURITY_DIRECTORY_INDEX*8)
+    return rva_offset,directory_offset,security_offset+8
+
+def _authenticode_container(data:bytes)->tuple[str,str]:
+    """Classify a file before Authenticode status is trusted.
+
+    UNSIGNED_EXPECTED is allowed only for a zero-length file and for a
+    well-formed PE32/PE32+ whose security directory is exactly (0, 0). Every
+    header offset required to read that directory must lie inside the file.
+    A non-zero directory that is truncated, misaligned, or past EOF is rejected
+    here so it cannot skip PowerShell.
+
+    Args:
+        data: Raw artifact bytes.
+
+    Returns:
+        A kind and detail pair. Kind is empty, unsigned_pe, certificate, or
+        reject. Reject details are NOT_A_PE_FILE, PE_SECURITY_DIR_OUT_OF_RANGE,
+        or PE_MALFORMED:<reason>.
+
+    Raises:
+        This function does not raise.
+    """
+    if len(data)==0:
+        return "empty",_UNSIGNED_DETAIL
+    if not data.startswith(b"MZ"):
+        return "reject","NOT_A_PE_FILE"
+    if not _in_file(len(data),0,0x40):
+        return "reject","PE_MALFORMED:truncated_dos_header"
+    pe_off=struct.unpack_from("<I",data,0x3C)[0]
+    if pe_off<0x40:
+        return "reject","PE_MALFORMED:e_lfanew_overlaps_dos_header"
+    if not _in_file(len(data),pe_off,24):
+        return "reject","PE_MALFORMED:e_lfanew_out_of_range"
+    if data[pe_off:pe_off+4]!=b"PE\x00\x00":
+        return "reject","PE_MALFORMED:missing_pe_signature"
+    if not _in_file(len(data),pe_off+24,2):
+        return "reject","PE_MALFORMED:truncated_optional_header"
+    magic=struct.unpack_from("<H",data,pe_off+24)[0]
+    layout=_optional_header_layout(magic)
+    if layout is None:
+        return "reject","PE_MALFORMED:unknown_optional_header_magic"
+    rva_offset,directory_offset,min_optional=layout
+    optional_size=struct.unpack_from("<H",data,pe_off+20)[0]
+    if optional_size<min_optional:
+        return "reject","PE_MALFORMED:optional_header_excludes_security_directory"
+    opt_off=pe_off+24
+    security_rel=directory_offset+(_SECURITY_DIRECTORY_INDEX*8)
+    if not _in_file(len(data),opt_off,security_rel+8):
+        return "reject","PE_MALFORMED:truncated_security_directory"
+    if not _in_file(len(data),opt_off,optional_size):
+        return "reject","PE_MALFORMED:truncated_optional_header"
+    if not _in_file(len(data),opt_off+rva_offset,4):
+        return "reject","PE_MALFORMED:truncated_optional_header"
+    directory_count=struct.unpack_from("<I",data,opt_off+rva_offset)[0]
+    if directory_count<_SECURITY_DIRECTORY_INDEX+1:
+        return "reject","PE_MALFORMED:security_directory_absent"
+    if directory_count>0xFFFFFFFF//8:
+        return "reject","PE_MALFORMED:data_directory_count_overflows"
+    array_bytes=directory_count*8
+    if directory_offset>optional_size or array_bytes>optional_size-directory_offset:
+        return "reject","PE_MALFORMED:data_directory_array_exceeds_optional_header"
+    cert_offset,cert_size=struct.unpack_from("<II",data,opt_off+security_rel)
+    if cert_offset==0 and cert_size==0:
+        return "unsigned_pe",_UNSIGNED_DETAIL
+    if cert_offset==0 or cert_size==0:
+        return "reject","PE_MALFORMED:security_directory_incomplete"
+    if cert_size>0xFFFFFFFF-cert_offset or not _in_file(len(data),cert_offset,cert_size):
+        return "reject","PE_SECURITY_DIR_OUT_OF_RANGE"
+    if cert_offset%_CERTIFICATE_ALIGNMENT!=0:
+        return "reject","PE_MALFORMED:security_directory_misaligned"
+    if cert_size<_WIN_CERTIFICATE_HEADER:
+        return "reject","PE_MALFORMED:certificate_table_truncated"
+    return "certificate",""
+
+def pe_has_authenticode(path:Path)->bool:
+    """Return whether the PE security directory names a certificate inside the file.
+
+    Args:
+        path: Artifact to read.
+
+    Returns:
+        True only when the certificate blob is fully inside the file. A zero
+        security directory and every malformed container return False.
+
+    Raises:
+        OSError: The artifact cannot be read.
+    """
+    kind,_detail=_authenticode_container(path.read_bytes())
+    return kind=="certificate"
+
+def _json_object_no_duplicate_keys(pairs:list)->dict:
+    """Build one JSON object and reject a repeated key.
+
+    Args:
+        pairs: Key and value pairs from json.loads object_pairs_hook.
+
+    Returns:
+        The object when every key appears once.
+
+    Raises:
+        ValueError: A key is repeated. Callers map that to SIGNATURE_STATUS_AMBIGUOUS.
+    """
+    obj={}
+    for key,value in pairs:
+        if key in obj:
+            raise ValueError("duplicate JSON key")
+        obj[key]=value
+    return obj
 
 # One table for both ConvertTo-Json forms of SignatureStatus. Windows PowerShell
 # 5.1 emits the enum as its numeric value; Status.ToString() emits the name.
@@ -397,16 +531,47 @@ def signature_status_name(status:object)->str|None:
         return status
     return _SIGNATURE_STATUS_BY_CODE.get(status)
 
+def signature_rejection_reason(status:object)->str:
+    """Return the fail-closed reason code for one SignatureStatus value.
+
+    Normalisation stays in signature_status_name. This function only names why
+    a value is not an accepted verdict.
+
+    Args:
+        status: Raw Status field from ConvertTo-Json. None is missing. A blank
+            or whitespace-only string is empty. Every value
+            signature_status_name cannot map is unparsable.
+
+    Returns:
+        SIGNATURE_STATUS_MISSING, SIGNATURE_STATUS_EMPTY,
+        SIGNATURE_STATUS_UNPARSED, or SIGNATURE_STATUS_REJECTED:<Name> using
+        the canonical name from signature_status_name.
+
+    Raises:
+        This function does not raise.
+    """
+    if status is None:
+        return "SIGNATURE_STATUS_MISSING"
+    if isinstance(status,str) and status.strip()=="":
+        return "SIGNATURE_STATUS_EMPTY"
+    name=signature_status_name(status)
+    if name is None:
+        return "SIGNATURE_STATUS_UNPARSED"
+    return "SIGNATURE_STATUS_REJECTED:"+name
+
 def authenticode_status_verdict(status:object, expect_unsigned:bool)->str:
     """Classify a certificate-table artifact from one SignatureStatus value.
 
     Args:
         status: Raw Status value from Get-AuthenticodeSignature JSON.
-        expect_unsigned: When true, NotSigned and UnknownError stay on the
-            existing unsigned path. Valid is never treated as unsigned.
+        expect_unsigned: When true, only NotSigned is UNSIGNED_EXPECTED.
+            UnknownError and every other non-Valid status fail closed. Valid
+            is never treated as unsigned. Boss default pending signing ADR
+            owner confirmation.
 
     Returns:
-        SIGNED_VALID, UNSIGNED_EXPECTED, or FAIL. Unmapped values are FAIL.
+        SIGNED_VALID, UNSIGNED_EXPECTED, or FAIL. Unmapped, missing, and
+        empty values are FAIL.
 
     Raises:
         This function does not raise.
@@ -414,7 +579,8 @@ def authenticode_status_verdict(status:object, expect_unsigned:bool)->str:
     name=signature_status_name(status)
     if name=="Valid":
         return "SIGNED_VALID"
-    if expect_unsigned and name in {"NotSigned","UnknownError"}:
+    # UnknownError means the signature could not be read. It is not unsigned.
+    if expect_unsigned and name=="NotSigned":
         return "UNSIGNED_EXPECTED"
     return "FAIL"
 
@@ -432,29 +598,38 @@ def _authenticode_verification_available()->bool:
 def verify_signature(path:str, expect_unsigned:bool)->tuple[str,str]:
     """Verify Authenticode status without deciding publisher or timestamp policy.
 
-    A PE with no certificate table follows the unsigned field-test path when
-    the caller expected that. A certificate table is checked with
-    Get-AuthenticodeSignature on Windows. Status is mapped through
-    SIGNATURE_STATUS_BY_VALUE, so numeric 0 and the name Valid are both signed.
-    Publisher identity and timestamp checks stay owner decisions.
+    With --expect-unsigned, UNSIGNED_EXPECTED before PowerShell is only a
+    zero-length file or a well-formed PE32/PE32+ whose security directory is
+    exactly (0, 0). Every other container fails closed. An in-file certificate
+    table is checked with Get-AuthenticodeSignature on Windows. Status is mapped
+    through SIGNATURE_STATUS_BY_VALUE, so numeric 0 and the name Valid are both
+    signed. Publisher identity and timestamp checks stay owner decisions.
 
     Args:
         path: Artifact path to inspect.
-        expect_unsigned: When true, a missing certificate table, NotSigned, or
-            UnknownError is UNSIGNED_EXPECTED.
+        expect_unsigned: When true, only a zero-length file, a well-formed
+            (0, 0) security directory, or NotSigned is UNSIGNED_EXPECTED.
+            UnknownError is FAIL. Boss default pending signing ADR owner
+            confirmation.
 
     Returns:
         A status and detail pair. Status is SIGNED_VALID, UNSIGNED_EXPECTED,
-        NOT_RUN, or FAIL.
+        NOT_RUN, or FAIL. Container failures use NOT_A_PE_FILE,
+        PE_SECURITY_DIR_OUT_OF_RANGE, or PE_MALFORMED:<reason>. A certificate
+        FAIL detail starts with SIGNATURE_STATUS_REJECTED:<Name>,
+        SIGNATURE_STATUS_MISSING, SIGNATURE_STATUS_EMPTY,
+        SIGNATURE_STATUS_UNPARSED, or SIGNATURE_STATUS_AMBIGUOUS.
 
     Raises:
         OSError: The artifact cannot be read.
         subprocess.TimeoutExpired: PowerShell does not finish within 30 seconds.
     """
     artifact=Path(path)
-    has_signature=pe_has_authenticode(artifact)
-    if not has_signature:
-        return ("UNSIGNED_EXPECTED" if expect_unsigned else "FAIL","PE has no Authenticode certificate table")
+    kind,container_detail=_authenticode_container(artifact.read_bytes())
+    if kind in {"empty","unsigned_pe"}:
+        return ("UNSIGNED_EXPECTED" if expect_unsigned else "FAIL"),container_detail
+    if kind=="reject":
+        return "FAIL",container_detail
     if not _authenticode_verification_available():
         return "NOT_RUN","Authenticode cryptographic verification requires Windows"
     escaped=str(Path(path)).replace("'","''")
@@ -471,13 +646,19 @@ def verify_signature(path:str, expect_unsigned:bool)->tuple[str,str]:
     if cp.returncode:
         return "FAIL",cp.stderr.strip()
     try:
-        data=json.loads(cp.stdout)
+        data=json.loads(cp.stdout,object_pairs_hook=_json_object_no_duplicate_keys)
     except json.JSONDecodeError:
         return "FAIL","Authenticode status output was not valid JSON"
+    except ValueError:
+        return "FAIL","SIGNATURE_STATUS_AMBIGUOUS"
     if not isinstance(data,dict):
         return "FAIL","Authenticode status output was not a JSON object"
+    raw_status=data.get("Status")
+    verdict=authenticode_status_verdict(raw_status,expect_unsigned)
     detail=json.dumps(data,sort_keys=True)
-    return authenticode_status_verdict(data.get("Status"),expect_unsigned),detail
+    if verdict=="FAIL":
+        detail=signature_rejection_reason(raw_status)+" "+detail
+    return verdict,detail
 
 def main():
     """Dispatch qualification harness commands.
