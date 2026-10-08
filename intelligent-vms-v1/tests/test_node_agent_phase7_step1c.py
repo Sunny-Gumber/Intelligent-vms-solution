@@ -223,6 +223,8 @@ def test_recording_probe_counts_only_record_paths(monkeypatch):
 
         def json(self):
             return {
+                "itemCount": 3,
+                "pageCount": 1,
                 "items": [
                     {"name": "cam-a", "source": {"type": "rtspSource"}},
                     {"name": "cam-a-record", "source": {"type": "rtspSource"}},

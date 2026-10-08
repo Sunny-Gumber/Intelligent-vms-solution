@@ -213,6 +213,53 @@ async def _claim_camera_batch() -> tuple[list[CameraEntity], str | None]:
             return cameras, next_cursor
 
 
+def _absorb_media_paths(
+    node_id: str,
+    paths: object,
+    by_name: dict[tuple[str, str], dict],
+    untrusted_media_nodes: set[str],
+) -> None:
+    """Index one MediaMTX path list, or keep prior state when it is not complete.
+
+    Args:
+        node_id: Node the list was read from.
+        paths: ``list_paths`` payload.
+        by_name: Mutable map of ``(node_id, path name)`` to path item.
+        untrusted_media_nodes: Nodes whose lists must not be treated as complete.
+
+    Returns:
+        None. Truncation and inconsistency are logged and recorded on
+        ``untrusted_media_nodes`` so a partial page cannot clear ``path_present``.
+    """
+    if not isinstance(paths, dict):
+        return
+    items = paths.get("items", [])
+    if not isinstance(items, list):
+        items = []
+    item_count = paths.get("itemCount")
+    short = (
+        isinstance(item_count, int)
+        and not isinstance(item_count, bool)
+        and len(items) < item_count
+    )
+    if paths.get("truncated") is True or paths.get("inconsistent") is True or short:
+        stats.media_errors += 1
+        untrusted_media_nodes.add(node_id)
+        log.error(
+            "health_media_list_untrusted node_id=%s truncated=%s inconsistent=%s collected=%s item_count=%s page_count=%s",
+            node_id,
+            paths.get("truncated"),
+            paths.get("inconsistent"),
+            len(items),
+            paths.get("itemCount"),
+            paths.get("pageCount"),
+        )
+        return
+    for item in items:
+        if isinstance(item, dict) and item.get("name"):
+            by_name[(node_id, item["name"])] = item
+
+
 class HealthMonitor:
     """Probe camera reachability and persist hysteresis-based health state/events."""
 
@@ -264,7 +311,10 @@ class HealthMonitor:
         # Media path state is diagnostic only because live paths can be
         # source-on-demand and legitimately idle. In distributed mode it must
         # be collected from each assigned node, never from one global server.
+        # Nodes in untrusted_media_nodes had a truncated, inconsistent, or
+        # failed list. Their absence must not clear a previously observed path.
         by_name: dict[tuple[str, str], dict] = {}
+        untrusted_media_nodes: set[str] = set()
         if settings.placement_execution_enabled and cameras:
             node_ids = sorted({camera.media_node_id for camera in cameras if camera.media_node_id})
             async with SessionLocal() as node_session:
@@ -294,18 +344,21 @@ class HealthMonitor:
             for node_id, paths in results:
                 if paths is None:
                     stats.media_errors += 1
+                    untrusted_media_nodes.add(node_id)
                     continue
-                for item in paths.get("items", []) if isinstance(paths, dict) else []:
-                    if isinstance(item, dict) and item.get("name"):
-                        by_name[(node_id, item["name"])] = item
+                _absorb_media_paths(node_id, paths, by_name, untrusted_media_nodes)
         else:
             try:
                 paths = await mediamtx.list_paths()
-                for item in paths.get("items", []) if isinstance(paths, dict) else []:
-                    if isinstance(item, dict) and item.get("name"):
-                        by_name[(settings.placement_local_node_id, item["name"])] = item
+                _absorb_media_paths(
+                    settings.placement_local_node_id,
+                    paths,
+                    by_name,
+                    untrusted_media_nodes,
+                )
             except Exception:
                 stats.media_errors += 1
+                untrusted_media_nodes.add(settings.placement_local_node_id)
                 log.exception("health_media_node_unreachable")
 
         semaphore = asyncio.Semaphore(max(1, settings.health_probe_concurrency))
@@ -346,12 +399,16 @@ class HealthMonitor:
                         if settings.placement_execution_enabled
                         else settings.placement_local_node_id
                     )
-                    item = by_name.get((node_key, camera.stream_key))
-                    path_present = item is not None
-                    media_ready = bool(item and item.get("ready"))
-                    transport_ready = bool(probe_results.get(camera.id, False))
-
                     row = existing.get(camera.id)
+                    if node_key in untrusted_media_nodes:
+                        item = None
+                        path_present = bool(row.path_present) if row is not None else False
+                        media_ready = False
+                    else:
+                        item = by_name.get((node_key, camera.stream_key))
+                        path_present = item is not None
+                        media_ready = bool(item and item.get("ready"))
+                    transport_ready = bool(probe_results.get(camera.id, False))
                     if row is None:
                         row = CameraHealthStateEntity(
                             camera_id=camera.id,
