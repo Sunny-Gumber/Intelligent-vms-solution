@@ -43,10 +43,19 @@ recording-node placement, and chooses the internal MediaMTX playback client.
 
 The play endpoint now validates real recording coverage before streaming. On a
 single/local recorder it can continue only through contiguous spans and stops
-at the first gap. In distributed mode a request is bounded to the recording
-segment/node containing the selected start. If no completed indexed segment
-contains the start, the current recorder is queried and must prove current
-coverage before playback begins.
+at the first gap. In distributed mode the recording index selects the completed
+segment that contains the start. Containment is half-open and matches the
+recording fence: the segment start is inside, and the segment end is outside,
+including one microsecond past the end. The index applies that predicate before
+its limit, so a long history cannot push the covering segment off the page.
+
+If several completed segments contain the start after a placement move, playback
+uses the one with the latest segment start, then the greatest segment id. The
+current placement is not consulted for that choice. A start that falls only in
+an older owner's segment is played from that older node. A start in a gap has
+no covering segment. Playback then asks the current recorder and continues only
+when that recorder's own timeline proves coverage. A gap never silently plays
+the current node, and one request never crosses a recording-node boundary.
 
 The server never constructs synthetic continuity across a recording gap or
 recording-node/failover boundary.

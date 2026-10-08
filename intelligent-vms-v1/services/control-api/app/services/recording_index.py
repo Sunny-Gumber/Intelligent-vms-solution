@@ -1,4 +1,5 @@
 import json
+import math
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +16,51 @@ from app.services.search_page import (
 
 class RecordingIndexError(RuntimeError):
     """Raised when recording-index queries cannot be completed safely."""
+
+
+# MediaMTX rejects a completed segment longer than one day. The indexed range
+# uses that same bound so a long segment is not hidden by a shorter lookback.
+_MAX_SEGMENT_DURATION = timedelta(days=1)
+_MAX_SEGMENT_DURATION_SECONDS = 24 * 60 * 60
+# Candidates already limited to rows that cover the instant. One page is enough
+# for a placement overlap; a full page of malformed rows is scanned again.
+_COVERING_CANDIDATE_LIMIT = 32
+
+# Exclusive segment end at microsecond resolution. The if() keeps a non-finite
+# duration from being rounded into an interval that would fail the query.
+_EXCLUSIVE_SEGMENT_END_SQL = f"""segment_start + toIntervalMicrosecond(toInt64(round(
+  if(isFinite(duration_seconds) AND duration_seconds > 0 AND duration_seconds <= {_MAX_SEGMENT_DURATION_SECONDS}, duration_seconds, 0) * 1000000
+)))"""
+_FINITE_DURATION_SQL = f"""
+  AND isFinite(duration_seconds)
+  AND duration_seconds > 0
+  AND duration_seconds <= {_MAX_SEGMENT_DURATION_SECONDS}
+"""
+
+
+def _exclusive_segment_end(segment_start: datetime, duration_seconds: float) -> datetime:
+    """Return the exclusive segment end at microsecond resolution.
+
+    Args:
+        segment_start: Inclusive timezone-aware segment start.
+        duration_seconds: Segment length in seconds.
+
+    Returns:
+        First instant that is outside the segment.
+
+    Raises:
+        ValueError: If the duration is not a finite length inside the one-day maximum.
+    """
+    if isinstance(duration_seconds, bool) or not isinstance(duration_seconds, (int, float)):
+        raise ValueError("unsupported duration")
+    if not math.isfinite(duration_seconds):
+        raise ValueError("unsupported duration")
+    if duration_seconds <= 0 or duration_seconds > _MAX_SEGMENT_DURATION_SECONDS:
+        raise ValueError("unsupported duration")
+    microseconds = int(round(float(duration_seconds) * 1_000_000))
+    if microseconds <= 0:
+        raise ValueError("unsupported duration")
+    return segment_start + timedelta(microseconds=microseconds)
 
 
 def _parse_timestamp(value):
@@ -64,7 +110,17 @@ def _interpret_segment_line(line: str, *, start: datetime, end: datetime, seen: 
         if segment_start.tzinfo is None:
             segment_start = segment_start.replace(tzinfo=timezone.utc)
         duration = float(row["duration_seconds"])
-        segment_end = segment_start + timedelta(seconds=duration)
+        if (
+            isinstance(row["duration_seconds"], bool)
+            or not math.isfinite(duration)
+            or duration < 0
+            or duration > _MAX_SEGMENT_DURATION_SECONDS
+        ):
+            raise ValueError("unsupported duration")
+        if duration == 0:
+            seen.add(segment_id)
+            return None, (segment_start, segment_id), None
+        segment_end = _exclusive_segment_end(segment_start, duration)
         if segment_end <= start or segment_start >= end:
             seen.add(segment_id)
             return None, (segment_start, segment_id), None
@@ -100,10 +156,15 @@ class RecordingIndexClient:
     ) -> RecordingIndexPage:
         """Return completed recording segments overlapping a bounded time window.
 
+        The store applies the overlap predicate before `LIMIT`: a segment is
+        in range when its start is before `end` and its exclusive end is after
+        `start`. Pages walk oldest first by `(segment_start, segment_id)`.
         Malformed backend lines are skipped and counted. The scan continues
         until `limit` overlapping segments are collected or the backend is
         exhausted. Pass the returned `next_after_*` cursor to read the next
-        page. A missing cursor means the walk is finished.
+        page. A missing cursor means the walk is finished. The timeline and
+        export routes request one page up to `recording_query_max_segments`
+        and do not expose this cursor.
 
         Args:
             tenant_id: Tenant scope for the camera.
@@ -207,15 +268,16 @@ class RecordingIndexClient:
         batch_limit: int,
         offset: int,
     ) -> list[str]:
-        # Segment duration is bounded by the recording policy to <= 6 hours.
-        # Query a bounded lookback, then perform exact overlap filtering in Python.
-        query_start = start - timedelta(hours=6)
+        # Completed segments are at most one day. Bound the primary-key range
+        # by that maximum, then keep only rows that overlap [start, end).
+        query_start = start - _MAX_SEGMENT_DURATION
         params = {
             "param_tenant": tenant_id,
             "param_site": site_id,
             "param_camera": camera_id,
             "param_start": query_start.isoformat(),
             "param_end": end.isoformat(),
+            "param_window_start": start.isoformat(),
             "param_limit": str(batch_limit),
             "param_offset": str(offset),
             "date_time_input_format": "best_effort",
@@ -227,13 +289,13 @@ class RecordingIndexClient:
             if after_id:
                 params["param_after_segment_id"] = after_id
                 cursor_clause = """
-  AND (segment_start > parseDateTime64BestEffort({after_start:String}, 3, 'UTC')
-    OR (segment_start = parseDateTime64BestEffort({after_start:String}, 3, 'UTC')
+  AND (segment_start > parseDateTime64BestEffort({after_start:String}, 6, 'UTC')
+    OR (segment_start = parseDateTime64BestEffort({after_start:String}, 6, 'UTC')
         AND segment_id > {after_segment_id:String}))
 """
             else:
                 cursor_clause = """
-  AND segment_start > parseDateTime64BestEffort({after_start:String}, 3, 'UTC')
+  AND segment_start > parseDateTime64BestEffort({after_start:String}, 6, 'UTC')
 """
         query = f"""
 SELECT
@@ -243,8 +305,10 @@ FROM {self.database}.recording_segments
 WHERE tenant_id = {{tenant:String}}
   AND site_id = {{site:String}}
   AND camera_id = {{camera:String}}
-  AND segment_start >= parseDateTime64BestEffort({{start:String}}, 3, 'UTC')
-  AND segment_start < parseDateTime64BestEffort({{end:String}}, 3, 'UTC')
+  AND segment_start >= parseDateTime64BestEffort({{start:String}}, 6, 'UTC')
+  AND segment_start < parseDateTime64BestEffort({{end:String}}, 6, 'UTC')
+{_FINITE_DURATION_SQL}
+  AND {_EXCLUSIVE_SEGMENT_END_SQL} > parseDateTime64BestEffort({{window_start:String}}, 6, 'UTC')
 {cursor_clause}
 ORDER BY segment_start ASC, segment_id ASC
 LIMIT 1 BY segment_id
@@ -269,6 +333,13 @@ FORMAT JSONEachRow
     ) -> dict | None:
         """Find the completed recording segment covering one playback instant.
 
+        The store keeps only rows whose half-open interval contains `start`
+        (`segment_start <= start < segment_end`) and applies `LIMIT` after that
+        predicate. Overlapping owners, such as a placement move, resolve to the
+        greatest `segment_start` and then the greatest `segment_id`. The
+        camera's current node is not an input. Equal to `segment_start` is
+        inside; equal to `segment_end`, and one microsecond later, is outside.
+
         Args:
             tenant_id: Tenant scope for the camera.
             site_id: Site scope for the camera.
@@ -277,27 +348,113 @@ FORMAT JSONEachRow
 
         Returns:
             Covering segment dictionary, or None when no completed segment covers it.
+            None tells playback to ask the current recorder, which must prove its
+            own coverage before streaming.
 
         Raises:
-            RecordingIndexError: If the underlying recording-index query fails.
+            RecordingIndexError: If the timestamp is naive or the recording-index
+                query fails.
         """
-        rows = await self.segments(
-            tenant_id=tenant_id,
-            site_id=site_id,
-            camera_id=camera_id,
-            start=start,
-            end=start + timedelta(seconds=1),
-            limit=50,
-        )
-        covering = [
-            row
-            for row in rows
-            if row["segment_start"] <= start < row["segment_end"]
-        ]
-        if not covering:
-            return None
-        # Prefer the latest segment start when rare overlap exists during failover.
-        return max(covering, key=lambda row: (row["segment_start"], row["segment_id"]))
+        if start.tzinfo is None:
+            raise RecordingIndexError("recording index timestamps require timezone")
+        window_end = start + timedelta(microseconds=1)
+        cursor = None
+        previous_progress = None
+        seen: set[str] = set()
+
+        def interpret(line: str):
+            return _interpret_segment_line(line, start=start, end=window_end, seen=seen)
+
+        for _ in range(_MAX_SCAN_BATCHES):
+            progress = _progress_token(cursor, 0)
+            if progress == previous_progress:
+                raise RecordingIndexError("Recording index page could not advance")
+            previous_progress = progress
+            lines = await self._fetch_covering(
+                tenant_id=tenant_id,
+                site_id=site_id,
+                camera_id=camera_id,
+                instant=start,
+                cursor=cursor,
+                batch_limit=_COVERING_CANDIDATE_LIMIT,
+            )
+            if not lines:
+                return None
+            covering: list[dict] = []
+            last_cursor = None
+            for line in lines:
+                row, row_cursor, _reason = interpret(line)
+                if row_cursor is not None:
+                    last_cursor = row_cursor
+                if row is not None and row["segment_start"] <= start < row["segment_end"]:
+                    covering.append(row)
+            if covering:
+                return max(covering, key=lambda row: (row["segment_start"], str(row["segment_id"])))
+            if len(lines) < _COVERING_CANDIDATE_LIMIT or last_cursor is None:
+                return None
+            cursor = last_cursor
+        raise RecordingIndexError("Recording index page could not advance")
+
+    async def _fetch_covering(
+        self,
+        *,
+        tenant_id: str,
+        site_id: str,
+        camera_id: str,
+        instant: datetime,
+        cursor,
+        batch_limit: int,
+    ) -> list[str]:
+        not_before = instant - _MAX_SEGMENT_DURATION
+        params = {
+            "param_tenant": tenant_id,
+            "param_site": site_id,
+            "param_camera": camera_id,
+            "param_instant": instant.isoformat(),
+            "param_not_before": not_before.isoformat(),
+            "param_limit": str(batch_limit),
+            "date_time_input_format": "best_effort",
+        }
+        cursor_clause = ""
+        if cursor is not None:
+            before_start, before_id = cursor
+            params["param_before_start"] = before_start.isoformat()
+            if before_id:
+                params["param_before_segment_id"] = before_id
+                cursor_clause = """
+  AND (segment_start < parseDateTime64BestEffort({before_start:String}, 6, 'UTC')
+    OR (segment_start = parseDateTime64BestEffort({before_start:String}, 6, 'UTC')
+        AND segment_id < {before_segment_id:String}))
+"""
+            else:
+                cursor_clause = """
+  AND segment_start < parseDateTime64BestEffort({before_start:String}, 6, 'UTC')
+"""
+        query = f"""
+SELECT
+ segment_id, recording_node_id, record_stream_key, segment_path,
+ segment_start, duration_seconds, completed_at, storage_tier, object_uri
+FROM {self.database}.recording_segments
+WHERE tenant_id = {{tenant:String}}
+  AND site_id = {{site:String}}
+  AND camera_id = {{camera:String}}
+  AND segment_start >= parseDateTime64BestEffort({{not_before:String}}, 6, 'UTC')
+  AND segment_start <= parseDateTime64BestEffort({{instant:String}}, 6, 'UTC')
+{_FINITE_DURATION_SQL}
+  AND {_EXCLUSIVE_SEGMENT_END_SQL} > parseDateTime64BestEffort({{instant:String}}, 6, 'UTC')
+{cursor_clause}
+ORDER BY segment_start DESC, segment_id DESC
+LIMIT 1 BY segment_id
+LIMIT {{limit:UInt32}}
+FORMAT JSONEachRow
+"""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(self.base_url + "/", params=params, content=query)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RecordingIndexError("Recording index unavailable") from exc
+        return [line for line in response.text.splitlines() if line.strip()]
 
 
 recording_index = RecordingIndexClient()

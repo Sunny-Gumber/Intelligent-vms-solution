@@ -43,13 +43,18 @@ Event history walks newest first. The next request sends `before` and
 `before_id` from the last returned valid event. The server reads past malformed
 rows before deciding the page is final, so each valid event is returned once.
 
-The recording index walks oldest first. `RecordingIndexClient.segments`
+The recording index walks oldest first. The store applies the overlap predicate
+before `LIMIT`: `segment_start < end` and the exclusive segment end is after
+`start`. A non-overlapping lookback row cannot consume the page. `segments`
 returns `next_after_segment_start` and `next_after_segment_id` when the valid
 page is full and another row may exist. The next call passes those values as
 `after_segment_start` and `after_segment_id`. Both are empty when the scan is
-exhausted. The timeline endpoint fills up to the configured segment cap in one
-request and does not expose that cursor; callers that need a longer walk use
-the client cursor.
+exhausted. The timeline and export routes fill one page up to
+`recording_query_max_segments` and do not expose that cursor. That cap is a
+separate bound from `X-VMS-Partial`. Callers that need a longer walk use the
+client cursor. Point lookup is not this oldest-first page: `segment_for_start`
+keeps rows that contain the instant, orders by latest start, and limits after
+that filter.
 
 A scan that cannot advance, or that exceeds the bounded batch cap, fails with
 the existing store error and does not return a short page. The error text does
