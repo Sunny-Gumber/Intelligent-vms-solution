@@ -62,6 +62,7 @@ def generate(
         f'"{_windows_forward(app_root / "deploy/windows/recording_hook.py")}" '
         f'--env-file "{_windows_forward(output)}"'
     )
+    # C3: %f is required while MediaMTX playback is enabled. %s-%f matches the control-plane default.
     record_path = _windows_forward(recording_dir) + "/%path/%Y/%m/%d/%H/%s-%f"
     values = {
         "DEPLOYMENT_PROFILE": "windows-small-site",

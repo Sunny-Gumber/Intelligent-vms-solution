@@ -129,7 +129,9 @@ The control API accepts completed segments only when:
 - recording assignment is active;
 - node ID equals current owner;
 - generation equals current generation;
-- lease is still valid.
+- the segment completion time, including microseconds from the `%s-%f` name, is still inside the authority window.
+
+A completion exactly at `valid_until` remains inside the window. One microsecond later is rejected. A malformed segment name is rejected and is not replaced with the current clock, so it cannot be placed inside the window by invention. Owner decision C3 requires the playback `recordPath` to include `%f` so that timestamp exists.
 
 A stale recorder can therefore neither be indexed nor accepted after failover even if it survives briefly.
 

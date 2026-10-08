@@ -39,6 +39,10 @@ log = logging.getLogger(__name__)
 _export_slots = asyncio.Semaphore(settings.recording_export_max_concurrent_per_process)
 
 _DURATION_RE = re.compile(r"(?:(?P<h>\d+(?:\.\d+)?)h)?(?:(?P<m>\d+(?:\.\d+)?)m)?(?:(?P<s>\d+(?:\.\d+)?)s)?$")
+# MediaMTX v1.21.1 internal/conf/path.go: "maximum segment duration is 1 day".
+_MAX_SEGMENT_DURATION_SECONDS = 24 * 60 * 60
+# %s is exactly 10 digits and %f is exactly 6 digits in internal/recordstore/path.go.
+_SEGMENT_NAME_RE = re.compile(r"^(?P<seconds>[0-9]{10})(?:-(?P<micros>[0-9]{6}))?$")
 
 
 def _recording_valid_until(assignment: PlacementAssignmentEntity) -> datetime:
@@ -760,19 +764,27 @@ async def export_clip(
     return await stream_recording_clip(request, camera, start, duration, session)
 
 
+def _bounded_segment_seconds(seconds: float) -> float:
+    if not math.isfinite(seconds) or seconds < 0 or seconds > _MAX_SEGMENT_DURATION_SECONDS:
+        raise ValueError("unsupported duration")
+    return seconds
+
+
 def _parse_duration(value: str) -> float:
     value = value.strip()
+    if not value:
+        raise ValueError("unsupported duration")
     try:
         numeric_value = float(value)
     except ValueError:
         numeric_value = None
     if numeric_value is not None:
-        return numeric_value
+        return _bounded_segment_seconds(numeric_value)
 
     m = _DURATION_RE.fullmatch(value)
-    if not m:
+    if not m or not any(m.group(name) for name in ("h", "m", "s")):
         raise ValueError("unsupported duration")
-    return (
+    return _bounded_segment_seconds(
         float(m.group("h") or 0) * 3600
         + float(m.group("m") or 0) * 60
         + float(m.group("s") or 0)
@@ -780,15 +792,21 @@ def _parse_duration(value: str) -> float:
 
 
 def _segment_start(path: str, duration: float) -> datetime:
-    stem = Path(path).stem
-    # MediaMTX v1.21 requires %f in recordPath. Windows field-test segments use
-    # %s-%f so the stable Unix-seconds prefix remains authoritative while
-    # microseconds provide the required filename uniqueness.
-    epoch_text = stem.split("-", 1)[0]
-    try:
-        return datetime.fromtimestamp(int(epoch_text), tz=timezone.utc)
-    except ValueError:
-        return datetime.now(timezone.utc) - timedelta(seconds=duration)
+    # duration is not used. A malformed name must not be replaced with now.
+    del duration
+    # MediaMTX v1.21.1 requires %f in recordPath when playback is enabled.
+    # Windows field-test segments use %s-%f: a 10-digit Unix-second prefix and
+    # six zero-padded microseconds. Both separators are accepted so a Windows
+    # path posted to this parser keeps those microseconds.
+    normalized = str(path).replace("\\", "/")
+    stem = Path(normalized.rsplit("/", 1)[-1]).stem
+    match = _SEGMENT_NAME_RE.fullmatch(stem)
+    if match is None:
+        raise ValueError("malformed segment name")
+    micros = int(match.group("micros") or "0")
+    return datetime.fromtimestamp(int(match.group("seconds")), tz=timezone.utc).replace(
+        microsecond=micros
+    )
 
 
 @internal_router.post("/segments/complete", status_code=202)
@@ -816,8 +834,8 @@ async def segment_complete(
         Acceptance object containing deterministic segment ID and dedupe result.
 
     Raises:
-        HTTPException: If hook authentication, policy/camera lookup, duration or
-            distributed fencing evidence is invalid.
+        HTTPException: If hook authentication, policy/camera lookup, duration,
+            segment name, or distributed fencing evidence is invalid.
     """
     if not settings.recording_hook_token:
         raise HTTPException(503, "Recording hook token is not configured")
@@ -849,7 +867,10 @@ async def segment_complete(
     except ValueError as exc:
         raise HTTPException(422, "Invalid segment duration") from exc
 
-    start = _segment_start(segment_path, seconds)
+    try:
+        start = _segment_start(segment_path, seconds)
+    except ValueError as exc:
+        raise HTTPException(422, "Malformed segment name") from exc
     completed = start + timedelta(seconds=seconds)
 
     if settings.placement_execution_enabled:
