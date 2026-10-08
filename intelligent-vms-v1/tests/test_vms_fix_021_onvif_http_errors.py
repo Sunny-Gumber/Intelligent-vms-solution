@@ -1,13 +1,18 @@
 """F21: expected ONVIF HTTP errors must not be rewritten as HTTP 502.
 
 Configuration routes catch Exception and call _http_error. _managed_profile
-raises HTTPException for a bad role, so an expected 422 became 502. These tests
-use an in-memory database and fakes only. Device transport is blocked.
+raises HTTPException for a bad role, so an expected 422 became 502. Device and
+service HTTPException details must be discarded on every ONVIF route. These
+tests use an in-memory database and fakes only. Device transport is blocked.
 """
 
+import ast
 import asyncio
+import base64
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 import pytest
@@ -36,11 +41,25 @@ DEVICE_FAULT = (
     "raw-device-body from "
     f"http://{USERNAME}:{SECRET}@{HOST}/onvif/device_service"
 )
-MARKERS = (SECRET, USERNAME, HOST, "raw-device-body", "/onvif/device_service")
+LEAK = (
+    "raw-device-body from "
+    f"http://{USERNAME}:{SECRET}@{HOST}/onvif/device_service "
+    f"<wsse:Password>{SECRET}</wsse:Password> token=synthetic-token-marker"
+)
+MARKERS = (
+    SECRET,
+    USERNAME,
+    HOST,
+    "raw-device-body",
+    "/onvif/device_service",
+    "wsse:Password",
+    "synthetic-token-marker",
+)
 ROLE_CODE = "INVALID_STREAM_ROLE"
 ROLE_MESSAGE = "Role must be main, sub or third"
 STALE_CODE = "CAPABILITY_REFRESH_REQUIRED"
 STALE_MESSAGE = "Selected profile is not present in the stored ONVIF snapshot"
+FORGED = {"code": STALE_CODE, "message": LEAK}
 
 
 class _BlockedAsyncClient:
@@ -77,6 +96,7 @@ def _capability(mode: str, services: list | None = None) -> CameraCapabilityEnti
         "video_source_token": "vs-1",
     }
     token = "profile-main"
+    sub_token = None
     if mode == "ready":
         profile["video_source_configuration_token"] = "vsc-1"
     elif mode == "stale":
@@ -85,6 +105,9 @@ def _capability(mode: str, services: list | None = None) -> CameraCapabilityEnti
         pass
     elif mode == "unselected":
         token = None
+    elif mode == "role-conflict":
+        profile["video_source_configuration_token"] = "vsc-1"
+        sub_token = "profile-sub"
     else:
         raise AssertionError(mode)
     return CameraCapabilityEntity(
@@ -96,6 +119,7 @@ def _capability(mode: str, services: list | None = None) -> CameraCapabilityEnti
         features_json={},
         profiles_json=[profile],
         main_profile_token=token,
+        sub_profile_token=sub_token,
         probed_at=datetime(2026, 10, 8, tzinfo=timezone.utc),
     )
 
@@ -620,3 +644,422 @@ def test_http_error_keeps_existing_public_mapping(exc, status, code, message):
     rendered = str(http.detail)
     for marker in MARKERS:
         assert marker not in rendered
+
+
+def _allow_site(monkeypatch) -> None:
+    monkeypatch.setattr(
+        settings,
+        "onvif_site_allowed_cidrs_json",
+        '{"tenant-a/site-a": ["192.0.2.0/24"]}',
+    )
+    monkeypatch.setattr(settings, "onvif_discovery_local_sites", "tenant-a/site-a")
+
+
+def _qr_payload() -> str:
+    body = {
+        "tenant_id": "tenant-a",
+        "site_id": "site-a",
+        "name": "Gate",
+        "host": HOST,
+        "port": 80,
+        "scheme": "http",
+        "device_service_path": "/onvif/device_service",
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(body).encode()).decode().rstrip("=")
+    return f"vms-onvif:v1:{encoded}"
+
+
+def _h264_probe() -> dict:
+    return {
+        "profiles": [
+            {
+                "token": "profile-h264",
+                "encoding": "H264",
+                "_raw_stream_uri": f"rtsp://{HOST}:554/main",
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "target", "detail", "status"),
+    [
+        pytest.param(
+            "/api/v1/onvif/discover",
+            {"tenant_id": "tenant-a", "site_id": "site-a"},
+            "discover",
+            LEAK,
+            502,
+            id="discover",
+        ),
+        pytest.param(
+            "/api/v1/onvif/onboard",
+            {
+                "tenant_id": "tenant-a",
+                "site_id": "site-a",
+                "name": "Gate",
+                "host": HOST,
+                "username": USERNAME,
+                "password": SECRET,
+            },
+            "probe_host",
+            LEAK,
+            502,
+            id="onboard",
+        ),
+        pytest.param(
+            "/api/v1/onvif/onboard/qr",
+            {"qr_payload": "placeholder", "username": USERNAME, "password": SECRET},
+            "probe_host",
+            FORGED,
+            409,
+            id="onboard-qr",
+        ),
+        pytest.param(
+            "/api/v1/onvif/onboard/serial",
+            {
+                "tenant_id": "tenant-a",
+                "site_id": "site-a",
+                "name": "Gate",
+                "serial_number": "SYNTHETIC-SERIAL",
+                "username": USERNAME,
+                "password": SECRET,
+            },
+            "discover",
+            LEAK,
+            502,
+            id="onboard-serial-discover",
+        ),
+    ],
+)
+def test_device_http_exception_is_sanitized_on_open_handlers(
+    monkeypatch, path, body, target, detail, status
+):
+    """Device HTTPException details do not leave discovery or onboarding handlers."""
+    _allow_site(monkeypatch)
+    if path.endswith("/qr"):
+        body = {**body, "qr_payload": _qr_payload()}
+
+    def leaked(*_args, **_kwargs):
+        raise HTTPException(status, detail)
+
+    async def leaked_async(*_args, **_kwargs):
+        raise HTTPException(status, detail)
+
+    monkeypatch.setattr(onvif_router, target, leaked if target == "discover" else leaked_async)
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.post(path, json=body)
+        _assert_error(response, 502, "ONVIF_ERROR", "ONVIF operation failed")
+
+    _run(scenario)
+
+
+def test_serial_identify_http_exception_is_sanitized(monkeypatch):
+    """A forged HTTPException from serial identification is not returned."""
+    _allow_site(monkeypatch)
+
+    def discovered(*_args, **_kwargs):
+        return [{"xaddrs": [f"http://{HOST}/onvif/device_service"]}]
+
+    async def leaked(*_args, **_kwargs):
+        raise HTTPException(409, FORGED)
+
+    monkeypatch.setattr(onvif_router, "discover", discovered)
+    monkeypatch.setattr(onvif_router, "identify_xaddr", leaked)
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.post(
+                "/api/v1/onvif/onboard/serial",
+                json={
+                    "tenant_id": "tenant-a",
+                    "site_id": "site-a",
+                    "name": "Gate",
+                    "serial_number": "SYNTHETIC-SERIAL",
+                    "username": USERNAME,
+                    "password": SECRET,
+                },
+            )
+        _assert_error(response, 502, "ONVIF_ERROR", "ONVIF operation failed")
+
+    _run(scenario)
+
+
+def test_profile_apply_http_exception_is_sanitized(monkeypatch):
+    """PUT profile apply drops a forged HTTPException from probe_xaddr."""
+
+    async def leaked(*_args, **_kwargs):
+        raise HTTPException(409, FORGED)
+
+    monkeypatch.setattr(onvif_router, "probe_xaddr", leaked)
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.put(
+                f"/api/v1/onvif/cameras/{CAMERA_ID}/profiles/main",
+                json={"profile_token": "profile-main"},
+            )
+        _assert_error(response, 502, "ONVIF_ERROR", "ONVIF operation failed")
+
+    _run(scenario)
+
+
+def test_codec_second_probe_http_exception_is_sanitized(monkeypatch):
+    """Codec selection reaches the second probe and sanitizes its HTTPException."""
+    calls = {"n": 0}
+
+    async def probe(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _h264_probe()
+        raise HTTPException(409, FORGED)
+
+    monkeypatch.setattr(onvif_router, "probe_xaddr", probe)
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.put(
+                f"/api/v1/onvif/cameras/{CAMERA_ID}/profiles/main/codec",
+                json={"encoding": "H264"},
+            )
+        assert calls["n"] == 2
+        _assert_error(response, 502, "ONVIF_ERROR", "ONVIF operation failed")
+
+    _run(scenario)
+
+
+def test_discovery_runtime_error_is_generic_502(monkeypatch):
+    """A discovery RuntimeError uses the same generic 502 as other device failures."""
+    _allow_site(monkeypatch)
+
+    def exploded(*_args, **_kwargs):
+        raise RuntimeError(LEAK)
+
+    monkeypatch.setattr(onvif_router, "discover", exploded)
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.post(
+                "/api/v1/onvif/discover",
+                json={"tenant_id": "tenant-a", "site_id": "site-a"},
+            )
+        _assert_error(response, 502, "ONVIF_ERROR", "ONVIF operation failed")
+
+    _run(scenario)
+
+
+def test_discovery_oserror_stays_503(monkeypatch):
+    """WS-Discovery socket failure stays 503 and does not copy the OSError text."""
+    _allow_site(monkeypatch)
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError(LEAK)
+
+    monkeypatch.setattr(onvif_router, "discover", unavailable)
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.post(
+                "/api/v1/onvif/discover",
+                json={"tenant_id": "tenant-a", "site_id": "site-a"},
+            )
+        _assert_error(
+            response,
+            503,
+            "DISCOVERY_UNAVAILABLE",
+            "WS-Discovery socket is unavailable on this host/network",
+        )
+
+    _run(scenario)
+
+
+def test_profile_without_stream_uri_stays_422(monkeypatch):
+    """A router 422 raised after a successful probe keeps its own detail."""
+
+    async def probed(*_args, **_kwargs):
+        return {"profiles": [{"token": "profile-main"}]}
+
+    monkeypatch.setattr(onvif_router, "probe_xaddr", probed)
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.put(
+                f"/api/v1/onvif/cameras/{CAMERA_ID}/profiles/main",
+                json={"profile_token": "profile-main"},
+            )
+        _assert_error(
+            response,
+            422,
+            "NO_STREAM_URI",
+            "Selected profile has no RTSP stream URI",
+        )
+
+    _run(scenario)
+
+
+def test_profile_role_conflict_stays_422(monkeypatch):
+    """A role conflict raised before the device probe stays 422."""
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("probe must not run for a role conflict")
+
+    monkeypatch.setattr(onvif_router, "probe_xaddr", forbidden)
+
+    async def scenario():
+        async with _api(monkeypatch, mode="role-conflict") as client:
+            response = await client.put(
+                f"/api/v1/onvif/cameras/{CAMERA_ID}/profiles/main",
+                json={"profile_token": "profile-sub"},
+            )
+        _assert_error(
+            response,
+            422,
+            "PROFILE_ROLE_CONFLICT",
+            "Managed stream roles must use distinct ONVIF profiles",
+        )
+
+    _run(scenario)
+
+
+def test_codec_without_candidate_stays_422(monkeypatch):
+    """Codec selection keeps 422 when the first probe has no matching profile."""
+    calls = {"n": 0}
+
+    async def probe(*_args, **_kwargs):
+        calls["n"] += 1
+        return _h264_probe()
+
+    monkeypatch.setattr(onvif_router, "probe_xaddr", probe)
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.put(
+                f"/api/v1/onvif/cameras/{CAMERA_ID}/profiles/main/codec",
+                json={"encoding": "H265"},
+            )
+        assert calls["n"] == 1
+        _assert_error(
+            response,
+            422,
+            "CODEC_PROFILE_NOT_AVAILABLE",
+            "Camera exposes no unused profile for the requested codec",
+        )
+
+    _run(scenario)
+
+
+def test_invalid_qr_stays_422(monkeypatch):
+    """An unsupported QR version stays 422 and does not echo the payload."""
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.post(
+                "/api/v1/onvif/onboard/qr",
+                json={"qr_payload": f"vms-onvif:v0:{SECRET}", "username": USERNAME, "password": SECRET},
+            )
+        _assert_error(response, 422, "INVALID_QR_PAYLOAD", "QR payload version is not supported")
+
+    _run(scenario)
+
+
+_DEVICE_IMPORTS = {
+    "app.services.onvif_client",
+    "app.services.onvif_configuration",
+    "app.services.onvif_discovery",
+    "app.services.camera_lifecycle",
+}
+_DEVICE_DENY = {
+    "OnvifError",
+    "inject_rtsp_credentials",
+    "public_probe",
+    "sanitize_http_uri",
+    "stream_parts",
+    "main_live_source",
+    "main_live_stream_key",
+    "prepare_source_mutation",
+    "profile_by_token",
+}
+
+
+def _device_call_names(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.module not in _DEVICE_IMPORTS:
+            continue
+        for alias in node.names:
+            bound = alias.asname or alias.name
+            if bound not in _DEVICE_DENY:
+                names.add(bound)
+    return names
+
+
+def _call_name(node: ast.Call) -> str:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return f"{func.value.id}.{func.attr}"
+    return ""
+
+
+def _inside_device_call(node: ast.AST) -> bool:
+    current = node
+    while current is not None:
+        if (
+            isinstance(current, ast.Call)
+            and isinstance(current.func, ast.Name)
+            and current.func.id == "_device_call"
+        ):
+            return True
+        current = getattr(current, "parent", None)
+    return False
+
+
+def test_every_onvif_route_wraps_device_calls():
+    """Every ONVIF route is scanned, and every device call sits inside _device_call."""
+    source = Path(onvif_router.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child.parent = parent
+    device_names = _device_call_names(tree)
+    assert {"probe_host", "probe_xaddr", "identify_xaddr", "discover", "commit_source_mutation"} <= device_names
+
+    leaks: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node)
+        if (name in device_names or name.startswith("mediamtx.")) and not _inside_device_call(node):
+            leaks.append(f"line {node.lineno}: {name}")
+        if name == "asyncio.to_thread" and node.args and isinstance(node.args[0], ast.Name):
+            if node.args[0].id in device_names and not _inside_device_call(node):
+                leaks.append(f"line {node.lineno}: asyncio.to_thread({node.args[0].id})")
+    assert leaks == []
+
+    defined = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    endpoints = []
+    for route in onvif_router.router.routes:
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is None or not hasattr(route, "path"):
+            continue
+        assert endpoint.__module__ == onvif_router.__name__
+        assert endpoint.__name__ in defined
+        endpoints.append((",".join(sorted(route.methods or [])), route.path, endpoint.__name__))
+    assert len(endpoints) >= 33
+    assert ("POST", "/api/v1/onvif/discover", "discover_devices") in endpoints
+    assert ("POST", "/api/v1/onvif/onboard", "onboard_device") in endpoints
+    assert ("POST", "/api/v1/onvif/onboard/qr", "onboard_by_qr") in endpoints
+    assert ("POST", "/api/v1/onvif/onboard/serial", "onboard_by_serial") in endpoints
+    assert ("PUT", "/api/v1/onvif/cameras/{camera_id}/profiles/{role}", "select_managed_profile") in endpoints
+    assert (
+        "PUT",
+        "/api/v1/onvif/cameras/{camera_id}/profiles/{role}/codec",
+        "select_profile_by_codec",
+    ) in endpoints
