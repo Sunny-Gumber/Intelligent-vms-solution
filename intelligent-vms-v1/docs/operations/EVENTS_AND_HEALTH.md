@@ -5,9 +5,14 @@
 - `GET /api/v1/health/summary` — scoped health counts.
 - `GET /api/v1/health/cameras` — paged camera last-known health.
 - `GET /api/v1/events` — bounded event search.
+- `GET /api/v1/events/history` — cursor-paged Event Center history.
 - `POST /api/v1/events` — normalized event ingest for authorized operators/services.
 
-Event search defaults to the latest 24 hours and is capped by configured maximum window/limit.
+Event search defaults to the latest one hour when the client omits a window, and
+is capped by the configured maximum window and limit. History pages follow the
+search/index page contract: a malformed backend row is counted and skipped, and
+the cursor still walks every valid event. See
+[Search and index page contract](../architecture/SEARCH_INDEX_PAGE_CONTRACT.md).
 
 ## Health states
 
