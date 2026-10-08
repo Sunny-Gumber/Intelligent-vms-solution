@@ -43,6 +43,8 @@ def _write_pe(path: Path, cert_size: int) -> None:
     struct.pack_into("<I", data, 0x3C, 0x80)
     data[0x80:0x84] = b"PE\x00\x00"
     struct.pack_into("<H", data, 0x98, 0x10B)
+    struct.pack_into("<H", data, 0x94, 224)
+    struct.pack_into("<I", data, 0xF4, 16)
     security = 0x98 + 96 + (4 * 8)
     cert_offset = 0x180 if cert_size else 0
     struct.pack_into("<II", data, security, cert_offset, cert_size)

@@ -64,7 +64,7 @@ jobs:
       - name: Unsigned field-test contract
         shell: pwsh
         run: |
-          # Empty file, no certificate table. This path must not accept UnknownError.
+          # Zero-length placeholder only. A non-empty non-PE must not take this path.
           New-Item "$env:RUNNER_TEMP\unsigned.bin" -ItemType File|Out-Null
           python qualification/windows/scripts/qualify.py verify-signature --artifact "$env:RUNNER_TEMP\unsigned.bin" --expect-unsigned
       - name: Collector safety contract

@@ -14,13 +14,21 @@ Commands use qualification/windows/scripts/qualify.py: new-run, validate, summar
 
 ## Operator note — verify-signature --expect-unsigned (VMS-FIX-045)
 
-Boss default pending signing ADR owner confirmation. Behaviour change from the FIX-027 status map: `--expect-unsigned` no longer treats `UnknownError` as unsigned.
+Boss default pending signing ADR owner confirmation.
 
-- No Authenticode certificate table, including the empty field-test `unsigned.bin`: `UNSIGNED_EXPECTED`, exit 0. PowerShell is not called.
-- Certificate table present and status `NotSigned` only (`2`, `"2"`, or `"NotSigned"`): `UNSIGNED_EXPECTED`, exit 0.
-- `UnknownError` in every form, and every other status including unknown, unparsable, missing, or empty: `FAIL`, exit 1. The detail starts with `SIGNATURE_STATUS_REJECTED:<Name>`, `SIGNATURE_STATUS_UNPARSED`, `SIGNATURE_STATUS_EMPTY`, or `SIGNATURE_STATUS_MISSING`.
-- Without `--expect-unsigned`, only `Valid` exits 0.
+Exit 0 with `--expect-unsigned` happens only when:
 
-A zero exit on an expected-unsigned artifact is not a signed release and does not check publisher or timestamp.
+- the file length is 0 (the field-test `unsigned.bin` placeholder), status `UNSIGNED_EXPECTED`; or
+- the file is a well-formed PE32/PE32+ whose security directory is exactly `(0, 0)`, status `UNSIGNED_EXPECTED`; or
+- an in-file certificate table reports `NotSigned` (`2`, `"2"`, or `"NotSigned"`), status `UNSIGNED_EXPECTED`.
+
+Anything else exits 1 with status `FAIL`. Reason codes:
+
+- `NOT_A_PE_FILE` — non-empty text, ZIP, MSI, scripts, or any file that does not start with `MZ`. No caller in this repo passes those to `--expect-unsigned`. Do not treat them as unsigned.
+- `PE_SECURITY_DIR_OUT_OF_RANGE` — security directory is non-zero but the certificate is past EOF, or the offset and size overflow.
+- `PE_MALFORMED:<reason>` — truncated or inconsistent DOS/PE/optional header, unknown magic, misaligned table, or a directory that is neither `(0, 0)` nor an in-file certificate.
+- `SIGNATURE_STATUS_REJECTED:<Name>`, `SIGNATURE_STATUS_UNPARSED`, `SIGNATURE_STATUS_EMPTY`, `SIGNATURE_STATUS_MISSING`, `SIGNATURE_STATUS_AMBIGUOUS` — certificate table was readable and the status is not an accepted `NotSigned`.
+
+`UnknownError` exits 1. A 415-byte PE whose directory says the certificate ends at byte 416 is out of range, not unsigned. The same file at 416 bytes is checked as a signature. Without `--expect-unsigned`, only `Valid` exits 0. A zero exit is not a signed release and does not check publisher or timestamp.
 
 No harness command reboots, kills services, changes networking, fills disks, uninstalls the product, deletes recordings, or uploads evidence. Disruptive scenarios remain explicit tester actions in an authorized lab.
