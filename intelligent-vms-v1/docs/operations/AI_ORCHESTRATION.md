@@ -47,7 +47,14 @@ External provider references use `provider://...`. Arbitrary HTTP model URLs are
 }
 ```
 
-Provider config is declarative only. Secret-like keys are rejected; credentials belong in deployment secret injection.
+Provider config is declarative only. Secret-like keys are rejected at every depth,
+including dictionaries inside lists; credentials belong in deployment secret
+injection. The check is a case-insensitive substring match for `password`,
+`passwd`, `secret`, `token`, `api_key` / `api-key` / `apikey`, and
+`credential`. Names such as `max_tokens` and `token_limit` match `token` and
+are rejected. `batch_size` does not match and remains valid. Public policy
+readback removes matching keys, including keys stored before nested values
+were checked.
 
 ## Provider result contract
 
