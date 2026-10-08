@@ -1,20 +1,25 @@
 """Deterministic reproductions for the VMS-FIX-033 conditional races.
 
-PostgreSQL cases use the migrated schema and two sessions at the server's
-default isolation. Each reproduced race asserts the correct outcome, so it
-fails on this tree. Those tests are marked ``known_race`` and deselected from
-the default suite (see ``tests/conftest.py``). They are not skipped and not
+PostgreSQL cases use the migrated schema (Alembic head 0019) and two sessions.
+``SHOW transaction_isolation`` is reported with each failure. Every barrier wait
+is bounded. If the other transaction blocks on a row lock, the harness releases
+the holder so that transaction can commit, then lets the blocked side continue.
+That blocked-then-serialised order is a correct outcome. The assertions still
+fail on the current lost-update code.
+
+Accepted fix shapes are documented in
+``docs/qualification/VMS_FIX_033_RACE_REPRODUCTION_REPORT.md``. The tests are
+marked ``known_race`` and deselected from the default suite. They are not
 xfailed.
 
 Run the reproductions::
 
-    VMS_TEST_POSTGRES_URL=postgresql+asyncpg://vms:vms@127.0.0.1:5432/vms_fix_033 \\
+    VMS_TEST_POSTGRES_URL=postgresql+asyncpg://USER:PASSWORD@127.0.0.1:5432/DATABASE \\
         pytest -m known_race -q tests/test_vms_fix_033_race_reproductions.py
 
-``VMS_ALARM_TRANSACTION_TEST_DATABASE_URL`` is accepted as the existing
-equivalent. The database is migrated and its application rows are truncated.
-Point it only at a disposable database. Without either variable the PostgreSQL
-tests skip; the ONVIF reproduction does not need a database.
+``VMS_ALARM_TRANSACTION_TEST_DATABASE_URL`` is the existing equivalent. The
+database is migrated and its application rows are truncated, including after
+the last attempt. Point the URL only at a disposable database.
 """
 
 from __future__ import annotations
@@ -51,11 +56,17 @@ from app.models.placement import InfrastructureNodeEntity
 from app.models.placement_schemas import NodeHeartbeat
 from app.routers import alarms, cameras, manual_recordings, placement
 from app.services.local_event_store import persist_local_event_once
+from app.services.network_policy import TargetNotAllowed
 from app.services.recording import make_record_stream_key
 from app.services.recording_health import record_segment_completion
 
 ROOT = Path(__file__).parents[1]
 ATTEMPTS = 20
+# A non-blocked local statement finishes well inside this window. A row-lock
+# wait does not, so the harness can tell serialisation from the lost update.
+COMPETITOR_TIMEOUT = 3.0
+HOLDER_TIMEOUT = 10.0
+ATTEMPT_TIMEOUT = 20.0
 T0 = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
 ADMIN = Principal(
     "admin-user",
@@ -81,9 +92,18 @@ def _postgres_url() -> str | None:
     return raw
 
 
+async def _truncate_url(url: str) -> None:
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text(TRUNCATE))
+    finally:
+        await engine.dispose()
+
+
 @pytest.fixture(scope="module")
 def postgres_url():
-    """Migrate a disposable Postgres database and return its SQLAlchemy URL."""
+    """Migrate a disposable Postgres database and truncate it after the module."""
     url = _postgres_url()
     if not url:
         pytest.skip(
@@ -101,7 +121,8 @@ def postgres_url():
         cwd=ROOT,
         env=env,
     )
-    return url
+    yield url
+    asyncio.run(_truncate_url(url))
 
 
 def _fail(name: str, isolation: str, rows: list[dict]) -> None:
@@ -126,7 +147,10 @@ async def _isolation(sessions) -> str:
 
 
 async def _open(url: str):
-    engine = create_async_engine(url)
+    engine = create_async_engine(
+        url,
+        connect_args={"server_settings": {"lock_timeout": "8s", "statement_timeout": "15s"}},
+    )
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     isolation = await _isolation(sessions)
     return engine, sessions, isolation
@@ -140,8 +164,68 @@ def _worker():
     return module
 
 
+async def _await_release(release: asyncio.Event) -> None:
+    try:
+        await asyncio.wait_for(release.wait(), HOLDER_TIMEOUT)
+    except asyncio.TimeoutError:
+        return
+
+
+async def _finish_or_release(task: asyncio.Task, release: asyncio.Event, before_release=None) -> bool:
+    """Return True when ``task`` is blocked and had to wait for ``release``.
+
+    A blocked competitor is waiting on a lock held by the paused transaction.
+    Setting ``release`` lets that transaction commit and frees the lock. The
+    competitor then runs. A competitor that finishes inside
+    ``COMPETITOR_TIMEOUT`` did not need the lock and has already committed.
+    ``before_release`` runs only on that blocked path, before the holder continues.
+    """
+    done, _pending = await asyncio.wait({task}, timeout=COMPETITOR_TIMEOUT)
+    blocked = task not in done
+    if blocked:
+        if before_release is not None:
+            before_release()
+        release.set()
+    await asyncio.wait_for(task, HOLDER_TIMEOUT)
+    return blocked
+
+
+class _Pulse:
+    """Edge-triggered counter so a supervisor iteration can wake a waiter."""
+
+    def __init__(self) -> None:
+        self.n = 0
+        self._event = asyncio.Event()
+
+    def mark(self) -> None:
+        self.n += 1
+        self._event.set()
+
+    async def wait_until(self, predicate, timeout: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not predicate():
+            seen = self.n
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            self._event.clear()
+            if predicate() or self.n != seen:
+                continue
+            try:
+                await asyncio.wait_for(self._event.wait(), remaining)
+            except asyncio.TimeoutError:
+                return predicate()
+        return True
+
+
 async def _onvif_once(worker, *, unexpected: bool) -> dict:
-    """Drive one supervisor cycle through the real unsubscribe function."""
+    """Drive one supervisor cycle through the real unsubscribe function.
+
+    The fault is ``TargetNotAllowed``, which ``unsubscribe`` documents as
+    propagating. The supervisor's next ``load_targets`` calls are the signal
+    that it has decided whether to replace the camera task.
+    """
     from app.services import onvif_events as onvif_events_mod
     from app.services.onvif_client import OnvifError
     from app.services.onvif_events import PullPointSubscription
@@ -157,6 +241,7 @@ async def _onvif_once(worker, *, unexpected: bool) -> dict:
     )
     calls = {"pull": 0, "unsub": 0, "create": 0}
     hold = asyncio.Event()
+    pulse = _Pulse()
     camera_tasks: list[asyncio.Task] = []
     original_create = asyncio.create_task
     original_wait = asyncio.wait_for
@@ -175,6 +260,7 @@ async def _onvif_once(worker, *, unexpected: bool) -> dict:
 
     async def pull_messages(*_args, **_kwargs):
         calls["pull"] += 1
+        pulse.mark()
         if calls["pull"] == 1:
             raise ConnectionError("synthetic pull failure")
         await hold.wait()
@@ -182,7 +268,7 @@ async def _onvif_once(worker, *, unexpected: bool) -> dict:
 
     async def failing_soap(*_args, **_kwargs):
         if unexpected:
-            raise RuntimeError("synthetic unexpected unsubscribe failure")
+            raise TargetNotAllowed("synthetic unsubscribe target is outside site policy")
         raise OnvifError("UNSUBSCRIBE_FAILED", "synthetic device unsubscribe failure")
 
     async def unsubscribe(subscription, username, password):
@@ -192,6 +278,7 @@ async def _onvif_once(worker, *, unexpected: bool) -> dict:
             await onvif_events_mod.unsubscribe(subscription, username, password)
         finally:
             onvif_events_mod._soap = original_soap
+            pulse.mark()
 
     def track(coro, *args, **kwargs):
         task = original_create(coro, *args, **kwargs)
@@ -205,6 +292,7 @@ async def _onvif_once(worker, *, unexpected: bool) -> dict:
         return await original_wait(awaitable, timeout)
 
     async def targets():
+        pulse.mark()
         return [target]
 
     logging.getLogger("onvif-event-worker").setLevel(logging.CRITICAL)
@@ -218,14 +306,21 @@ async def _onvif_once(worker, *, unexpected: bool) -> dict:
     asyncio.wait_for = fast_wait
     supervisor = original_create(worker.supervisor())
     try:
-        for _ in range(200):
-            if calls["unsub"] >= 1:
-                break
-            await asyncio.sleep(0.02)
-        else:
+        saw_unsub = await pulse.wait_until(lambda: calls["unsub"] >= 1, HOLDER_TIMEOUT)
+        if not saw_unsub:
             return {"ok": False, "error": "unsubscribe was not reached", "calls": dict(calls)}
-        # Several supervisor refreshes after the unsubscribe returns or kills the task.
-        await asyncio.sleep(0.25)
+        loads_after_fault = pulse.n
+
+        async def supervisor_decided_again():
+            # Two later load_targets calls mean two full supervise passes after the fault.
+            return await pulse.wait_until(lambda: pulse.n >= loads_after_fault + 2, HOLDER_TIMEOUT)
+
+        decided = await pulse.wait_until(
+            lambda: calls["pull"] >= 2 or pulse.n >= loads_after_fault + 2,
+            HOLDER_TIMEOUT,
+        )
+        if calls["pull"] < 2 and not decided:
+            await supervisor_decided_again()
         done = [task for task in camera_tasks if task.done()]
         live = [task for task in camera_tasks if not task.done()]
         error = None
@@ -283,7 +378,7 @@ async def _local_event_once(sessions, attempt: int) -> dict:
             hits["n"] += 1
             if hits["n"] == 1:
                 first_read.set()
-                await release.wait()
+                await _await_release(release)
         return row
 
     async def ingest():
@@ -292,21 +387,42 @@ async def _local_event_once(sessions, attempt: int) -> dict:
             await session.commit()
             return inserted
 
+    def _capture(box, exc):
+        if isinstance(exc, IntegrityError):
+            box["error"] = f"IntegrityError: {exc.orig}"
+        else:
+            box["error"] = f"{type(exc).__name__}: {exc}"
+
     AsyncSession.get = wrapped
     left_out = {"value": None, "error": None}
     right_out = {"value": None, "error": None}
     try:
         left = asyncio.create_task(ingest())
-        await asyncio.wait_for(first_read.wait(), 5)
+        saw_get = True
         try:
-            right_out["value"] = await ingest()
-        except IntegrityError as exc:
-            right_out["error"] = f"IntegrityError: {exc.orig}"
-        release.set()
-        try:
-            left_out["value"] = await left
-        except IntegrityError as exc:
-            left_out["error"] = f"IntegrityError: {exc.orig}"
+            await asyncio.wait_for(first_read.wait(), COMPETITOR_TIMEOUT)
+        except asyncio.TimeoutError:
+            saw_get = False
+        if saw_get:
+            right = asyncio.create_task(ingest())
+            try:
+                right_out["value"] = await asyncio.wait_for(right, HOLDER_TIMEOUT)
+            except Exception as exc:
+                _capture(right_out, exc)
+            release.set()
+            try:
+                left_out["value"] = await asyncio.wait_for(left, HOLDER_TIMEOUT)
+            except Exception as exc:
+                _capture(left_out, exc)
+        else:
+            # INSERT ... ON CONFLICT does not call session.get. Let both finish.
+            release.set()
+            right = asyncio.create_task(ingest())
+            for box, task in ((left_out, left), (right_out, right)):
+                try:
+                    box["value"] = await asyncio.wait_for(task, HOLDER_TIMEOUT)
+                except Exception as exc:
+                    _capture(box, exc)
         async with sessions() as session:
             count = (
                 await session.execute(
@@ -319,12 +435,19 @@ async def _local_event_once(sessions, attempt: int) -> dict:
             count == 1
             and left_out["error"] is None
             and right_out["error"] is None
-            and sorted(values) == [False, True]
+            and sorted(values, key=lambda item: (item is None, item)) == [False, True]
         )
-        return {"ok": ok, "count": count, "left": left_out, "right": right_out}
+        return {
+            "ok": ok,
+            "count": count,
+            "saw_get": saw_get,
+            "left": left_out,
+            "right": right_out,
+        }
     finally:
         AsyncSession.get = original
         release.set()
+        await asyncio.gather(left, return_exceptions=True)
 
 
 async def _alarm_once(sessions, attempt: int) -> dict:
@@ -376,7 +499,7 @@ async def _alarm_once(sessions, attempt: int) -> dict:
             hits["n"] += 1
             if hits["n"] == 1:
                 loaded.set()
-                await release.wait()
+                await _await_release(release)
         return row
 
     ack = {"status": None, "error": None, "state": None}
@@ -392,28 +515,69 @@ async def _alarm_once(sessions, attempt: int) -> dict:
                 ack["error"] = exc.detail
                 ack["status"] = exc.status_code
 
-    AsyncSession.get = wrapped
-    try:
-        ack_task = asyncio.create_task(do_ack())
-        await asyncio.wait_for(loaded.wait(), 5)
+    async def do_close():
         async with sessions() as session:
-            body = await alarms.close_alarm(alarm_id, session, ADMIN)
-            closed["state"] = body.state
-            closed["status"] = 200
-        release.set()
-        await ack_task
+            try:
+                body = await alarms.close_alarm(alarm_id, session, ADMIN)
+                closed["state"] = body.state
+                closed["status"] = 200
+            except HTTPException as exc:
+                closed["error"] = exc.detail
+                closed["status"] = exc.status_code
+
+    AsyncSession.get = wrapped
+    ack_task = asyncio.create_task(do_ack())
+    close_task = None
+    blocked = False
+    try:
+        if not await _wait_set(loaded):
+            release.set()
+            await asyncio.wait_for(ack_task, HOLDER_TIMEOUT)
+            return {"ok": False, "error": "acknowledge did not load the alarm", "ack": ack}
+        close_task = asyncio.create_task(do_close())
+        blocked = await _finish_or_release(close_task, release)
+        if not blocked:
+            release.set()
+        await asyncio.wait_for(ack_task, HOLDER_TIMEOUT)
     finally:
         AsyncSession.get = original
         release.set()
     async with sessions() as session:
         row = await session.get(AlarmInstanceEntity, alarm_id)
         final = row.state
+    # Closed is terminal. Acknowledge may return 200 when it won the lock and
+    # close ran afterwards, or 409 when it observed the committed close.
     return {
-        "ok": final == "closed" and ack["status"] == 409,
+        "ok": final == "closed",
+        "blocked": blocked,
         "final": final,
         "ack": ack,
         "close": closed,
     }
+
+
+async def _wait_set(event: asyncio.Event) -> bool:
+    try:
+        await asyncio.wait_for(event.wait(), HOLDER_TIMEOUT)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+def _is_manual_list(statement) -> bool:
+    """True for the active-session list, with or without ``FOR UPDATE``.
+
+    Stop selects one row by id and still projects the ``state`` column, so the
+    column list is not the signal. The list's ``WHERE`` clause filters on state.
+    """
+    if not isinstance(statement, Select):
+        return False
+    rendered = " ".join(str(statement).split())
+    if "manual_recording_sessions" not in rendered or " WHERE " not in rendered:
+        return False
+    where = rendered.split(" WHERE ", 1)[1]
+    # Column projection also contains ".state". Only the WHERE predicate counts.
+    return ".state " in where or ".state=" in where
 
 
 async def _manual_once(sessions, attempt: int) -> dict:
@@ -461,51 +625,76 @@ async def _manual_once(sessions, attempt: int) -> dict:
     listed = asyncio.Event()
     release = asyncio.Event()
 
-    def _unlocked_manual_select(statement) -> bool:
-        if not isinstance(statement, Select):
-            return False
-        if statement._for_update_arg is not None:
-            return False
-        return "manual_recording_sessions" in str(statement)
-
     async def wrapped_execute(self, statement, *args, **kwargs):
         result = await original_execute(self, statement, *args, **kwargs)
-        if _unlocked_manual_select(statement):
+        if _is_manual_list(statement):
             listed.set()
-            await release.wait()
+            await _await_release(release)
         return result
 
     manual_recordings.datetime = Clock
     AsyncSession.execute = wrapped_execute
+    listing = None
+    stop_task = None
+    blocked = False
+    mid_at = None
     try:
         async def do_list():
             async with sessions() as session:
                 return await manual_recordings.active_manual_recordings(session, ADMIN)
 
+        async def do_stop():
+            async with sessions() as session:
+                return await manual_recordings.stop_manual_recording(session_id, session, ADMIN)
+
         listing = asyncio.create_task(do_list())
-        await asyncio.wait_for(listed.wait(), 5)
+        if not await _wait_set(listed):
+            release.set()
+            await asyncio.wait_for(listing, HOLDER_TIMEOUT)
+            return {"ok": False, "error": "active list did not select manual sessions"}
         phase["mode"] = "stop"
-        async with sessions() as session:
-            await manual_recordings.stop_manual_recording(session_id, session, ADMIN)
-        async with sessions() as session:
-            midpoint = await session.get(ManualRecordingSessionEntity, session_id)
-            mid_at = midpoint.stopped_at
-        phase["mode"] = "list"
-        release.set()
-        await listing
+        stop_task = asyncio.create_task(do_stop())
+        # A lock makes stop wait. List then expires under that lock, before stop runs.
+        blocked = await _finish_or_release(
+            stop_task,
+            release,
+            before_release=lambda: phase.__setitem__("mode", "list"),
+        )
+        if not blocked:
+            async with sessions() as session:
+                midpoint = await session.get(ManualRecordingSessionEntity, session_id)
+                mid_at = midpoint.stopped_at
+            phase["mode"] = "list"
+            release.set()
+        else:
+            phase["mode"] = "list"
+        await asyncio.wait_for(listing, HOLDER_TIMEOUT)
+        await asyncio.wait_for(stop_task, HOLDER_TIMEOUT)
     finally:
         AsyncSession.execute = original_execute
         manual_recordings.datetime = original_dt
         release.set()
     async with sessions() as session:
         final = await session.get(ManualRecordingSessionEntity, session_id)
+    if blocked:
+        # List held the row. Stop ran only after list committed, so there is
+        # no earlier committed stop for list to clobber.
+        ok = final is not None and final.state == "STOPPED" and final.stopped_at is not None
+    else:
+        ok = (
+            final is not None
+            and final.state == "STOPPED"
+            and mid_at == stop_at
+            and final.stopped_at == stop_at
+        )
     return {
-        "ok": final.state == "STOPPED" and final.stopped_at == stop_at,
-        "mid_stopped_at": mid_at.isoformat(),
-        "final_stopped_at": final.stopped_at.isoformat() if final.stopped_at else None,
+        "ok": ok,
+        "blocked": blocked,
+        "mid_stopped_at": mid_at.isoformat() if mid_at else None,
+        "final_stopped_at": final.stopped_at.isoformat() if final and final.stopped_at else None,
         "expected_stop": stop_at.isoformat(),
         "max_stop": max_stop.isoformat(),
-        "final_state": final.state,
+        "final_state": final.state if final else None,
     }
 
 
@@ -532,32 +721,39 @@ async def _heartbeat_once(sessions, attempt: int, *, concurrent: bool) -> dict:
     older_at = T0 + timedelta(seconds=5)
     newer = NodeHeartbeat(load={"cpu": 1.0}, authority_mode="central_online", observed_at=newer_at)
     older = NodeHeartbeat(load={"cpu": 9.0}, authority_mode="regional_autonomous", observed_at=older_at)
-    service = Principal("svc", frozenset({"admin"}), "tenant-a", frozenset({"*"}), node_id=node_id)
+    service = Principal("svc", frozenset({"admin"}), "*", frozenset({"*"}), node_id=node_id)
 
     async def send(payload):
         async with sessions() as session:
             await placement.heartbeat_node(node_id, payload, session, service)
 
+    blocked = False
     if concurrent:
         original_commit = AsyncSession.commit
         started = asyncio.Event()
         release = asyncio.Event()
         hits = {"n": 0}
 
-        async def wrapped_commit(self):
+        async def wrapped_commit(self, *args, **kwargs):
             hits["n"] += 1
             if hits["n"] == 1:
                 started.set()
-                await release.wait()
-            return await original_commit(self)
+                await _await_release(release)
+            return await original_commit(self, *args, **kwargs)
 
         AsyncSession.commit = wrapped_commit
+        older_task = asyncio.create_task(send(older))
+        newer_task = None
         try:
-            older_task = asyncio.create_task(send(older))
-            await asyncio.wait_for(started.wait(), 5)
-            await send(newer)
-            release.set()
-            await older_task
+            if not await _wait_set(started):
+                release.set()
+                await asyncio.wait_for(older_task, HOLDER_TIMEOUT)
+                return {"ok": False, "concurrent": True, "error": "older heartbeat did not reach commit"}
+            newer_task = asyncio.create_task(send(newer))
+            blocked = await _finish_or_release(newer_task, release)
+            if not blocked:
+                release.set()
+            await asyncio.wait_for(older_task, HOLDER_TIMEOUT)
         finally:
             AsyncSession.commit = original_commit
             release.set()
@@ -573,6 +769,7 @@ async def _heartbeat_once(sessions, attempt: int, *, concurrent: bool) -> dict:
     return {
         "ok": stored_at == newer_at and float(load.get("cpu", -1)) == 1.0 and mode == "central_online",
         "concurrent": concurrent,
+        "blocked": blocked,
         "stored_heartbeat_at": stored_at.isoformat(),
         "stored_load": load,
         "stored_mode": mode,
@@ -632,7 +829,7 @@ async def _health_once(sessions, attempt: int) -> dict:
             hits["n"] += 1
             if hits["n"] == 1:
                 loaded.set()
-                await release.wait()
+                await _await_release(release)
         return row
 
     async def apply(segment_id: str, completed_at: datetime):
@@ -654,12 +851,19 @@ async def _health_once(sessions, attempt: int) -> dict:
             await session.commit()
 
     AsyncSession.get = wrapped
+    earlier = asyncio.create_task(apply("seg-earlier", T0 + timedelta(seconds=10)))
+    later = None
+    blocked = False
     try:
-        earlier = asyncio.create_task(apply("seg-earlier", T0 + timedelta(seconds=10)))
-        await asyncio.wait_for(loaded.wait(), 5)
-        await apply("seg-later", T0 + timedelta(seconds=20))
-        release.set()
-        await earlier
+        if not await _wait_set(loaded):
+            release.set()
+            await asyncio.wait_for(earlier, HOLDER_TIMEOUT)
+            return {"ok": False, "error": "recording health row was not loaded"}
+        later = asyncio.create_task(apply("seg-later", T0 + timedelta(seconds=20)))
+        blocked = await _finish_or_release(later, release)
+        if not blocked:
+            release.set()
+        await asyncio.wait_for(earlier, HOLDER_TIMEOUT)
     finally:
         AsyncSession.get = original
         release.set()
@@ -668,6 +872,7 @@ async def _health_once(sessions, attempt: int) -> dict:
     expected = T0 + timedelta(seconds=20)
     return {
         "ok": row.last_segment_id == "seg-later" and row.last_segment_completed_at == expected,
+        "blocked": blocked,
         "segment": row.last_segment_id,
         "completed_at": row.last_segment_completed_at.isoformat(),
         "expected": expected.isoformat(),
@@ -720,12 +925,15 @@ async def _delete_once(sessions, attempt: int) -> dict:
         result = await original_execute(self, statement, *args, **kwargs)
         if isinstance(statement, Update) and getattr(statement.table, "name", "") == "manual_recording_sessions":
             updated.set()
-            await release.wait()
+            await _await_release(release)
         return result
 
     delete_error = None
     start = {"error": None, "state": None, "camera_id": None}
     AsyncSession.execute = wrapped_execute
+    deleting = None
+    start_task = None
+    blocked = False
     try:
         async def do_delete():
             nonlocal delete_error
@@ -735,17 +943,25 @@ async def _delete_once(sessions, attempt: int) -> dict:
                 except HTTPException as exc:
                     delete_error = f"{exc.status_code}: {exc.detail}"
 
+        async def do_start():
+            async with sessions() as session:
+                try:
+                    started = await manual_recordings.start_manual_recording(camera_id, session, ADMIN)
+                    start["state"] = started.state
+                    start["camera_id"] = started.camera_id
+                except HTTPException as exc:
+                    start["error"] = f"{exc.status_code}: {exc.detail}"
+
         deleting = asyncio.create_task(do_delete())
-        await asyncio.wait_for(updated.wait(), 5)
-        async with sessions() as session:
-            try:
-                started = await manual_recordings.start_manual_recording(camera_id, session, ADMIN)
-                start["state"] = started.state
-                start["camera_id"] = started.camera_id
-            except HTTPException as exc:
-                start["error"] = f"{exc.status_code}: {exc.detail}"
-        release.set()
-        await deleting
+        if not await _wait_set(updated):
+            release.set()
+            await asyncio.wait_for(deleting, HOLDER_TIMEOUT)
+            return {"ok": False, "error": "delete did not update manual sessions", "delete_error": delete_error}
+        start_task = asyncio.create_task(do_start())
+        blocked = await _finish_or_release(start_task, release)
+        if not blocked:
+            release.set()
+        await asyncio.wait_for(deleting, HOLDER_TIMEOUT)
     finally:
         AsyncSession.execute = original_execute
         cameras.mediamtx.delete_path = original_delete
@@ -753,21 +969,24 @@ async def _delete_once(sessions, attempt: int) -> dict:
         release.set()
 
     async with sessions() as session:
-        rows = (
-            await session.execute(select(ManualRecordingSessionEntity))
-        ).scalars().all()
+        rows = (await session.execute(select(ManualRecordingSessionEntity))).scalars().all()
         stored = [
             {"state": row.state, "camera_id": row.camera_id, "stopped_at": str(row.stopped_at)}
             for row in rows
         ]
         camera_left = await session.get(CameraEntity, camera_id) is not None
     active = [row for row in stored if row["state"] == "ACTIVE"]
-    # A deleted camera must not keep an ACTIVE manual session, including one
-    # whose camera_id was cleared by ON DELETE SET NULL.
-    ok = not (camera_left is False and active)
-    ok = ok and not any(row["state"] == "ACTIVE" and row["camera_id"] is None for row in stored)
+    # Delete must commit. A session created in the gap must be STOPPED.
+    # A lock that makes start run only after the camera is gone leaves no row.
+    ok = (
+        delete_error is None
+        and camera_left is False
+        and not active
+        and all(row["state"] == "STOPPED" for row in stored)
+    )
     return {
         "ok": ok,
+        "blocked": blocked,
         "delete_error": delete_error,
         "start": start,
         "stored": stored,
@@ -782,12 +1001,15 @@ async def _repeat(url: str, scenario) -> tuple[str, list[dict]]:
         for attempt in range(ATTEMPTS):
             await _reset(sessions)
             try:
-                rows.append(await scenario(sessions, attempt))
+                rows.append(await asyncio.wait_for(scenario(sessions, attempt), ATTEMPT_TIMEOUT))
             except Exception as exc:
                 rows.append({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
         return isolation, rows
     finally:
-        await engine.dispose()
+        try:
+            await _reset(sessions)
+        finally:
+            await engine.dispose()
 
 
 def test_onvif_known_unsubscribe_error_retries():
@@ -795,10 +1017,7 @@ def test_onvif_known_unsubscribe_error_retries():
 
     async def scenario():
         worker = _worker()
-        rows = []
-        for _ in range(3):
-            rows.append(await _onvif_once(worker, unexpected=False))
-        return rows
+        return [await _onvif_once(worker, unexpected=False) for _ in range(3)]
 
     rows = asyncio.run(scenario())
     bad = [row for row in rows if not row.get("ok")]
@@ -807,7 +1026,7 @@ def test_onvif_known_unsubscribe_error_retries():
 
 @pytest.mark.known_race
 def test_local_event_duplicate_insert_is_idempotent(postgres_url):
-    """Concurrent local-event inserts of one id return one success and one False."""
+    """Concurrent inserts of one id return one success and one False, with no error."""
 
     async def scenario():
         return await _repeat(postgres_url, _local_event_once)
@@ -818,7 +1037,7 @@ def test_local_event_duplicate_insert_is_idempotent(postgres_url):
 
 @pytest.mark.known_race
 def test_onvif_unexpected_unsubscribe_keeps_camera_supervised():
-    """An unexpected unsubscribe error must not leave the camera unsupervised."""
+    """TargetNotAllowed from unsubscribe must not leave the camera unsupervised."""
 
     async def scenario():
         worker = _worker()
@@ -834,7 +1053,7 @@ def test_onvif_unexpected_unsubscribe_keeps_camera_supervised():
 
 @pytest.mark.known_race
 def test_alarm_close_is_not_overwritten_by_stale_acknowledge(postgres_url):
-    """A committed close stays closed when a stale acknowledge finishes later."""
+    """A close that committed, or that runs after acknowledge, stays closed."""
 
     async def scenario():
         return await _repeat(postgres_url, _alarm_once)
@@ -845,7 +1064,7 @@ def test_alarm_close_is_not_overwritten_by_stale_acknowledge(postgres_url):
 
 @pytest.mark.known_race
 def test_manual_list_expiry_preserves_earlier_stop(postgres_url):
-    """List expiry must not move stopped_at later than an earlier explicit stop."""
+    """A committed explicit stop keeps its stopped_at. A lock may expire first."""
 
     async def scenario():
         return await _repeat(postgres_url, _manual_once)
@@ -866,13 +1085,27 @@ def test_out_of_order_heartbeat_does_not_regress(postgres_url):
                 await _reset(sessions)
                 for concurrent in (False, True):
                     try:
-                        rows.append(await _heartbeat_once(sessions, attempt, concurrent=concurrent))
+                        rows.append(
+                            await asyncio.wait_for(
+                                _heartbeat_once(sessions, attempt, concurrent=concurrent),
+                                ATTEMPT_TIMEOUT,
+                            )
+                        )
                     except Exception as exc:
-                        rows.append({"ok": False, "concurrent": concurrent, "error": f"{type(exc).__name__}: {exc}"})
+                        rows.append(
+                            {
+                                "ok": False,
+                                "concurrent": concurrent,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
+                        )
                     await _reset(sessions)
             return isolation, rows
         finally:
-            await engine.dispose()
+            try:
+                await _reset(sessions)
+            finally:
+                await engine.dispose()
 
     isolation, rows = asyncio.run(scenario())
     bad = [row for row in rows if not row.get("ok")]
@@ -898,7 +1131,7 @@ def test_recording_health_completion_is_monotonic(postgres_url):
 
 @pytest.mark.known_race
 def test_camera_delete_leaves_no_active_manual_recording(postgres_url):
-    """Deleting a camera must not leave an ACTIVE manual session behind."""
+    """Deleting a camera removes it and leaves no ACTIVE manual session."""
 
     async def scenario():
         return await _repeat(postgres_url, _delete_once)
