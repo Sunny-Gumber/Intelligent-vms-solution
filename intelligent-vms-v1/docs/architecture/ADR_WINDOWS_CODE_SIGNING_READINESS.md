@@ -25,5 +25,7 @@ Record certificate identity/serial/validity in release metadata, support planned
 ## Verification
 Release automation must verify Authenticode validity, expected publisher, timestamp and final file hash. Signing and SmartScreen reputation are separate; a valid signature does not guarantee established reputation.
 
+The qualification harness maps `Get-AuthenticodeSignature` Status through Microsoft's SignatureStatus enum, accepting both the name and the numeric value (Valid 0, UnknownError 1, NotSigned 2, HashMismatch 3, NotTrusted 4, NotSupportedFileFormat 5, Incompatible 6; https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.signaturestatus?view=powershellsdk-7.4.0). Values outside that enum fail closed. Expected publisher and timestamp policy remain owner decisions and are not applied by this status map.
+
 ## Current blockers
 Owner decisions remain required for legal publisher identity and provider/certificate procurement. Current product remains Release Candidate / External Qualification Pending and is not production-signed.
