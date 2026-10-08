@@ -13,7 +13,10 @@ credentials are decrypted server-side only for the device request and are never
 returned to API clients.
 
 Public errors are bounded. Camera SOAP fault text, credential-bearing URLs and
-blocked target details are not exposed.
+blocked target details are not exposed. Expected HTTP errors pass through
+unchanged, including an invalid managed-stream role (422) and a missing
+capability snapshot or stale profile (404 or 409). Device and transport
+failures stay HTTP 502 with the generic message "ONVIF operation failed".
 
 ## Managed stream roles
 

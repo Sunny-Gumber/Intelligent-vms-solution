@@ -125,6 +125,22 @@ async def _cleanup_provisioned_paths(stream_keys: list[str]) -> None:
 
 
 def _http_error(exc: Exception) -> HTTPException:
+    """Translate an ONVIF route failure into a public HTTP error.
+
+    Args:
+        exc: Failure caught by an ONVIF route.
+
+    Returns:
+        Public HTTP error for a blocked target, a bounded ONVIF error, or an
+        unexpected device or transport failure.
+
+    Raises:
+        HTTPException: The original expected HTTP error, unchanged. Callers
+            that use ``raise _http_error(exc)`` therefore keep its status and
+            detail instead of replacing it with HTTP 502.
+    """
+    if isinstance(exc, HTTPException):
+        raise exc
     if isinstance(exc, TargetNotAllowed):
         return HTTPException(
             400,
