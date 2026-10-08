@@ -5,7 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import Principal, require_node_scope, require_roles, require_scope
+from app.core.auth import (
+    Principal,
+    require_global_admin,
+    require_node_scope,
+    require_roles,
+    require_scope,
+)
 from app.db.session import get_session
 from app.models.entities import CameraEntity
 from app.models.placement import InfrastructureNodeEntity, PlacementAssignmentEntity, SiteRegionEntity
@@ -60,15 +66,19 @@ async def upsert_node(
     node_id: str,
     payload: NodeUpsert,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_roles("admin")),
+    principal: Principal = Depends(require_global_admin()),
 ):
     """Create or update an infrastructure node and ownership generation metadata.
+
+    Register, configure, and drain (state draining) share this route. There is
+    no node-delete route. Only a global administrator (role admin and
+    tenant_id "*") may call it.
 
     Args:
         node_id: Stable infrastructure-node identifier.
         payload: Validated node configuration/capacity.
         session: Database session used for persistence.
-        principal: Authorized administrator.
+        principal: Global administrator (role admin and tenant_id "*").
 
     Returns:
         Persisted NodeRead.
@@ -103,7 +113,7 @@ async def heartbeat_node(
     node_id: str,
     payload: NodeHeartbeat,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_roles("admin", "service")),
+    principal: Principal = Depends(require_global_admin(allow_node_service=True)),
 ):
     """Update node load, authority mode and bounded heartbeat freshness.
 
@@ -111,7 +121,7 @@ async def heartbeat_node(
         node_id: Infrastructure node sending the heartbeat.
         payload: Validated load/authority/observation payload.
         session: Database session used to update node state.
-        principal: Authorized administrator or node-scoped service identity.
+        principal: Global administrator, or the service identity bound to this node.
 
     Returns:
         Updated NodeRead.
@@ -177,7 +187,7 @@ async def ack_node_revocation(
     node_id: str,
     revocation_id: str,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_roles("admin", "service")),
+    principal: Principal = Depends(require_global_admin(allow_node_service=True)),
 ):
     """Acknowledge execution of a durable placement revocation.
 
@@ -185,7 +195,7 @@ async def ack_node_revocation(
         node_id: Infrastructure node applying the revocation.
         revocation_id: Durable revocation identifier.
         session: Database session used to validate/persist acknowledgement.
-        principal: Authorized administrator or node-scoped service identity.
+        principal: Global administrator, or the service identity bound to this node.
 
     Returns:
         RevocationAckRead confirming acknowledgement.
@@ -323,12 +333,15 @@ async def list_placements(
 
 @router.post("/placement/run", response_model=PlacementRunRead)
 async def run_placement(
-    principal: Principal = Depends(require_roles("admin")),
+    principal: Principal = Depends(require_global_admin()),
 ):
     """Run one bounded global placement-controller iteration.
 
+    Assignment and failover both happen inside this run. Only a global
+    administrator (role admin and tenant_id "*") may start it.
+
     Args:
-        principal: Authorized administrator.
+        principal: Global administrator (role admin and tenant_id "*").
 
     Returns:
         PlacementRunRead containing scan/move/unplaced/deferred counts and cursor.
