@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import logging
 import os
 import signal
@@ -237,9 +238,10 @@ def benchmark_args(path, *, streams, total_bytes, chunk_bytes, fsync=False):
 
 
 def install_handles(monkeypatch, factory):
-    """Replace unbuffered ``wb`` opens with recording handles.
+    """Replace exclusive stream opens with recording handles.
 
-    Environment probes and other reads keep the real ``Path.open``.
+    The benchmark creates stream files through ``_open_stream_file``. This
+    helper replaces that function. Environment probes keep their real opens.
 
     Args:
         monkeypatch: Pytest monkeypatch fixture.
@@ -249,13 +251,25 @@ def install_handles(monkeypatch, factory):
         Handles created so far, in open order.
 
     Raises:
-        OSError: If a delegated real open fails.
+        None.
     """
     handles = []
     gate = threading.Lock()
+    if hasattr(storage_bench, "_open_stream_file"):
+
+        def open_raw(path):
+            handle = factory()
+            with gate:
+                handles.append(handle)
+            storage_bench._remember_created_stream(path)
+            return handle
+
+        monkeypatch.setattr(storage_bench, "_open_stream_file", open_raw)
+        return handles
+
     original_open = Path.open
 
-    def open_raw(self, mode="r", buffering=-1, *args, **kwargs):
+    def open_legacy(self, mode="r", buffering=-1, *args, **kwargs):
         if mode == "wb" and buffering == 0:
             handle = factory()
             with gate:
@@ -263,7 +277,7 @@ def install_handles(monkeypatch, factory):
             return handle
         return original_open(self, mode, buffering, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", open_raw)
+    monkeypatch.setattr(Path, "open", open_legacy)
     return handles
 
 
@@ -871,6 +885,9 @@ def test_failed_multi_stream_run_removes_the_sibling_file(monkeypatch, tmp_path)
         if path.name.endswith("-0000.bin"):
             with path.open("wb", buffering=0) as handle:
                 del handle
+            remember = getattr(storage_bench, "_remember_created_stream", None)
+            if remember is not None:
+                remember(path)
             raise OSError(errno.EIO, "Input/output error")
         if path.name.endswith("-0001.bin"):
             time.sleep(SIBLING_OPEN_DELAY_SECONDS)
@@ -918,6 +935,9 @@ def test_unlink_failure_is_logged_and_other_files_are_removed(monkeypatch, tmp_p
     def wrapped(path, total_bytes, chunk_bytes, fsync):
         del chunk_bytes, fsync
         path.write_bytes(b"x" * 4)
+        remember = getattr(storage_bench, "_remember_created_stream", None)
+        if remember is not None:
+            remember(path)
         gate.wait(timeout=LOOP_TIMEOUT_SECONDS)
         if path.name.endswith("-0000.bin"):
             raise OSError(errno.EIO, "Input/output error")
@@ -1035,9 +1055,10 @@ class SlowRawFile:
 
 
 def install_slow_raw_files(monkeypatch, delay_seconds):
-    """Replace unbuffered benchmark opens with one-byte slow files.
+    """Replace exclusive stream opens with one-byte slow files.
 
-    Other ``Path.open`` calls keep the real opener.
+    The real file is still created by ``_open_stream_file``, so a planted
+    symlink is refused before the slow wrapper runs.
 
     Args:
         monkeypatch: Pytest monkeypatch fixture.
@@ -1047,13 +1068,30 @@ def install_slow_raw_files(monkeypatch, delay_seconds):
         Slow files created so far, in open order.
 
     Raises:
-        OSError: If a delegated real open fails.
+        OSError: If the exclusive create fails.
+        StorageBenchmarkWriteError: If the stream path already exists.
     """
     handles = []
     gate = threading.Lock()
+    if hasattr(storage_bench, "_open_stream_file"):
+        original_open = storage_bench._open_stream_file
+
+        def open_raw(path):
+            raw = original_open(path)
+            handle = SlowRawFile.__new__(SlowRawFile)
+            handle.delay_seconds = delay_seconds
+            handle.closed = False
+            handle._raw = raw
+            with gate:
+                handles.append(handle)
+            return handle
+
+        monkeypatch.setattr(storage_bench, "_open_stream_file", open_raw)
+        return handles
+
     original_open = Path.open
 
-    def open_raw(self, mode="r", buffering=-1, *args, **kwargs):
+    def open_legacy(self, mode="r", buffering=-1, *args, **kwargs):
         if mode == "wb" and buffering == 0:
             handle = SlowRawFile.__new__(SlowRawFile)
             handle.delay_seconds = delay_seconds
@@ -1064,7 +1102,7 @@ def install_slow_raw_files(monkeypatch, delay_seconds):
             return handle
         return original_open(self, mode, buffering, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", open_raw)
+    monkeypatch.setattr(Path, "open", open_legacy)
     return handles
 
 
@@ -1169,27 +1207,34 @@ def test_keyboard_interrupt_during_asyncio_run_removes_files(tmp_path):
                 "import phase8_storage_benchmark as bench",
                 "work = Path(sys.argv[2])",
                 "delay = float(sys.argv[3])",
-                "original_open = Path.open",
-                "def open_raw(self, mode='r', buffering=-1, *args, **kwargs):",
-                "    if mode == 'wb' and buffering == 0:",
-                "        raw = original_open(self, mode, buffering, *args, **kwargs)",
-                "        class Slow:",
-                "            def write(self, payload):",
-                "                time.sleep(delay)",
-                "                data = bytes(payload[:1])",
-                "                if not data:",
-                "                    return 0",
-                "                return raw.write(data)",
-                "            def fileno(self):",
-                "                return raw.fileno()",
-                "            def __enter__(self):",
-                "                return self",
-                "            def __exit__(self, exc_type, exc, tb):",
-                "                raw.close()",
-                "                return False",
-                "        return Slow()",
-                "    return original_open(self, mode, buffering, *args, **kwargs)",
-                "Path.open = open_raw",
+                "def attach_slow(raw):",
+                "    class Slow:",
+                "        def write(self, payload):",
+                "            time.sleep(delay)",
+                "            data = bytes(payload[:1])",
+                "            if not data:",
+                "                return 0",
+                "            return raw.write(data)",
+                "        def fileno(self):",
+                "            return raw.fileno()",
+                "        def __enter__(self):",
+                "            return self",
+                "        def __exit__(self, exc_type, exc, tb):",
+                "            raw.close()",
+                "            return False",
+                "    return Slow()",
+                "if hasattr(bench, '_open_stream_file'):",
+                "    original_open = bench._open_stream_file",
+                "    def open_raw(path):",
+                "        return attach_slow(original_open(path))",
+                "    bench._open_stream_file = open_raw",
+                "else:",
+                "    original_open = Path.open",
+                "    def open_raw(self, mode='r', buffering=-1, *args, **kwargs):",
+                "        if mode == 'wb' and buffering == 0:",
+                "            return attach_slow(original_open(self, mode, buffering, *args, **kwargs))",
+                "        return original_open(self, mode, buffering, *args, **kwargs)",
+                "    Path.open = open_raw",
                 "total = 32",
                 "mib = total / (1024 * 1024)",
                 "args = type('A', (), {})()",
@@ -1287,6 +1332,9 @@ def test_cancel_join_bound_is_logged_and_files_are_removed(monkeypatch, tmp_path
         """
         del total_bytes, chunk_bytes, fsync
         path.write_bytes(b"stuck")
+        remember = getattr(storage_bench, "_remember_created_stream", None)
+        if remember is not None:
+            remember(path)
         time.sleep(0.4)
         return (0, [])
 
@@ -1322,3 +1370,584 @@ def test_cancel_join_bound_is_logged_and_files_are_removed(monkeypatch, tmp_path
         )
     assert "still writing after 0.05s" in caplog.text
     assert "stream files will still be removed" in caplog.text
+
+
+def test_cancel_after_gather_while_waiting_for_sampler_removes_files(monkeypatch, tmp_path):
+    """Cancellation after the writers finish must still delete the stream files.
+
+    The cancel is delivered from ``stop.set()``, which is the await of the
+    sampler after ``gather`` has returned.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Real temporary directory for the stream files.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the sampler wait is not the point of cancellation,
+            a stream file remains, or ``CancelledError`` does not propagate.
+    """
+    total = 64
+    args = benchmark_args(
+        tmp_path,
+        streams=2,
+        total_bytes=total,
+        chunk_bytes=total,
+        fsync=False,
+    )
+    fired = {"value": False}
+
+    async def cancel_on_sampler_wait():
+        original_set = asyncio.Event.set
+
+        def hooked_set(self):
+            original_set(self)
+            if fired["value"]:
+                return
+            files = list(tmp_path.glob("phase8-storage-*.bin"))
+            if len(files) == 2 and all(path.stat().st_size == total for path in files):
+                fired["value"] = True
+                asyncio.current_task().cancel()
+
+        monkeypatch.setattr(asyncio.Event, "set", hooked_set)
+        with pytest.raises(asyncio.CancelledError):
+            await storage_bench.run(args)
+        assert list(tmp_path.glob("phase8-storage-*.bin")) == []
+
+    call_bounded(lambda: asyncio.run(cancel_on_sampler_wait()), CANCEL_TEST_TIMEOUT_SECONDS)
+    assert fired["value"] is True
+
+
+def test_cancel_during_sampler_wait_surfaces_the_stream_error(monkeypatch, tmp_path):
+    """A cancel after a stream error must surface that error and delete files.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Real temporary directory for the stream files.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the original ``OSError`` is replaced, its cause is
+            not the cancellation, or a stream file remains.
+    """
+
+    def wrapped(path, total_bytes, chunk_bytes, fsync):
+        """Write four bytes, then fail stream 0.
+
+        Args:
+            path: Stream path for this worker.
+            total_bytes: Unused requested size.
+            chunk_bytes: Unused chunk size.
+            fsync: Unused fsync flag.
+
+        Returns:
+            A full-size result for the sibling stream.
+
+        Raises:
+            OSError: Errno 5 from stream 0.
+        """
+        del total_bytes, chunk_bytes, fsync
+        path.write_bytes(b"FULL")
+        if path.name.endswith("-0000.bin"):
+            raise OSError(errno.EIO, "Input/output error")
+        return (STREAM_BYTES, [0.01])
+
+    monkeypatch.setattr(storage_bench, "_write_stream", wrapped)
+    args = benchmark_args(
+        tmp_path,
+        streams=2,
+        total_bytes=STREAM_BYTES,
+        chunk_bytes=STREAM_BYTES,
+        fsync=False,
+    )
+    fired = {"value": False}
+
+    async def cancel_on_sampler_wait():
+        original_set = asyncio.Event.set
+
+        def hooked_set(self):
+            original_set(self)
+            if fired["value"]:
+                return
+            fired["value"] = True
+            asyncio.current_task().cancel()
+
+        monkeypatch.setattr(asyncio.Event, "set", hooked_set)
+        caught_exc = None
+        try:
+            await storage_bench.run(args)
+        except BaseException as exc:
+            caught_exc = exc
+        assert isinstance(caught_exc, OSError)
+        assert caught_exc.errno == errno.EIO
+        assert isinstance(caught_exc.__cause__, asyncio.CancelledError)
+        assert list(tmp_path.glob("phase8-storage-*.bin")) == []
+
+    call_bounded(lambda: asyncio.run(cancel_on_sampler_wait()), CANCEL_TEST_TIMEOUT_SECONDS)
+    assert fired["value"] is True
+
+
+def _write_child_script(path, lines):
+    """Write a child script used to observe process status.
+
+    Args:
+        path: Destination ``.py`` file.
+        lines: Script lines without trailing newlines.
+
+    Returns:
+        ``path``.
+
+    Raises:
+        OSError: If the script cannot be written.
+    """
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _finish_child(proc, timeout_seconds):
+    """Return the child's output, killing it when it ignores the timeout.
+
+    Args:
+        proc: Child process with captured text pipes.
+        timeout_seconds: How long ``communicate`` may block.
+
+    Returns:
+        Standard output and standard error.
+
+    Raises:
+        AssertionError: If the child is still alive after the timeout.
+    """
+    try:
+        return proc.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+        raise AssertionError(f"child hung\nstdout={stdout}\nstderr={stderr}")
+
+
+def test_keyboard_interrupt_after_gather_removes_files(tmp_path):
+    """SIGINT while ``main`` waits on the sampler must not leave stream files.
+
+    The child holds the sampler task after the writers finish so the signal
+    arrives in that window. A pre-seeded JSON file must not remain as evidence.
+
+    Args:
+        tmp_path: Temporary directory for the child, its JSON, and stream files.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the child exits 0, keeps the sentinel JSON, prints a
+            success line, or leaves a stream file.
+    """
+    work = tmp_path / "streams"
+    work.mkdir()
+    output = tmp_path / "result.json"
+    output.write_text('{"sentinel":"keep"}\n', encoding="utf-8")
+    marker = tmp_path / "held"
+    mib = 64 / MIB
+    script = _write_child_script(
+        tmp_path / "post_gather_child.py",
+        [
+            "import asyncio",
+            "import sys",
+            "from pathlib import Path",
+            "sys.path.insert(0, sys.argv[1])",
+            "import phase8_storage_benchmark as bench",
+            "work = Path(sys.argv[2])",
+            "output = sys.argv[3]",
+            "marker = Path(sys.argv[4])",
+            "mib = sys.argv[5]",
+            "original_create_task = asyncio.create_task",
+            "def create_task(coro, *args, **kwargs):",
+            "    async def linger():",
+            "        try:",
+            "            await coro",
+            "        finally:",
+            "            marker.write_text('held', encoding='utf-8')",
+            "            print('HELD', flush=True)",
+            "            await asyncio.sleep(30)",
+            "    return original_create_task(linger(), *args, **kwargs)",
+            "asyncio.create_task = create_task",
+            "sys.argv = [",
+            "    'phase8_storage_benchmark.py',",
+            "    '--path', str(work),",
+            "    '--streams', '2',",
+            "    '--mib-per-stream', mib,",
+            "    '--chunk-mib', mib,",
+            "    '--sample-interval', '30',",
+            "    '--output-json', output,",
+            "]",
+            "bench.main()",
+            "",
+        ],
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(TOOLS), str(work), str(output), str(marker), str(mib)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + CANCEL_TEST_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if marker.exists():
+                break
+            if proc.poll() is not None:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("child did not reach the post-gather sampler wait")
+        if proc.poll() is None:
+            os.kill(proc.pid, signal.SIGINT)
+        stdout, stderr = _finish_child(proc, CANCEL_TEST_TIMEOUT_SECONDS)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=CANCEL_TEST_TIMEOUT_SECONDS)
+    combined = (stdout or "") + (stderr or "")
+    assert proc.returncode not in (0, None)
+    assert "KeyboardInterrupt" in combined
+    assert "bytes=" not in (stdout or "")
+    assert not output.exists()
+    assert list(work.glob("phase8-storage-*.bin")) == []
+
+
+@pytest.mark.parametrize("exit_label", ["zero", "none", "empty", "false"])
+def test_worker_successful_systemexit_is_a_failed_run(tmp_path, exit_label):
+    """A successful ``SystemExit`` from a worker must not exit 0 or keep JSON.
+
+    Args:
+        tmp_path: Temporary directory for the child and the evidence file.
+        exit_label: Which successful ``SystemExit`` form the worker raises.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the child exits 0, leaves the sentinel JSON, prints
+            a success line, or leaves a stream file.
+    """
+    work = tmp_path / "streams"
+    work.mkdir()
+    output = tmp_path / "result.json"
+    output.write_text('{"sentinel":"stale","result":{"bytes_written":12345}}\n', encoding="utf-8")
+    mib = STREAM_BYTES / MIB
+    script = _write_child_script(
+        tmp_path / "systemexit_child.py",
+        [
+            "import sys",
+            "from pathlib import Path",
+            "sys.path.insert(0, sys.argv[1])",
+            "import phase8_storage_benchmark as bench",
+            "label = sys.argv[4]",
+            "original = bench._write_stream",
+            "def wrapped(path, total_bytes, chunk_bytes, fsync):",
+            "    if path.name.endswith('-0000.bin'):",
+            "        path.write_bytes(b'x')",
+            "        if label == 'zero':",
+            "            raise SystemExit(0)",
+            "        if label == 'none':",
+            "            raise SystemExit(None)",
+            "        if label == 'empty':",
+            "            raise SystemExit()",
+            "        raise SystemExit(False)",
+            "    return original(path, total_bytes, chunk_bytes, fsync)",
+            "bench._write_stream = wrapped",
+            "sys.argv = [",
+            "    'phase8_storage_benchmark.py',",
+            "    '--path', sys.argv[2],",
+            "    '--streams', '2',",
+            "    '--mib-per-stream', sys.argv[5],",
+            "    '--chunk-mib', sys.argv[5],",
+            "    '--sample-interval', '30',",
+            "    '--output-json', sys.argv[3],",
+            "]",
+            "bench.main()",
+            "",
+        ],
+    )
+    completed = subprocess.run(
+        [sys.executable, str(script), str(TOOLS), str(work), str(output), exit_label, str(mib)],
+        capture_output=True,
+        text=True,
+        timeout=CANCEL_TEST_TIMEOUT_SECONDS,
+        check=False,
+    )
+    assert completed.returncode not in (0, None)
+    assert "bytes=" not in completed.stdout
+    assert not output.exists()
+    assert list(work.glob("phase8-storage-*.bin")) == []
+
+
+def test_planted_stream_symlink_is_not_truncated(tmp_path):
+    """A symlink at the stream name must not be followed or reported as success.
+
+    Args:
+        tmp_path: Temporary directory that holds the benchmark dir and the
+            foreign file. Nothing outside ``tmp_path`` is used.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the foreign bytes change, the symlink is removed,
+            or ``run`` returns a result.
+        StorageBenchmarkWriteError: Expected refusal, asserted by pytest.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret"
+    secret.write_bytes(b"PLANTED-SECRET")
+    work = tmp_path / "bench"
+    work.mkdir()
+    link = work / f"phase8-storage-{os.getpid()}-0000.bin"
+    link.symlink_to(secret)
+    args = benchmark_args(work, streams=1, total_bytes=16, chunk_bytes=16, fsync=False)
+    with pytest.raises(storage_bench.StorageBenchmarkWriteError):
+        call_bounded(lambda: asyncio.run(storage_bench.run(args)))
+    assert secret.read_bytes() == b"PLANTED-SECRET"
+    assert link.is_symlink()
+    assert link.read_bytes() == b"PLANTED-SECRET"
+    assert list(work.glob("phase8-storage-*.bin")) == [link]
+
+
+def test_cli_planted_symlink_exits_nonzero_without_success_json(tmp_path):
+    """The CLI must fail a planted stream symlink and must not publish JSON.
+
+    Args:
+        tmp_path: Temporary directory for the child, the foreign file, and JSON.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the child exits 0, truncates the foreign file,
+            prints a success line, or leaves evidence JSON.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret"
+    secret.write_bytes(b"PLANTED-SECRET")
+    work = tmp_path / "bench"
+    work.mkdir()
+    output = tmp_path / "result.json"
+    output.write_text('{"sentinel":"stale","result":{"bytes_written":16}}\n', encoding="utf-8")
+    mib = 16 / MIB
+    script = _write_child_script(
+        tmp_path / "symlink_child.py",
+        [
+            "import os",
+            "import sys",
+            "from pathlib import Path",
+            "sys.path.insert(0, sys.argv[1])",
+            "import phase8_storage_benchmark as bench",
+            "secret = Path(sys.argv[2])",
+            "work = Path(sys.argv[3])",
+            "link = work / f'phase8-storage-{os.getpid()}-0000.bin'",
+            "link.symlink_to(secret)",
+            "sys.argv = [",
+            "    'phase8_storage_benchmark.py',",
+            "    '--path', str(work),",
+            "    '--streams', '1',",
+            "    '--mib-per-stream', sys.argv[5],",
+            "    '--chunk-mib', sys.argv[5],",
+            "    '--sample-interval', '30',",
+            "    '--output-json', sys.argv[4],",
+            "]",
+            "bench.main()",
+            "",
+        ],
+    )
+    completed = subprocess.run(
+        [sys.executable, str(script), str(TOOLS), str(secret), str(work), str(output), str(mib)],
+        capture_output=True,
+        text=True,
+        timeout=CANCEL_TEST_TIMEOUT_SECONDS,
+        check=False,
+    )
+    assert completed.returncode not in (0, None)
+    assert "bytes=" not in completed.stdout
+    assert secret.read_bytes() == b"PLANTED-SECRET"
+    assert not output.exists()
+    links = list(work.glob("phase8-storage-*.bin"))
+    assert len(links) == 1
+    assert links[0].is_symlink()
+    assert links[0].read_bytes() == b"PLANTED-SECRET"
+
+
+def test_cancel_does_not_treat_idle_pool_threads_as_writers(monkeypatch, tmp_path, caplog):
+    """An ordinary cancel must not wait out the join bound or log a stuck writer.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Real temporary directory for the stream files.
+        caplog: Pytest log capture fixture.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the call waits for idle pool threads, logs that a
+            worker is still writing, or leaves a stream file.
+    """
+    install_slow_raw_files(monkeypatch, CANCEL_WRITE_DELAY_SECONDS)
+    args = benchmark_args(
+        tmp_path,
+        streams=2,
+        total_bytes=STREAM_BYTES,
+        chunk_bytes=STREAM_BYTES,
+        fsync=False,
+    )
+
+    async def cancel_after_first_bytes():
+        task = asyncio.create_task(storage_bench.run(args))
+        deadline = time.monotonic() + CANCEL_TEST_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            files = list(tmp_path.glob("phase8-storage-*.bin"))
+            if len(files) == 2 and min(path.stat().st_size for path in files) >= 1:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            task.cancel()
+            raise AssertionError("stream files did not start before the cancel")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert list(tmp_path.glob("phase8-storage-*.bin")) == []
+
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="phase8_storage_benchmark"):
+        call_bounded(lambda: asyncio.run(cancel_after_first_bytes()), CANCEL_TEST_TIMEOUT_SECONDS)
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.0
+    assert "still writing" not in caplog.text
+
+
+def test_late_open_after_join_bound_is_removed(monkeypatch, tmp_path, caplog):
+    """A file created after the join deadline must still be removed.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Real temporary directory for the stream file.
+        caplog: Pytest log capture fixture.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the call hangs, skips the stuck-writer warning, or
+            leaves the stream file after the worker returns.
+    """
+    monkeypatch.setattr(storage_bench, "_WORKER_JOIN_SECONDS", 0.05, raising=False)
+    real_path_open = Path.open
+    if hasattr(storage_bench, "_open_stream_file"):
+        original_open = storage_bench._open_stream_file
+
+        def slow_exclusive(path):
+            """Sleep, then create the stream file.
+
+            Args:
+                path: Stream path to create after the delay.
+
+            Returns:
+                The exclusive unbuffered handle.
+
+            Raises:
+                StorageBenchmarkWriteError: If ``path`` already exists.
+                OSError: If the file cannot be created.
+            """
+            time.sleep(0.3)
+            return original_open(path)
+
+        monkeypatch.setattr(storage_bench, "_open_stream_file", slow_exclusive)
+
+    def slow_path_open(self, mode="r", buffering=-1, *args, **kwargs):
+        """Sleep before an unbuffered binary open.
+
+        Args:
+            mode: Open mode.
+            buffering: Buffering argument.
+            *args: Remaining positional open arguments.
+            **kwargs: Remaining keyword open arguments.
+
+        Returns:
+            The real file handle.
+
+        Raises:
+            OSError: If the real open fails.
+        """
+        if mode == "wb" and buffering == 0:
+            time.sleep(0.3)
+        return real_path_open(self, mode, buffering, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", slow_path_open)
+    args = benchmark_args(tmp_path, streams=1, total_bytes=16, chunk_bytes=16, fsync=False)
+
+    async def cancel_during_open():
+        task = asyncio.create_task(storage_bench.run(args))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with caplog.at_level(logging.WARNING, logger="phase8_storage_benchmark"):
+        call_bounded(lambda: asyncio.run(cancel_during_open()), CANCEL_TEST_TIMEOUT_SECONDS)
+    assert list(tmp_path.glob("phase8-storage-*.bin")) == []
+    assert "still writing" in caplog.text
+
+
+def test_cli_replaces_stale_json_only_after_success(tmp_path):
+    """A successful CLI run publishes JSON atomically and drops the staging file.
+
+    Args:
+        tmp_path: Temporary directory for the benchmark and the evidence file.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the process fails, the stale document remains, the
+            measured byte fields are missing, or the staging file remains.
+    """
+    output = tmp_path / "result.json"
+    output.write_text('{"sentinel":"stale"}\n', encoding="utf-8")
+    partial = tmp_path / "result.json.partial"
+    partial.write_text("partial-stale", encoding="utf-8")
+    data = tmp_path / "data"
+    mib = STREAM_BYTES / MIB
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_storage_benchmark.py"),
+            "--path",
+            str(data),
+            "--streams",
+            "1",
+            "--mib-per-stream",
+            str(mib),
+            "--chunk-mib",
+            str(mib),
+            "--sample-interval",
+            "30",
+            "--output-json",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=CANCEL_TEST_TIMEOUT_SECONDS,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["result"]["bytes_written"] == STREAM_BYTES
+    assert "aggregate_write_mbps" in payload["result"]
+    assert "aggregate_write_MBps" in payload["result"]
+    assert "sentinel" not in output.read_text(encoding="utf-8")
+    assert not partial.exists()
+    assert list(data.glob("phase8-storage-*.bin")) == []
