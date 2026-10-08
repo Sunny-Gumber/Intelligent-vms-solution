@@ -197,7 +197,7 @@ def _absorb_media_paths(
     by_name: dict[tuple[str, str], dict],
     untrusted_media_nodes: set[str],
 ) -> None:
-    """Index one MediaMTX path list, or reject it when the list is truncated.
+    """Index one MediaMTX path list, or keep prior state when it is not complete.
 
     Args:
         node_id: Node the list was read from.
@@ -206,7 +206,8 @@ def _absorb_media_paths(
         untrusted_media_nodes: Nodes whose lists must not be treated as complete.
 
     Returns:
-        None. Truncation is logged and recorded on ``untrusted_media_nodes``.
+        None. Truncation and inconsistency are logged and recorded on
+        ``untrusted_media_nodes`` so a partial page cannot clear ``path_present``.
     """
     if not isinstance(paths, dict):
         return
@@ -219,12 +220,14 @@ def _absorb_media_paths(
         and not isinstance(item_count, bool)
         and len(items) < item_count
     )
-    if paths.get("truncated") is True or short:
+    if paths.get("truncated") is True or paths.get("inconsistent") is True or short:
         stats.media_errors += 1
         untrusted_media_nodes.add(node_id)
         log.error(
-            "health_media_list_truncated node_id=%s collected=%s item_count=%s page_count=%s",
+            "health_media_list_untrusted node_id=%s truncated=%s inconsistent=%s collected=%s item_count=%s page_count=%s",
             node_id,
+            paths.get("truncated"),
+            paths.get("inconsistent"),
             len(items),
             paths.get("itemCount"),
             paths.get("pageCount"),
@@ -286,8 +289,8 @@ class HealthMonitor:
         # Media path state is diagnostic only because live paths can be
         # source-on-demand and legitimately idle. In distributed mode it must
         # be collected from each assigned node, never from one global server.
-        # Nodes in untrusted_media_nodes had a truncated list. Their absence
-        # must not clear a previously observed path.
+        # Nodes in untrusted_media_nodes had a truncated, inconsistent, or
+        # failed list. Their absence must not clear a previously observed path.
         by_name: dict[tuple[str, str], dict] = {}
         untrusted_media_nodes: set[str] = set()
         if settings.placement_execution_enabled and cameras:
@@ -319,6 +322,7 @@ class HealthMonitor:
             for node_id, paths in results:
                 if paths is None:
                     stats.media_errors += 1
+                    untrusted_media_nodes.add(node_id)
                     continue
                 _absorb_media_paths(node_id, paths, by_name, untrusted_media_nodes)
         else:
@@ -332,6 +336,7 @@ class HealthMonitor:
                 )
             except Exception:
                 stats.media_errors += 1
+                untrusted_media_nodes.add(settings.placement_local_node_id)
                 log.exception("health_media_node_unreachable")
 
         semaphore = asyncio.Semaphore(max(1, settings.health_probe_concurrency))

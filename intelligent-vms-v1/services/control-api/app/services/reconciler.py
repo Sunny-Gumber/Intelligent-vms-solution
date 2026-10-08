@@ -254,12 +254,14 @@ def _config_inventory(configured: object) -> tuple[set[str], dict[str, int | Non
 
     Returns:
         Present path names and their ``maxReaders`` values. None when the
-        listing is truncated or shorter than upstream ``itemCount``. Callers
-        must not add or delete paths from a None inventory: paths past the
-        bound would look absent and be reapplied on every run.
+        listing is truncated, inconsistent, or shorter than upstream
+        ``itemCount``. Callers must not add or delete paths from a None
+        inventory: a skipped or duplicated page would look like drift.
 
     """
-    if isinstance(configured, dict) and configured.get("truncated") is True:
+    if isinstance(configured, dict) and (
+        configured.get("truncated") is True or configured.get("inconsistent") is True
+    ):
         return None
     configured_items = configured.get("items", []) if isinstance(configured, dict) else []
     if not isinstance(configured_items, list):
@@ -307,9 +309,11 @@ async def _legacy_reconcile(
         if inventory is None:
             collected, item_count = _incomplete_list_fields(configured)
             log.error(
-                "legacy_media_reconcile_list_truncated collected=%s item_count=%s",
+                "legacy_media_reconcile_list_incomplete collected=%s item_count=%s truncated=%s inconsistent=%s",
                 collected,
                 item_count,
+                configured.get("truncated") if isinstance(configured, dict) else None,
+                configured.get("inconsistent") if isinstance(configured, dict) else None,
             )
             return 0, 1, None
         present, reader_limits = inventory
@@ -431,10 +435,12 @@ async def _distributed_reconcile(
                 failed += 1
                 collected, item_count = _incomplete_list_fields(configured)
                 log.error(
-                    "reconcile_node_list_truncated node_id=%s collected=%s item_count=%s",
+                    "reconcile_node_list_incomplete node_id=%s collected=%s item_count=%s truncated=%s inconsistent=%s",
                     node_id,
                     collected,
                     item_count,
+                    configured.get("truncated") if isinstance(configured, dict) else None,
+                    configured.get("inconsistent") if isinstance(configured, dict) else None,
                 )
                 return None, None, None
             present, reader_limits = inventory

@@ -278,10 +278,75 @@ class NodeAgentSettings(BaseSettings):
         return self
 
 
+class _MediaMTXListError(RuntimeError):
+    """Raised when a MediaMTX list page is not the v1.21.1 object shape."""
+
+
 def _optional_mediamtx_count(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _expected_mediamtx_page_count(item_count: int) -> int:
+    if item_count == 0:
+        return 0
+    return (item_count + _MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE - 1) // _MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
+
+
+def _parse_mediamtx_list_page(body: object) -> tuple[int, int, list] | None:
+    """Parse one v1.21.1 list page. ``paths`` is not a valid items key.
+
+    Returns:
+        Item count, page count, and items, or None when either total is missing.
+
+    Raises:
+        _MediaMTXListError: If the body is not an object or ``items`` is not a list.
+    """
+    if not isinstance(body, dict):
+        raise _MediaMTXListError("MediaMTX list response was not an object")
+    if "items" not in body or not isinstance(body["items"], list):
+        raise _MediaMTXListError("MediaMTX list items was not a list")
+    item_count = _optional_mediamtx_count(body.get("itemCount"))
+    page_count = _optional_mediamtx_count(body.get("pageCount"))
+    if item_count is None or page_count is None:
+        return None
+    return item_count, page_count, body["items"]
+
+
+def _mediamtx_item_names(items: list) -> list[str]:
+    names: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise _MediaMTXListError("MediaMTX list item was not an object")
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise _MediaMTXListError("MediaMTX list item was missing a name")
+        names.append(name)
+    return names
+
+
+def _mediamtx_list_payload(
+    *,
+    items: list,
+    item_count: int | None,
+    page_count: int | None,
+    truncated: bool,
+    inconsistent: bool,
+) -> dict:
+    return {
+        "itemCount": item_count,
+        "pageCount": page_count,
+        "items": items,
+        "truncated": truncated,
+        "inconsistent": inconsistent,
+    }
+
+
+def _mediamtx_names_conflict(seen: set[str], names: list[str]) -> bool:
+    if len(names) != len(set(names)):
+        return True
+    return any(name in seen for name in names)
 
 
 def _count_runtime_paths(items: list) -> tuple[int, int]:
@@ -299,65 +364,193 @@ def _count_runtime_paths(items: list) -> tuple[int, int]:
     return live_sources, recording_paths
 
 
-async def _collect_mediamtx_pages(fetch_page, *, bound: int) -> tuple[list, bool, int | None, int | None]:
-    """Read MediaMTX /v3/paths/list pages until the catalog or the bound ends.
+async def _walk_mediamtx_list_once(fetch_page, *, bound: int) -> dict:
+    """Read one bounded pass of a MediaMTX list. Keep this aligned with mediamtx.py.
 
     Args:
-        fetch_page: Coroutine function ``(page, items_per_page) -> response``.
-        bound: Maximum items to keep. Further pages are not requested.
+        fetch_page: Coroutine ``(page, items_per_page) -> response``.
+        bound: Maximum items to keep before reporting truncation.
 
     Returns:
-        Collected items, truncation flag, upstream itemCount, and pageCount.
-        Truncation means the returned items are not the full catalog.
+        List payload. ``inconsistent`` means the pages are not one stable catalog.
 
     Raises:
-        Exception: Transport and HTTP status failures from ``fetch_page`` propagate.
+        Exception: Transport and HTTP failures from ``fetch_page`` propagate.
+        _MediaMTXListError: If a page body is not the v1.21.1 list object.
     """
-    items_per_page = _MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
-    max_pages = max(1, (bound + items_per_page - 1) // items_per_page)
+    per_page = _MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
+    max_pages = max(1, (bound + per_page - 1) // per_page)
     collected: list = []
-    truncated = False
-    item_count: int | None = None
-    page_count: int | None = None
+    seen: set[str] = set()
+    baseline_items: int | None = None
+    baseline_pages: int | None = None
+
     for page in range(_MEDIAMTX_LIST_DEFAULT_PAGE, _MEDIAMTX_LIST_DEFAULT_PAGE + max_pages):
-        if len(collected) >= bound:
-            truncated = True
-            break
-        response = await fetch_page(page, items_per_page)
+        if baseline_items is not None and len(collected) >= bound and len(seen) < baseline_items:
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=True,
+                inconsistent=False,
+            )
+        response = await fetch_page(page, per_page)
         response.raise_for_status()
         body = response.json()
-        if isinstance(body, dict):
-            page_items = body.get("items", body.get("paths", []))
-            parsed_item_count = _optional_mediamtx_count(body.get("itemCount"))
-            parsed_page_count = _optional_mediamtx_count(body.get("pageCount"))
-        else:
-            page_items = []
-            parsed_item_count = None
-            parsed_page_count = None
-        if not isinstance(page_items, list):
-            page_items = []
-        if parsed_item_count is not None:
-            item_count = parsed_item_count
-        if parsed_page_count is not None:
-            page_count = parsed_page_count
+        parsed = _parse_mediamtx_list_page(body)
+        if parsed is None:
+            if page != 0 or not isinstance(body, dict):
+                return _mediamtx_list_payload(
+                    items=collected,
+                    item_count=baseline_items,
+                    page_count=baseline_pages,
+                    truncated=False,
+                    inconsistent=True,
+                )
+            page_items = body["items"]
+            if len(page_items) >= per_page:
+                return _mediamtx_list_payload(
+                    items=[],
+                    item_count=None,
+                    page_count=None,
+                    truncated=False,
+                    inconsistent=True,
+                )
+            names = _mediamtx_item_names(page_items)
+            return _mediamtx_list_payload(
+                items=page_items,
+                item_count=len(page_items),
+                page_count=1,
+                truncated=False,
+                inconsistent=_mediamtx_names_conflict(set(), names),
+            )
+
+        item_count, page_count, page_items = parsed
+        names = _mediamtx_item_names(page_items)
+        if baseline_items is None:
+            baseline_items = item_count
+            baseline_pages = page_count
+            if page_count != _expected_mediamtx_page_count(item_count):
+                return _mediamtx_list_payload(
+                    items=page_items,
+                    item_count=item_count,
+                    page_count=page_count,
+                    truncated=False,
+                    inconsistent=True,
+                )
+        elif item_count != baseline_items or page_count != baseline_pages:
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+
+        if baseline_pages == 0:
+            empty = page == 0 and baseline_items == 0 and not names
+            return _mediamtx_list_payload(
+                items=[],
+                item_count=0,
+                page_count=0,
+                truncated=False,
+                inconsistent=not empty,
+            )
+        if page >= baseline_pages:
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+
+        remaining = baseline_items - (page * per_page)
+        if remaining <= 0:
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+        expected_len = min(per_page, remaining)
         room = bound - len(collected)
-        if len(page_items) > room:
+        if room < expected_len:
+            if len(names) < room or _mediamtx_names_conflict(seen, names[:room]):
+                return _mediamtx_list_payload(
+                    items=collected,
+                    item_count=baseline_items,
+                    page_count=baseline_pages,
+                    truncated=False,
+                    inconsistent=True,
+                )
             collected.extend(page_items[:room])
-            truncated = True
-            break
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=True,
+                inconsistent=False,
+            )
+        if len(names) != expected_len or _mediamtx_names_conflict(seen, names):
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+        seen.update(names)
         collected.extend(page_items)
-        reached_item_count = item_count is not None and len(collected) >= item_count
-        reached_page_count = page_count is not None and (page + 1) >= page_count
-        short_page = len(page_items) < items_per_page
-        if reached_item_count or reached_page_count or short_page:
-            if item_count is not None and len(collected) < item_count:
-                truncated = True
-            break
-    else:
-        if item_count is None or len(collected) < item_count:
-            if page_count is None or max_pages < page_count:
-                truncated = True
-    return collected, truncated, item_count, page_count
+        if page + 1 >= baseline_pages:
+            return _mediamtx_list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=len(seen) != baseline_items,
+            )
+
+    finished = baseline_items is not None and len(seen) == baseline_items
+    truncated = baseline_items is not None and len(collected) >= bound and len(seen) < baseline_items
+    return _mediamtx_list_payload(
+        items=collected,
+        item_count=baseline_items,
+        page_count=baseline_pages,
+        truncated=truncated,
+        inconsistent=not finished and not truncated,
+    )
+
+
+async def _enumerate_mediamtx_list(fetch_page, *, bound: int) -> dict:
+    """Walk a MediaMTX list once more if the first pass is inconsistent.
+
+    Args:
+        fetch_page: Coroutine ``(page, items_per_page) -> response``.
+        bound: Maximum items kept in one pass.
+
+    Returns:
+        List payload. Transport errors propagate. A second inconsistent pass
+        stays ``inconsistent`` and is not a complete catalog.
+
+    Raises:
+        Exception: Transport and HTTP failures propagate without a retry.
+        _MediaMTXListError: If a page body is not the v1.21.1 list object.
+    """
+    first = await _walk_mediamtx_list_once(fetch_page, bound=bound)
+    if not first["inconsistent"]:
+        return first
+    LOG.warning("mediamtx_list_inconsistent_retry")
+    second = await _walk_mediamtx_list_once(fetch_page, bound=bound)
+    if second["inconsistent"]:
+        LOG.error(
+            "mediamtx_list_inconsistent item_count=%s page_count=%s collected=%d",
+            second.get("itemCount"),
+            second.get("pageCount"),
+            len(second.get("items") or []),
+        )
+    return second
 
 
 class NodeAgent:
@@ -879,19 +1072,38 @@ class NodeAgent:
                     timeout=self.settings.heartbeat_timeout_seconds,
                 )
 
-            items, truncated, item_count, page_count = await _collect_mediamtx_pages(
+            listed = await _enumerate_mediamtx_list(
                 fetch_page,
                 bound=self.settings.mediamtx_list_max_items,
             )
         except Exception as exc:
+            # Reachable zero is not a measured empty catalog. The zero counts
+            # below stay on the probe result for the unreachable-probe contract;
+            # the heartbeat strips them so placement never reads spare capacity.
             LOG.warning("mediamtx_probe_failed reason=%s", exc.__class__.__name__)
             return {
                 "mediamtx_reachable": 0.0,
                 "mediamtx_configured_paths": 0.0,
                 "mediamtx_live_sources": 0.0,
                 "mediamtx_recording_paths": 0.0,
+                "mediamtx_list_failed": 1.0,
             }
-        if truncated:
+        items = listed.get("items") or []
+        item_count = listed.get("itemCount")
+        page_count = listed.get("pageCount")
+        if listed.get("inconsistent") is True:
+            LOG.error(
+                "mediamtx_list_inconsistent collected=%d item_count=%s page_count=%s",
+                len(items),
+                "unknown" if item_count is None else item_count,
+                "unknown" if page_count is None else page_count,
+            )
+            return {
+                "mediamtx_reachable": 1.0,
+                "mediamtx_list_truncated": 0.0,
+                "mediamtx_list_inconsistent": 1.0,
+            }
+        if listed.get("truncated") is True:
             # A partial count would understate load and let placement overfill
             # the node. Omit the counts so missing load stays ineligible.
             LOG.warning(
@@ -904,11 +1116,14 @@ class NodeAgent:
             return {
                 "mediamtx_reachable": 1.0,
                 "mediamtx_list_truncated": 1.0,
+                "mediamtx_list_inconsistent": 0.0,
             }
         live_sources, recording_paths = _count_runtime_paths(items)
         return {
             "mediamtx_reachable": 1.0,
             "mediamtx_list_truncated": 0.0,
+            "mediamtx_list_inconsistent": 0.0,
+            "mediamtx_list_failed": 0.0,
             "mediamtx_configured_paths": float(len(items)),
             "mediamtx_live_sources": float(live_sources),
             "mediamtx_recording_paths": float(recording_paths),
@@ -927,13 +1142,28 @@ class NodeAgent:
         mediamtx = await self._probe_mediamtx()
         load = dict(host)
         load.update(mediamtx)
-        list_truncated = bool(mediamtx.get("mediamtx_list_truncated"))
+        # Failure, truncation, and an inconsistent catalog are not zero load.
+        # Omitting the measured keys is what placement already treats as
+        # ineligible. Publishing 0 would look like spare capacity.
+        list_untrusted = (
+            bool(mediamtx.get("mediamtx_list_truncated"))
+            or bool(mediamtx.get("mediamtx_list_inconsistent"))
+            or bool(mediamtx.get("mediamtx_list_failed"))
+            or not mediamtx.get("mediamtx_reachable")
+        )
+        if list_untrusted:
+            for key in (
+                "mediamtx_configured_paths",
+                "mediamtx_live_sources",
+                "mediamtx_recording_paths",
+            ):
+                load.pop(key, None)
         if "media" in self.settings.node_roles:
             load["ingress_mbps"] = _safe_number(load.get("net_rx_bps", 0.0) / 1_000_000.0)
             load["egress_mbps"] = _safe_number(load.get("net_tx_bps", 0.0) / 1_000_000.0)
-            if not list_truncated:
+            if not list_untrusted:
                 load["active_sources"] = _safe_number(load.get("mediamtx_live_sources", 0.0))
-        if "recording" in self.settings.node_roles and not list_truncated:
+        if "recording" in self.settings.node_roles and not list_untrusted:
             load["active_recordings"] = _safe_number(load.get("mediamtx_recording_paths", 0.0))
             # record_mbps is intentionally omitted until a trustworthy per-recording
             # byte-rate source is wired in. Placement treats missing configured

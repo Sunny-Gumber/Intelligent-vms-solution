@@ -205,14 +205,13 @@ class MediaMTXClient:
         """Return runtime MediaMTX path state across every upstream page.
 
         Returns:
-            Dictionary with merged ``items``, upstream ``itemCount`` and
-            ``pageCount``, and ``truncated``. ``truncated`` is true when the
-            configured bound stopped the walk before the catalog was complete.
-            A truncated result is not the full path set.
+            Dictionary with merged ``items``, the page-0 ``itemCount`` and
+            ``pageCount``, ``truncated``, and ``inconsistent``. A truncated or
+            inconsistent result is not the full path set.
 
         Raises:
             httpx.HTTPError: If a path-list request fails.
-            MediaMTXError: If a page body is not a JSON object.
+            MediaMTXError: If a page body is not the v1.21.1 list object.
         """
         return await self._list_paged("/v3/paths/list")
 
@@ -220,14 +219,13 @@ class MediaMTXClient:
         """Return configured MediaMTX paths across every upstream page.
 
         Returns:
-            Dictionary with merged ``items``, upstream ``itemCount`` and
-            ``pageCount``, and ``truncated``. ``truncated`` is true when the
-            configured bound stopped the walk before the catalog was complete.
-            A truncated result is not the full configured set.
+            Dictionary with merged ``items``, the page-0 ``itemCount`` and
+            ``pageCount``, ``truncated``, and ``inconsistent``. A truncated or
+            inconsistent result is not the full configured set.
 
         Raises:
             httpx.HTTPError: If a configuration-list request fails.
-            MediaMTXError: If a page body is not a JSON object.
+            MediaMTXError: If a page body is not the v1.21.1 list object.
         """
         return await self._list_paged("/v3/config/paths/list")
 
@@ -238,86 +236,34 @@ class MediaMTXClient:
             relative_path: API path such as ``/v3/paths/list``.
 
         Returns:
-            Merged list payload. ``truncated`` is true when ``mediamtx_list_max_items``
-            stopped enumeration while upstream ``itemCount`` or ``pageCount`` still
-            reported further paths.
+            Merged list payload. ``truncated`` or ``inconsistent`` means the
+            items are not the complete catalog. An HTTP, timeout, or malformed
+            page raises instead of returning a partial catalog.
 
         Raises:
             httpx.HTTPError: If a page request fails.
-            MediaMTXError: If a page body is not a JSON object.
+            MediaMTXError: If a page body is not the v1.21.1 list object.
         """
         bound = int(settings.mediamtx_list_max_items)
-        items_per_page = MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
-        max_pages = max(1, (bound + items_per_page - 1) // items_per_page)
-        collected: list = []
-        truncated = False
-        item_count: int | None = None
-        page_count: int | None = None
 
         async with httpx.AsyncClient(timeout=5.0) as client:
-            for page in range(MEDIAMTX_LIST_DEFAULT_PAGE, MEDIAMTX_LIST_DEFAULT_PAGE + max_pages):
-                if len(collected) >= bound:
-                    truncated = True
-                    break
-                response = await client.get(
+            async def fetch_page(page: int, items_per_page: int):
+                return await client.get(
                     f"{self.base_url}{relative_path}",
                     params={"page": page, "itemsPerPage": items_per_page},
                 )
-                response.raise_for_status()
-                body = response.json()
-                if not isinstance(body, dict):
-                    raise MediaMTXError("MediaMTX list response was not an object")
-                page_items = body.get("items", [])
-                if not isinstance(page_items, list):
-                    raise MediaMTXError("MediaMTX list items was not a list")
-                parsed_item_count = _optional_count(body.get("itemCount"))
-                parsed_page_count = _optional_count(body.get("pageCount"))
-                if parsed_item_count is not None:
-                    item_count = parsed_item_count
-                if parsed_page_count is not None:
-                    page_count = parsed_page_count
 
-                room = bound - len(collected)
-                if len(page_items) > room:
-                    collected.extend(page_items[:room])
-                    truncated = True
-                    break
-                collected.extend(page_items)
-
-                reached_item_count = item_count is not None and len(collected) >= item_count
-                reached_page_count = page_count is not None and (page + 1) >= page_count
-                short_page = len(page_items) < items_per_page
-                if reached_item_count or reached_page_count or short_page:
-                    if item_count is not None and len(collected) < item_count:
-                        truncated = True
-                    break
-            else:
-                if item_count is None or len(collected) < item_count:
-                    if page_count is None or max_pages < page_count:
-                        truncated = True
-
-        if truncated:
+            result = await _enumerate_mediamtx_list(fetch_page, bound=bound)
+        if result["truncated"]:
             log.warning(
                 "mediamtx_list_truncated path=%s collected=%d item_count=%s page_count=%s bound=%d",
                 relative_path,
-                len(collected),
-                "unknown" if item_count is None else item_count,
-                "unknown" if page_count is None else page_count,
+                len(result["items"]),
+                result.get("itemCount"),
+                result.get("pageCount"),
                 bound,
             )
-        reported_item_count = item_count if item_count is not None else len(collected)
-        if page_count is not None:
-            reported_page_count = page_count
-        elif collected:
-            reported_page_count = 1
-        else:
-            reported_page_count = 0
-        return {
-            "itemCount": reported_item_count,
-            "pageCount": reported_page_count,
-            "items": collected,
-            "truncated": truncated,
-        }
+        return result
 
 
 def _optional_count(value: object) -> int | None:
@@ -332,6 +278,290 @@ def _optional_count(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _expected_page_count(item_count: int) -> int:
+    """Return the v1.21.1 page count for a total at the default page size.
+
+    Args:
+        item_count: Upstream ``itemCount`` from page 0.
+
+    Returns:
+        Zero when the catalog is empty, otherwise the ceiling division by 100.
+    """
+    if item_count == 0:
+        return 0
+    return (item_count + MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE - 1) // MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
+
+
+def _parse_list_page(body: object) -> tuple[int, int, list] | None:
+    """Parse one v1.21.1 list page.
+
+    MediaMTX v1.21.1 ``APIPathList`` / ``APIPathConfList`` serialize ``items``,
+    ``itemCount``, and ``pageCount``. A ``paths`` key is not a list body.
+
+    Args:
+        body: Decoded JSON page.
+
+    Returns:
+        Item count, page count, and items. None when the object is well formed
+        but either total is missing.
+
+    Raises:
+        MediaMTXError: If the body is not an object or ``items`` is not a list.
+    """
+    if not isinstance(body, dict):
+        raise MediaMTXError("MediaMTX list response was not an object")
+    if "items" not in body or not isinstance(body["items"], list):
+        raise MediaMTXError("MediaMTX list items was not a list")
+    item_count = _optional_count(body.get("itemCount"))
+    page_count = _optional_count(body.get("pageCount"))
+    if item_count is None or page_count is None:
+        return None
+    return item_count, page_count, body["items"]
+
+
+def _item_names(items: list) -> list[str]:
+    """Return path names from one page.
+
+    Args:
+        items: Page ``items`` array.
+
+    Returns:
+        Path names in page order.
+
+    Raises:
+        MediaMTXError: If an entry is not an object with a non-empty name.
+    """
+    names: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise MediaMTXError("MediaMTX list item was not an object")
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise MediaMTXError("MediaMTX list item was missing a name")
+        names.append(name)
+    return names
+
+
+def _list_payload(
+    *,
+    items: list,
+    item_count: int | None,
+    page_count: int | None,
+    truncated: bool,
+    inconsistent: bool,
+) -> dict:
+    return {
+        "itemCount": item_count,
+        "pageCount": page_count,
+        "items": items,
+        "truncated": truncated,
+        "inconsistent": inconsistent,
+    }
+
+
+def _names_conflict(seen: set[str], names: list[str]) -> bool:
+    if len(names) != len(set(names)):
+        return True
+    return any(name in seen for name in names)
+
+
+async def _walk_mediamtx_list_once(fetch_page, *, bound: int) -> dict:
+    """Read one bounded pass of a MediaMTX list.
+
+    Args:
+        fetch_page: Coroutine ``(page, items_per_page) -> response``.
+        bound: Maximum items to keep before reporting truncation.
+
+    Returns:
+        List payload. ``inconsistent`` is true when page 0 totals disagree,
+        a later page changes those totals, a name repeats, or the finished
+        unique count does not equal ``itemCount``.
+
+    Raises:
+        httpx.HTTPError: If a page request fails. Failures are not retried here.
+        MediaMTXError: If a page body is not the v1.21.1 list object.
+    """
+    per_page = MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
+    max_pages = max(1, (bound + per_page - 1) // per_page)
+    collected: list = []
+    seen: set[str] = set()
+    baseline_items: int | None = None
+    baseline_pages: int | None = None
+
+    for page in range(MEDIAMTX_LIST_DEFAULT_PAGE, MEDIAMTX_LIST_DEFAULT_PAGE + max_pages):
+        if baseline_items is not None and len(collected) >= bound and len(seen) < baseline_items:
+            return _list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=True,
+                inconsistent=False,
+            )
+        response = await fetch_page(page, per_page)
+        response.raise_for_status()
+        body = response.json()
+        parsed = _parse_list_page(body)
+        if parsed is None:
+            if page != 0 or not isinstance(body, dict):
+                return _list_payload(
+                    items=collected,
+                    item_count=baseline_items,
+                    page_count=baseline_pages,
+                    truncated=False,
+                    inconsistent=True,
+                )
+            page_items = body["items"]
+            if len(page_items) >= per_page:
+                return _list_payload(
+                    items=[],
+                    item_count=None,
+                    page_count=None,
+                    truncated=False,
+                    inconsistent=True,
+                )
+            names = _item_names(page_items)
+            return _list_payload(
+                items=page_items,
+                item_count=len(page_items),
+                page_count=1,
+                truncated=False,
+                inconsistent=_names_conflict(set(), names),
+            )
+
+        item_count, page_count, page_items = parsed
+        names = _item_names(page_items)
+        if baseline_items is None:
+            baseline_items = item_count
+            baseline_pages = page_count
+            if page_count != _expected_page_count(item_count):
+                return _list_payload(
+                    items=page_items,
+                    item_count=item_count,
+                    page_count=page_count,
+                    truncated=False,
+                    inconsistent=True,
+                )
+        elif item_count != baseline_items or page_count != baseline_pages:
+            return _list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+
+        if baseline_pages == 0:
+            empty = page == 0 and baseline_items == 0 and not names
+            return _list_payload(
+                items=[],
+                item_count=0,
+                page_count=0,
+                truncated=False,
+                inconsistent=not empty,
+            )
+        if page >= baseline_pages:
+            return _list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+
+        remaining = baseline_items - (page * per_page)
+        if remaining <= 0:
+            return _list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+        expected_len = min(per_page, remaining)
+        room = bound - len(collected)
+        if room < expected_len:
+            if len(names) < room or _names_conflict(seen, names[:room]):
+                return _list_payload(
+                    items=collected,
+                    item_count=baseline_items,
+                    page_count=baseline_pages,
+                    truncated=False,
+                    inconsistent=True,
+                )
+            collected.extend(page_items[:room])
+            return _list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=True,
+                inconsistent=False,
+            )
+        if len(names) != expected_len or _names_conflict(seen, names):
+            return _list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=True,
+            )
+        seen.update(names)
+        collected.extend(page_items)
+        if page + 1 >= baseline_pages:
+            return _list_payload(
+                items=collected,
+                item_count=baseline_items,
+                page_count=baseline_pages,
+                truncated=False,
+                inconsistent=len(seen) != baseline_items,
+            )
+
+    if baseline_items is not None and len(seen) == baseline_items:
+        return _list_payload(
+            items=collected,
+            item_count=baseline_items,
+            page_count=baseline_pages,
+            truncated=False,
+            inconsistent=False,
+        )
+    return _list_payload(
+        items=collected,
+        item_count=baseline_items,
+        page_count=baseline_pages,
+        truncated=baseline_items is not None and len(collected) >= bound and len(seen) < baseline_items,
+        inconsistent=not (baseline_items is not None and len(collected) >= bound and len(seen) < baseline_items),
+    )
+
+
+async def _enumerate_mediamtx_list(fetch_page, *, bound: int) -> dict:
+    """Walk a MediaMTX list, retrying one inconsistent pass before failing closed.
+
+    Args:
+        fetch_page: Coroutine ``(page, items_per_page) -> response``.
+        bound: Maximum items kept in one pass.
+
+    Returns:
+        List payload. A still-inconsistent second pass is returned with
+        ``inconsistent`` true and must not be treated as complete state.
+
+    Raises:
+        httpx.HTTPError: If a page request fails. Transport failures are not retried.
+        MediaMTXError: If a page body is not the v1.21.1 list object.
+    """
+    first = await _walk_mediamtx_list_once(fetch_page, bound=bound)
+    if not first["inconsistent"]:
+        return first
+    log.warning("mediamtx_list_inconsistent_retry")
+    second = await _walk_mediamtx_list_once(fetch_page, bound=bound)
+    if second["inconsistent"]:
+        log.error(
+            "mediamtx_list_inconsistent item_count=%s page_count=%s collected=%d",
+            second.get("itemCount"),
+            second.get("pageCount"),
+            len(second.get("items") or []),
+        )
+    return second
 
 
 mediamtx = MediaMTXClient()
