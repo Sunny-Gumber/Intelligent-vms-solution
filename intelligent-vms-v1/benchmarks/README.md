@@ -30,6 +30,8 @@ Each result records:
 
 Missing GPU is represented as `gpu_measured=false`, not 0% utilization.
 
+Qualification uses a stricter measured-field schema than this file schema. Storage, reconnect, hardware-matrix, and reproducibility repeats must include the required paths in `HARDWARE_QUALIFICATION.md`. A missing `failure_rate` does not qualify and is not treated as zero. Null max CPU frequency, temperature, frequency ratio, and NIC speed remain optional.
+
 ## Workload tools
 
 ### Event/control-plane ingest

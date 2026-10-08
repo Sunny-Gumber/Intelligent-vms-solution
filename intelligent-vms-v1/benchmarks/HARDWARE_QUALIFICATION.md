@@ -87,6 +87,35 @@ Every qualified row includes benchmark IDs, commit SHA, hardware fingerprint, co
 - Short CI smoke results do not satisfy the default duration/warmup policy.
 - High failure rate or over-threshold CPU/RAM evidence is rejected.
 - Missing measurements remain missing; they are never converted to zero utilization.
+- A missing `failure_rate` is unqualified. It is not stored as `0.0`.
+
+## Required measured fields
+
+`QUALIFIED_FROM_MEASURED_EVIDENCE` requires every repeat to satisfy the measured-field schema for its workload. The lists live in `tools/phase8_benchmark_common.py` (`required_measured_fields` and `required_measured_fields_for_workload`). The hardware matrix and the reproducibility gate both call those functions. They do not keep a second copy.
+
+A required path that is missing or `{}` is `UNQUALIFIED` with `MISSING_MEASURED_FIELD:<path>`. A present JSON null on a required path stays unqualified with `<path> is null`. A non-finite number is rejected with `<path> is not a finite number`.
+
+Shared core for hardware-matrix and reproducibility repeats, and for the reconnect driver (`tcp-reconnect-storm`):
+
+- `result.operations_ok`, `result.operations_failed`, `result.failure_rate`, `result.throughput_ops_s`
+- `result.latency.count`, `result.latency.p50_ms`, `result.latency.p95_ms`, `result.latency.p99_ms`, `result.latency.max_ms`, `result.latency.mean_ms`
+- `resources.samples`
+- `resources.cpu_pct`, `resources.cpu_freq_mhz`, `resources.ram_used_bytes`, `resources.ram_pct`, `resources.net_rx_mbps`, `resources.net_tx_mbps`, `resources.disk_read_mbps`, `resources.disk_write_mbps`, each with `mean`, `p95`, and `max`
+
+Storage evidence (`synthetic-storage-write`) adds `result.bytes_written`, `result.aggregate_write_mbps`, and `result.aggregate_write_MBps`.
+
+Mapped workloads add their capacity field when it is not already in the core: `result.observed_recording_mbps`, `result.observed_media_mbps`, or `result.observed_ai_mpix_s`. Event ingest and control-api use `result.throughput_ops_s`, which is already required.
+
+These fields are the numbers the current drivers write. They are not a capacity claim.
+
+Optional sensor nulls stay accepted. A null, a missing key, or a number in these fields does not by itself make a repeat unqualified:
+
+- `resources.cpu_freq_max_mhz.mean`, `resources.cpu_freq_max_mhz.p95`, `resources.cpu_freq_max_mhz.max`
+- `resources.max_temperature_c.mean`, `resources.max_temperature_c.p95`, `resources.max_temperature_c.max`
+- `resources.cpu_freq_ratio_min`
+- `environment.hardware.network_interfaces[].speed_mbps`
+
+Reconnect evidence has no capacity mapping. A complete reconnect repeat can pass reproducibility and still leave every capacity role `UNQUALIFIED`.
 
 ## Prohibited interpretation
 

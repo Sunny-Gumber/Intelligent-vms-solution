@@ -47,6 +47,8 @@ def fake_result(
         metrics["observed_recording_mbps"] = capacity
     if workload_type == "synthetic-storage-write":
         metrics["aggregate_write_mbps"] = capacity
+        metrics["aggregate_write_MBps"] = capacity / 8.0
+        metrics["bytes_written"] = 8_000_000
     if workload_type == "media-relay":
         metrics["observed_media_mbps"] = capacity
     if workload_type == "ai-inference":
@@ -98,6 +100,7 @@ def fake_result(
         "resources": {
             "samples": 100,
             "cpu_pct": {"mean": 40.0, "p95": cpu_p95, "max": 60.0},
+            "cpu_freq_mhz": {"mean": 2400.0, "p95": 2400.0, "max": 2400.0},
             "ram_used_bytes": {"mean": 1.0, "p95": 2.0, "max": 3.0},
             "ram_pct": {"mean": 50.0, "p95": ram_p95, "max": 70.0},
             "net_rx_mbps": {"mean": 1.0, "p95": 2.0, "max": 3.0},

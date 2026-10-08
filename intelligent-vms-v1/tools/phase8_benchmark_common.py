@@ -106,6 +106,49 @@ _FINGERPRINT_IGNORED_SENSOR_FIELDS = _UNAVAILABLE_SENSOR_NULL_SUMMARIES | frozen
     {"cpu_freq_ratio_min"}
 )
 
+# Finite numbers build_result and resource_summary write on a measured run.
+# Optional sensor nulls are not required: cpu_freq_max_mhz, max_temperature_c,
+# cpu_freq_ratio_min, and NIC speed_mbps. A missing key or {} is not evidence.
+_REQUIRED_RESULT_FIELDS = (
+    "operations_ok",
+    "operations_failed",
+    "failure_rate",
+    "throughput_ops_s",
+)
+_REQUIRED_RESOURCE_SUMMARIES = (
+    "cpu_pct",
+    "cpu_freq_mhz",
+    "ram_used_bytes",
+    "ram_pct",
+    "net_rx_mbps",
+    "net_tx_mbps",
+    "disk_read_mbps",
+    "disk_write_mbps",
+)
+_REQUIRED_RESOURCE_SCALARS = ("samples",)
+_STORAGE_RESULT_FIELDS = (
+    "bytes_written",
+    "aggregate_write_mbps",
+    "aggregate_write_MBps",
+)
+_WORKLOAD_EXTRA_RESULT_FIELDS = {
+    "synthetic-storage-write": _STORAGE_RESULT_FIELDS,
+    "recording-directory-growth": ("observed_recording_mbps",),
+    "media-relay": ("observed_media_mbps",),
+    "ai-inference": ("observed_ai_mpix_s",),
+}
+EVIDENCE_KIND_STORAGE = "storage"
+EVIDENCE_KIND_RECONNECT = "reconnect"
+EVIDENCE_KIND_HARDWARE_MATRIX = "hardware-matrix"
+EVIDENCE_KIND_REPRODUCIBILITY = "reproducibility"
+_EVIDENCE_KINDS = (
+    EVIDENCE_KIND_STORAGE,
+    EVIDENCE_KIND_RECONNECT,
+    EVIDENCE_KIND_HARDWARE_MATRIX,
+    EVIDENCE_KIND_REPRODUCIBILITY,
+)
+MISSING_MEASURED_FIELD_PREFIX = "MISSING_MEASURED_FIELD:"
+
 
 def _canonical_number(value: Any) -> str:
     """Render one measured number as a finite float with a fixed repr.
@@ -742,6 +785,119 @@ def content_fingerprint(result: dict[str, Any]) -> str:
     return hashlib.sha256(material).hexdigest()
 
 
+def _core_measured_paths() -> tuple[str, ...]:
+    """Return measured paths every complete driver repeat must carry.
+
+    Returns:
+        Dotted paths for result counters, latency, samples, and resource
+        summaries. Optional sensor fields are not included.
+    """
+    paths = [f"result.{name}" for name in _REQUIRED_RESULT_FIELDS]
+    paths.extend(f"result.latency.{name}" for name in _LATENCY_KEYS)
+    paths.extend(f"resources.{name}" for name in _REQUIRED_RESOURCE_SCALARS)
+    for summary in _REQUIRED_RESOURCE_SUMMARIES:
+        paths.extend(f"resources.{summary}.{stat}" for stat in _SUMMARY_KEYS)
+    return tuple(paths)
+
+
+def _extra_result_paths(names: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(f"result.{name}" for name in names)
+
+
+def required_measured_fields(evidence_kind: str) -> tuple[str, ...]:
+    """Return the required measured-field paths for one evidence kind.
+
+    storage is the synthetic-storage-write driver: the shared measured core
+    plus bytes_written, aggregate_write_mbps, and aggregate_write_MBps.
+    reconnect is the tcp-reconnect-storm driver: the shared core only, because
+    that driver writes no extra result metrics. hardware-matrix and
+    reproducibility use the same shared core for every repeat. Workload
+    capacity fields beyond the core come from
+    required_measured_fields_for_workload. Optional sensor nulls are omitted.
+
+    Args:
+        evidence_kind: storage, reconnect, hardware-matrix, or reproducibility.
+
+    Returns:
+        Dotted paths that must be present and finite before a repeat counts.
+
+    Raises:
+        ValueError: If evidence_kind is not one of the four kinds.
+    """
+    if evidence_kind not in _EVIDENCE_KINDS:
+        raise ValueError(f"unknown evidence kind: {evidence_kind}")
+    core = _core_measured_paths()
+    if evidence_kind == EVIDENCE_KIND_STORAGE:
+        return core + _extra_result_paths(_STORAGE_RESULT_FIELDS)
+    return core
+
+
+def required_measured_fields_for_workload(workload_type: str) -> tuple[str, ...]:
+    """Return required measured paths for one benchmark workload type.
+
+    synthetic-storage-write uses the storage schema. tcp-reconnect-storm uses
+    the reconnect schema. Recording, media, and AI workloads add their capacity
+    field to the shared core. Event ingest and control-api use the shared core
+    because throughput_ops_s is already required there. The hardware matrix and
+    the reproducibility gate both call this function, so neither one keeps a
+    second copy of the field list.
+
+    Args:
+        workload_type: workload.type from a benchmark result.
+
+    Returns:
+        Dotted paths required before that workload can count as a repeat.
+    """
+    if workload_type == "synthetic-storage-write":
+        return required_measured_fields(EVIDENCE_KIND_STORAGE)
+    if workload_type == "tcp-reconnect-storm":
+        return required_measured_fields(EVIDENCE_KIND_RECONNECT)
+    extras = _WORKLOAD_EXTRA_RESULT_FIELDS.get(workload_type, ())
+    return _core_measured_paths() + _extra_result_paths(extras)
+
+
+def _lookup_path(result: dict[str, Any], path: str) -> tuple[bool, Any]:
+    """Return whether a dotted path exists and the value stored there.
+
+    Args:
+        result: Benchmark result dictionary.
+        path: Dotted path such as resources.cpu_pct.mean.
+
+    Returns:
+        Found flag and value. The value is None when the path is absent.
+        A present JSON null is found and is not treated as absence.
+    """
+    cursor: Any = result
+    for part in path.split("."):
+        if not isinstance(cursor, dict) or part not in cursor:
+            return False, None
+        cursor = cursor[part]
+    return True, cursor
+
+
+def missing_measured_field_reasons(result: dict[str, Any]) -> tuple[str, ...]:
+    """Name required measured fields that are absent or empty objects.
+
+    A present JSON null keeps the existing "is null" reason and is not repeated
+    here. A missing key and an empty object use MISSING_MEASURED_FIELD:<path>.
+    Non-finite numbers are rejected by the numeric parser.
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        Stable reasons. Empty when every required path is present and not {}.
+    """
+    workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
+    workload_type = workload.get("type") if isinstance(workload.get("type"), str) else ""
+    reasons = []
+    for path in required_measured_fields_for_workload(workload_type):
+        found, value = _lookup_path(result, path)
+        if not found or value == {}:
+            reasons.append(f"{MISSING_MEASURED_FIELD_PREFIX}{path}")
+    return tuple(reasons)
+
+
 def _summary_null_reasons(block: Any, field: str, *, allow_null: bool) -> list[str]:
     """Return reasons for JSON nulls inside one summary.
 
@@ -774,7 +930,8 @@ def _null_measured_reasons(result: dict[str, Any]) -> tuple[str, ...]:
     Returns:
         Stable reasons. Includes "no operations measured" when failure_rate is
         null and both operation counts are zero. Allowlisted sensor nulls are
-        absent from the tuple.
+        absent from the tuple. Missing keys are reported separately as
+        MISSING_MEASURED_FIELD reasons.
     """
     metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
     resources = result.get("resources") if isinstance(result.get("resources"), dict) else {}
@@ -824,7 +981,8 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Parsed duration, warmup, failure rate, resource percentiles, flags, and
         reasons for present nulls outside the unavailable-sensor allowlist.
-        A present null failure_rate stays None and is never stored as zero.
+        A present null failure_rate stays None. A missing failure_rate also
+        stays None and is never stored as zero.
 
     Raises:
         ValueError: If a present numeric field is not a finite in-range number.
@@ -844,11 +1002,14 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
         _NUMBER_BOUNDS["duration"],
         "workload.warmup_seconds",
     )
-    if "failure_rate" in metrics and metrics["failure_rate"] is None:
+    if "failure_rate" not in metrics or metrics.get("failure_rate") in (None, {}):
         failure_rate: float | None = None
     else:
-        failure = _present_number(metrics, "failure_rate", "unit_interval", "result.failure_rate")
-        failure_rate = 0.0 if failure is None else failure
+        failure_rate = _checked_number(
+            metrics["failure_rate"],
+            _NUMBER_BOUNDS["unit_interval"],
+            "result.failure_rate",
+        )
     for key, kind in _RESULT_FIELD_BOUNDS.items():
         if key == "failure_rate":
             continue
@@ -889,7 +1050,9 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
         "duration_seconds": duration,
         "warmup_seconds": warmup,
         "failure_rate": failure_rate,
-        "null_measured_reasons": _null_measured_reasons(result),
+        "null_measured_reasons": (
+            _null_measured_reasons(result) + missing_measured_field_reasons(result)
+        ),
         "cpu_p95_pct": _present_number(cpu_pct, "p95", "percent", "resources.cpu_pct.p95"),
         "ram_p95_pct": _present_number(ram_pct, "p95", "percent", "resources.ram_pct.p95"),
         "cpu_freq_ratio_min": ratio,
@@ -965,8 +1128,8 @@ class ValidatedRecord:
         commit_sha: Benchmarked source revision.
         duration_seconds: Parsed workload duration.
         warmup_seconds: Parsed warmup.
-        failure_rate: Parsed failure rate. None when the field is present and
-            JSON null. Zero only when the field is absent.
+        failure_rate: Parsed failure rate. None when the field is absent, an
+            empty object, or JSON null. Zero only when the file contains zero.
         cpu_p95_pct: Parsed CPU p95 when present.
         ram_p95_pct: Parsed RAM p95 when present.
         cpu_freq_ratio_min: Parsed minimum CPU frequency ratio when present.
@@ -974,7 +1137,8 @@ class ValidatedRecord:
         thermal_measured: Whether thermal evidence was recorded.
         thermal_limit_exceeded: Whether a thermal limit was recorded.
         null_measured_reasons: Present nulls outside the unavailable-sensor
-            allowlist. Empty when the record's nulls are allowlisted or absent.
+            allowlist, plus MISSING_MEASURED_FIELD reasons for a required path
+            that is absent or {}. Empty when those gaps are absent.
     """
 
     source: dict[str, Any]
@@ -1003,9 +1167,11 @@ def parse_benchmark_record(result: dict[str, Any]) -> ValidatedRecord | Rejectio
     rules, the hardware key, and the workload key all happen here. JSON null
     on the unavailable-sensor allowlist is unavailable, not malformed. A null
     in any other measured field still parses, and null_measured_reasons names
-    it so the gates do not count the record. Null duration and warmup are
-    still rejected. A wrong container, a document deeper than
-    MAX_STRUCTURE_DEPTH, and OverflowError, ValueError, TypeError, KeyError,
+    it so the gates do not count the record. A required measured field that is
+    missing or {} is named MISSING_MEASURED_FIELD:<path> in that same tuple.
+    Null duration and warmup are still rejected. A wrong container, a document
+    deeper than MAX_STRUCTURE_DEPTH, and OverflowError, ValueError, TypeError,
+    KeyError,
     or AttributeError from record content become a Rejection. Gates do not
     see those rejections.
 
@@ -1545,7 +1711,9 @@ def validate_result(result: dict[str, Any]) -> None:
     environment, hardware, workload, result, resources, and result.latency must
     be objects before any attribute access. hardware null is invalid and must
     not collapse to an empty machine identity. Nesting deeper than
-    MAX_STRUCTURE_DEPTH is invalid.
+    MAX_STRUCTURE_DEPTH is invalid. Missing latency percentiles are not a
+    schema exception here; the required-field schema reports them as
+    MISSING_MEASURED_FIELD.
 
     Args:
         result: Benchmark result dictionary.
@@ -1585,9 +1753,6 @@ def validate_result(result: dict[str, Any]) -> None:
     latency = metrics.get("latency", {})
     if not isinstance(latency, dict):
         raise ValueError("result.latency is not an object")
-    for key in ("p50_ms", "p95_ms", "p99_ms"):
-        if key not in latency:
-            raise ValueError(f"latency.{key} is required")
     if not isinstance(result["resources"], dict):
         raise ValueError("resources is not an object")
 

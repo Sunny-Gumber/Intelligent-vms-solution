@@ -37,6 +37,14 @@ The qualification-capacity dimension is workload specific. Examples:
 - media relay: media Mbps;
 - AI inference: MPix/s.
 
+## Required measured fields
+
+A repeat counts only when its required measured fields are present and finite. The schema is `required_measured_fields_for_workload` in `tools/phase8_benchmark_common.py`, the same function the hardware matrix uses. See `HARDWARE_QUALIFICATION.md` for the storage, reconnect, hardware-matrix, and reproducibility lists.
+
+A missing key or `{}` fails the group with `MISSING_MEASURED_FIELD:<path>` and `repeat_count` 0. A missing `failure_rate` stays unset. It is not stored as `0.0`. A present null on a required field remains `<path> is null`. Non-finite numbers remain `<path> is not a finite number`.
+
+Optional sensor nulls stay accepted: max CPU frequency, platform temperature, CPU frequency ratio, and NIC `speed_mbps`. Those nulls do not split a content fingerprint and do not, by themselves, reject the repeat.
+
 ## Thermal and frequency awareness
 
 Benchmark sampling records CPU frequency and platform thermal sensors where the OS exposes them. NVIDIA GPU samples include GPU temperature where `nvidia-smi` supports it.

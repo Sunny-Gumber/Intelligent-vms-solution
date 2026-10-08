@@ -261,6 +261,8 @@ def test_storage_repeatability_uses_write_mbps():
         item["workload"]["type"] = "synthetic-storage-write"
         item["workload"]["config"] = {"streams": 32, "fsync_each_chunk": True}
         item["result"]["aggregate_write_mbps"] = [8000.0, 7900.0, 8100.0][index]
+        item["result"]["aggregate_write_MBps"] = [1000.0, 987.5, 1012.5][index]
+        item["result"]["bytes_written"] = 8_000_000
     group = reproducibility.build_report(results=results)["groups"][0]
     assert group["status"] == "PASS"
     assert group["metrics"]["capacity"]["dimension"] == "storage_write_mbps"
