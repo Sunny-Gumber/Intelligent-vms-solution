@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import faulthandler
 import logging
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -341,3 +342,238 @@ def test_expected_per_attempt_failures_stay_measurements(
     assert result["result"]["operations_failed"] == 4
     assert result["result"]["failure_rate"] == pytest.approx(4 / 6)
     assert result["result"]["latency"]["count"] == 6
+
+
+class Boom(BaseException):
+    """Base exception used to prove non-Exception worker failures are not measured."""
+
+
+def _count_results(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Count build_result calls without changing a successful result."""
+    calls = {"n": 0}
+    real = reconnect_bench.build_result
+
+    def wrapped(**kwargs: object) -> dict:
+        calls["n"] += 1
+        return real(**kwargs)
+
+    monkeypatch.setattr(reconnect_bench, "build_result", wrapped)
+    return calls
+
+
+async def _expect_failure(args: SimpleNamespace, exc_type: type[BaseException], calls: dict[str, int]) -> None:
+    """Require one injected worker failure to raise and leave no tasks or result."""
+    before = set(asyncio.all_tasks())
+    with pytest.raises(exc_type, match=BENCHMARK_BUG):
+        await asyncio.wait_for(reconnect_bench.run(args), timeout=RUN_TIMEOUT_SECONDS)
+    assert calls["n"] == 0
+    assert _pending_tasks(before) == []
+
+
+@pytest.mark.parametrize(
+    "exc_type",
+    [RuntimeError, asyncio.CancelledError, Boom, KeyboardInterrupt],
+)
+def test_injected_worker_exception_fails_run(
+    monkeypatch: pytest.MonkeyPatch,
+    exc_type: type[BaseException],
+) -> None:
+    """Runtime, cancellation, BaseException, and KeyboardInterrupt must not publish."""
+    _patch_sampler(monkeypatch)
+    calls = _count_results(monkeypatch)
+
+    async def broken_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        raise exc_type(BENCHMARK_BUG)
+
+    monkeypatch.setattr(reconnect_bench, "attempt", broken_attempt)
+    _run_bounded(_expect_failure(_args(concurrency=1, attempts=4), exc_type, calls))
+
+
+def test_every_attempt_cancelled_error_fails_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrency 1: CancelledError from every attempt must not return ok=0 failed=0."""
+    _patch_sampler(monkeypatch)
+    calls = _count_results(monkeypatch)
+
+    async def broken_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        raise asyncio.CancelledError(BENCHMARK_BUG)
+
+    monkeypatch.setattr(reconnect_bench, "attempt", broken_attempt)
+    _run_bounded(_expect_failure(_args(concurrency=1, attempts=4), asyncio.CancelledError, calls))
+
+
+def test_first_attempt_cancelled_error_fails_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrency 2: CancelledError on the first attempt must not publish the other three."""
+    _patch_sampler(monkeypatch)
+    calls = _count_results(monkeypatch)
+    seen = 0
+    lock = asyncio.Lock()
+
+    async def broken_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        nonlocal seen
+        async with lock:
+            seen += 1
+            current = seen
+        if current == 1:
+            raise asyncio.CancelledError(BENCHMARK_BUG)
+        return True, 0.01
+
+    monkeypatch.setattr(reconnect_bench, "attempt", broken_attempt)
+    _run_bounded(_expect_failure(_args(concurrency=2, attempts=4), asyncio.CancelledError, calls))
+
+
+def _cli_script(body: str) -> str:
+    return (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import phase8_reconnect_benchmark as bench\n"
+        "def sample(self):\n"
+        "    return {'monotonic': 0.0, 'cpu_pct': 0.0, 'cpu_freq_mhz': None,\n"
+        "            'cpu_freq_max_mhz': None, 'max_temperature_c': None, 'temperatures': [],\n"
+        "            'ram_used_bytes': 1, 'ram_pct': 0.0, 'net_rx_mbps': 0.0, 'net_tx_mbps': 0.0,\n"
+        "            'disk_read_mbps': 0.0, 'disk_write_mbps': 0.0, 'gpu': []}\n"
+        "bench.SystemSampler.sample = sample\n"
+        f"{body}\n"
+        "sys.argv = ['phase8_reconnect_benchmark', '--host', '127.0.0.1', '--port', '9',\n"
+        "            '--attempts', '4', '--concurrency', '1', '--warmup-attempts', '0',\n"
+        "            '--timeout', '0.2', '--sample-interval', '30', '--output-json', sys.argv[2]]\n"
+        "bench.main()\n"
+    )
+
+
+def _run_cli(script: str, output: Path) -> subprocess.CompletedProcess[str]:
+    """Run the benchmark CLI in a child process with a hard timeout."""
+    return subprocess.run(
+        [sys.executable, "-c", script, str(TOOLS), str(output)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=HARD_TIMEOUT_SECONDS,
+    )
+
+
+def test_cli_cancelled_error_exits_nonzero_without_writing_json(tmp_path: Path) -> None:
+    """A CancelledError from attempt must not exit 0 or replace evidence JSON."""
+    output = tmp_path / "reconnect.json"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    script = _cli_script(
+        "async def boom(*_args, **_kwargs):\n"
+        "    raise __import__('asyncio').CancelledError('benchmark bug')\n"
+        "bench.attempt = boom\n"
+    )
+    completed = _run_cli(script, output)
+    assert completed.returncode != 0
+    assert output.read_text(encoding="utf-8") == "ORIGINAL_JSON"
+    assert "ok=0 failed=0" not in completed.stdout
+
+
+def test_system_exit_zero_from_attempt_is_not_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """SystemExit(0) inside attempt must not look like a successful CLI run."""
+    _patch_sampler(monkeypatch)
+    calls = _count_results(monkeypatch)
+
+    async def broken_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        raise SystemExit(0)
+
+    monkeypatch.setattr(reconnect_bench, "attempt", broken_attempt)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        with pytest.raises(RuntimeError, match="SystemExit\\(0\\)"):
+            await asyncio.wait_for(
+                reconnect_bench.run(_args(concurrency=1, attempts=4)),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        assert calls["n"] == 0
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())
+
+    output = tmp_path / "reconnect.json"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    script = _cli_script(
+        "def boom(*_args, **_kwargs):\n"
+        "    raise SystemExit(0)\n"
+        "async def attempt(*args, **kwargs):\n"
+        "    return boom(*args, **kwargs)\n"
+        "bench.attempt = attempt\n"
+    )
+    completed = _run_cli(script, output)
+    assert completed.returncode != 0
+    assert output.read_text(encoding="utf-8") == "ORIGINAL_JSON"
+
+
+def test_sampler_exception_cancels_inflight_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sampler failure must cancel parked attempts instead of waiting them out."""
+    calls = _count_results(monkeypatch)
+    entered = {"n": 0}
+    cancelled = {"n": 0}
+
+    def sample(self: object) -> dict[str, object]:
+        if entered["n"] >= 2:
+            raise RuntimeError("sampler bug")
+        return {
+            "monotonic": 0.0,
+            "cpu_pct": 1.0,
+            "cpu_freq_mhz": None,
+            "cpu_freq_max_mhz": None,
+            "max_temperature_c": None,
+            "temperatures": [],
+            "ram_used_bytes": 1024,
+            "ram_pct": 1.0,
+            "net_rx_mbps": 0.0,
+            "net_tx_mbps": 0.0,
+            "disk_read_mbps": 0.0,
+            "disk_write_mbps": 0.0,
+            "gpu": [],
+        }
+
+    async def parked_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        entered["n"] += 1
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled["n"] += 1
+            raise
+        return True, 0.01
+
+    monkeypatch.setattr(reconnect_bench.SystemSampler, "sample", sample)
+    monkeypatch.setattr(reconnect_bench, "attempt", parked_attempt)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        with pytest.raises(RuntimeError, match="sampler bug"):
+            await asyncio.wait_for(
+                reconnect_bench.run(_args(concurrency=2, attempts=2, sample_interval=0.1)),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        assert calls["n"] == 0
+        assert cancelled["n"] == 2
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())
+
+
+def test_external_run_cancellation_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """task.cancel() on the whole run stays a cancellation and publishes nothing."""
+    _patch_sampler(monkeypatch)
+    calls = _count_results(monkeypatch)
+    started = asyncio.Event()
+
+    async def parked_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        started.set()
+        await asyncio.Event().wait()
+        return True, 0.01
+
+    monkeypatch.setattr(reconnect_bench, "attempt", parked_attempt)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        task = asyncio.create_task(reconnect_bench.run(_args(concurrency=1, attempts=2)))
+        await asyncio.wait_for(started.wait(), timeout=RUN_TIMEOUT_SECONDS)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert calls["n"] == 0
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())

@@ -70,19 +70,53 @@ def _drain_queue(queue: asyncio.Queue[int | None]) -> None:
         queue.task_done()
 
 
-def _task_error(task: asyncio.Task[object]) -> BaseException | None:
-    """Return a finished task's error, ignoring cancellation.
+def _publishable_worker_error(error: BaseException) -> BaseException:
+    """Return the worker failure that must fail the process.
+
+    ``SystemExit(0)`` and ``SystemExit()`` would otherwise end the CLI with
+    status 0 and no evidence file, which looks like a successful run.
 
     Args:
-        task: Worker or enqueue task to inspect.
+        error: Failure recorded from a worker that this drive did not cancel.
 
     Returns:
-        The task exception, or None when the task is unfinished, cancelled,
-        or completed normally.
+        A ``RuntimeError`` when ``error`` is a successful ``SystemExit``.
+        Otherwise the original failure, including ``CancelledError`` and
+        ``KeyboardInterrupt``.
     """
-    if not task.done() or task.cancelled():
-        return None
-    return task.exception()
+    if isinstance(error, SystemExit) and error.code in (None, 0):
+        return RuntimeError("reconnect benchmark worker raised SystemExit(0)")
+    return error
+
+
+def _require_complete_attempts(
+    expected: int,
+    *,
+    ok_count: int,
+    failed_count: int,
+    dequeued: int,
+) -> None:
+    """Refuse to publish a result whose counts do not match the workload.
+
+    Args:
+        expected: Configured attempt count for this drive.
+        ok_count: Successful attempts recorded for this drive.
+        failed_count: Measured per-attempt failures recorded for this drive.
+        dequeued: Work items workers actually took, excluding shutdown sentinels.
+
+    Returns:
+        None when both comparisons match.
+
+    Raises:
+        RuntimeError: When the recorded attempts differ from the queue or the
+            configured attempt count. Callers must not build a result after this.
+    """
+    finished = ok_count + failed_count
+    if finished != expected or finished != dequeued:
+        raise RuntimeError(
+            "reconnect benchmark refused partial result "
+            f"ok={ok_count} failed={failed_count} dequeued={dequeued} attempts={expected}"
+        )
 
 
 async def _await_releasing_cancellation(awaitable: Awaitable[_T]) -> _T:
@@ -127,34 +161,62 @@ async def run(args) -> dict:
 
     Raises:
         Exception: Unexpected worker or sampling failures propagate so benchmark
-            evidence is not silently produced from a broken run. ``OSError`` and
-            ``asyncio.TimeoutError`` inside one attempt stay measurements.
+            evidence is not produced. ``OSError`` and ``asyncio.TimeoutError``
+            inside one attempt stay measurements.
+        asyncio.CancelledError: Propagates when a worker raises it on its own,
+            and when the whole run is cancelled externally.
+        KeyboardInterrupt: Propagates when a worker raises it. This is not a
+            measured attempt and not a successful result.
+        RuntimeError: A worker ``SystemExit(0)`` is rewritten to this so the
+            process cannot exit 0. Also raised when recorded attempts do not
+            match the attempts that were dequeued or configured.
     """
     queue: asyncio.Queue[int | None] = asyncio.Queue(maxsize=max(1, args.concurrency * 4))
     latencies: list[float] = []
     ok = failed = 0
+    dequeued = 0
     lock = asyncio.Lock()
+    shutdown_requested = False
+    worker_error: BaseException | None = None
+    failure_event = asyncio.Event()
 
-    async def worker(measure: bool):
-        nonlocal ok, failed
-        while True:
-            item = await queue.get()
-            try:
-                if item is None:
-                    return
-                # attempt() records OSError and asyncio.TimeoutError as
-                # measurements. Any other exception is a broken run and must
-                # escape so the remaining workers can be cancelled.
-                success, elapsed = await attempt(args.host, args.port, args.timeout)
-                async with lock:
-                    if success:
-                        ok += 1
-                    else:
-                        failed += 1
-                    if measure:
-                        latencies.append(elapsed)
-            finally:
-                queue.task_done()
+    async def worker(measure: bool) -> None:
+        nonlocal ok, failed, dequeued, worker_error
+        try:
+            while True:
+                item = await queue.get()
+                try:
+                    if item is None:
+                        return
+                    async with lock:
+                        dequeued += 1
+                    # attempt() records OSError and asyncio.TimeoutError as
+                    # measurements. Any other failure, including CancelledError
+                    # raised by the attempt itself, fails the run.
+                    success, elapsed = await attempt(args.host, args.port, args.timeout)
+                    async with lock:
+                        if success:
+                            ok += 1
+                        else:
+                            failed += 1
+                        if measure:
+                            latencies.append(elapsed)
+                finally:
+                    queue.task_done()
+        except BaseException as exc:
+            # drive() sets shutdown_requested before task.cancel(). Those
+            # CancelledErrors are cleanup. A CancelledError that arrives
+            # before that flag is the attempt dying on its own.
+            if shutdown_requested and isinstance(exc, asyncio.CancelledError):
+                raise
+            if worker_error is None:
+                worker_error = exc
+            failure_event.set()
+            # KeyboardInterrupt and SystemExit abort the loop or the process
+            # if they escape a nested task. Hold them for the parent coroutine.
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                return
+            raise
 
     async def enqueue(count: int, worker_count: int) -> None:
         for index in range(count):
@@ -162,59 +224,91 @@ async def run(args) -> dict:
         for _ in range(worker_count):
             await queue.put(None)
 
-    async def drive(count: int, measure: bool):
+    async def drive(count: int, measure: bool) -> None:
         # Do not wait on queue.join() after a worker dies. That worker has
         # already marked its current item done, but it never takes its
         # sentinel, and a full queue can also block the producer forever.
+        nonlocal shutdown_requested, worker_error, failure_event
+        shutdown_requested = False
+        worker_error = None
+        failure_event = asyncio.Event()
+        started_ok, started_failed, started_dequeued = ok, failed, dequeued
         worker_count = max(1, args.concurrency)
         workers = [asyncio.create_task(worker(measure)) for _ in range(worker_count)]
         enqueue_task = asyncio.create_task(enqueue(count, worker_count))
-        watched = [enqueue_task, *workers]
-        error: BaseException | None = None
+        watch_task = asyncio.create_task(failure_event.wait())
+        work = {enqueue_task, *workers}
+        requested_cancel: set[asyncio.Task[object]] = set()
         try:
-            await asyncio.wait(watched, return_when=asyncio.FIRST_EXCEPTION)
-            for task in watched:
-                error = _task_error(task)
-                if error is not None:
+            while work:
+                done, _pending = await asyncio.wait(work | {watch_task}, return_when=asyncio.FIRST_COMPLETED)
+                if worker_error is not None:
+                    break
+                for task in done:
+                    if task is watch_task or task not in work:
+                        continue
+                    work.discard(task)
+                    if task.cancelled():
+                        if worker_error is None:
+                            worker_error = asyncio.CancelledError("reconnect benchmark worker cancelled")
+                        break
+                    task_error = task.exception()
+                    if task_error is not None and worker_error is None:
+                        worker_error = task_error
+                        break
+                if worker_error is not None:
                     break
         finally:
-            for task in watched:
+            shutdown_requested = True
+            for task in (*workers, enqueue_task, watch_task):
                 if not task.done():
+                    requested_cancel.add(task)
                     task.cancel()
             outcomes = await _await_releasing_cancellation(
-                asyncio.gather(*watched, return_exceptions=True)
+                asyncio.gather(*workers, enqueue_task, watch_task, return_exceptions=True)
             )
             _drain_queue(queue)
-            for outcome in outcomes:
-                if not isinstance(outcome, BaseException) or isinstance(outcome, asyncio.CancelledError):
+            for task, outcome in zip((*workers, enqueue_task, watch_task), outcomes, strict=True):
+                if not isinstance(outcome, BaseException):
                     continue
-                if error is None:
-                    error = outcome
+                if isinstance(outcome, asyncio.CancelledError) and task in requested_cancel:
                     continue
-                if outcome is not error:
+                if worker_error is None:
+                    worker_error = outcome
+                    continue
+                if outcome is not worker_error and not isinstance(outcome, asyncio.CancelledError):
                     LOG.error(
                         "reconnect_benchmark_worker_cleanup_error error=%s",
                         outcome.__class__.__name__,
                     )
-        if error is not None:
+        if worker_error is not None:
             LOG.error(
                 "reconnect_benchmark_worker_failed error=%s",
-                error.__class__.__name__,
+                worker_error.__class__.__name__,
             )
-            raise error
+            published = _publishable_worker_error(worker_error)
+            if published is worker_error:
+                raise worker_error
+            raise published from worker_error
+        _require_complete_attempts(
+            count,
+            ok_count=ok - started_ok,
+            failed_count=failed - started_failed,
+            dequeued=dequeued - started_dequeued,
+        )
 
     warmup_seconds = 0.0
     if args.warmup_attempts:
         warmup_started = time.perf_counter()
         await drive(args.warmup_attempts, False)
         warmup_seconds = time.perf_counter() - warmup_started
-        ok = failed = 0
+        ok = failed = dequeued = 0
 
     sampler = SystemSampler()
     samples = []
     stop = asyncio.Event()
 
-    async def sample_loop():
+    async def sample_loop() -> None:
         while not stop.is_set():
             samples.append(sampler.sample())
             try:
@@ -223,31 +317,69 @@ async def run(args) -> dict:
                 # Expected sample cadence timeout while the benchmark is active.
                 continue
 
+    async def drive_measured() -> BaseException | None:
+        # A nested task that lets KeyboardInterrupt or SystemExit escape will
+        # abort the loop or exit 0 before the parent can fail the run cleanly.
+        try:
+            await drive(args.attempts, True)
+        except (KeyboardInterrupt, SystemExit) as exc:
+            return exc
+        return None
+
     sample_task = asyncio.create_task(sample_loop())
+    drive_task = asyncio.create_task(drive_measured())
     started_at = utc_iso()
     started = time.perf_counter()
-    drive_error: BaseException | None = None
-    duration = 0.0
+    external_error: BaseException | None = None
     try:
-        await drive(args.attempts, True)
-        duration = time.perf_counter() - started
+        await asyncio.wait({drive_task, sample_task}, return_when=asyncio.FIRST_COMPLETED)
+    except BaseException as exc:
+        external_error = exc
+    stop.set()
+    if not drive_task.done():
+        drive_task.cancel()
+    drive_error: BaseException | None = None
+    try:
+        drive_outcome = await _await_releasing_cancellation(drive_task)
     except BaseException as exc:
         drive_error = exc
-    stop.set()
+    else:
+        if isinstance(drive_outcome, BaseException):
+            drive_error = drive_outcome
+    if not sample_task.done() and (external_error is not None or drive_error is not None):
+        sample_task.cancel()
     sample_error: BaseException | None = None
     try:
         await _await_releasing_cancellation(sample_task)
     except BaseException as exc:
         sample_error = exc
-    if drive_error is not None:
+    duration = time.perf_counter() - started
+    if external_error is not None:
         if sample_error is not None and not isinstance(sample_error, asyncio.CancelledError):
             LOG.error(
                 "reconnect_benchmark_sampler_failed error=%s",
                 sample_error.__class__.__name__,
             )
-        raise drive_error
-    if sample_error is not None:
+        raise external_error
+    if sample_error is not None and not isinstance(sample_error, asyncio.CancelledError):
+        if drive_error is not None and not isinstance(drive_error, asyncio.CancelledError):
+            LOG.error(
+                "reconnect_benchmark_worker_failed error=%s",
+                drive_error.__class__.__name__,
+            )
+        LOG.error(
+            "reconnect_benchmark_sampler_failed error=%s",
+            sample_error.__class__.__name__,
+        )
         raise sample_error
+    if drive_error is not None:
+        raise drive_error
+    _require_complete_attempts(
+        args.attempts,
+        ok_count=ok,
+        failed_count=failed,
+        dequeued=dequeued,
+    )
 
     return build_result(
         workload_type="tcp-reconnect-storm",
