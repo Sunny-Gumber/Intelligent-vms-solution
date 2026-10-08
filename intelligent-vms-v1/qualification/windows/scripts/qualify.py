@@ -359,23 +359,125 @@ def pe_has_authenticode(path:Path)->bool:
     cert_offset,cert_size=struct.unpack_from("<II",data,security_entry)
     return cert_offset>0 and cert_size>0 and cert_offset+cert_size<=len(data)
 
-def verify_signature(path:str, expect_unsigned:bool):
+# One table for both ConvertTo-Json forms of SignatureStatus. Windows PowerShell
+# 5.1 emits the enum as its numeric value; Status.ToString() emits the name.
+# https://learn.microsoft.com/en-us/dotnet/api/system.management.automation.signaturestatus?view=powershellsdk-7.4.0
+SIGNATURE_STATUS_BY_VALUE={
+    0:"Valid",
+    1:"UnknownError",
+    2:"NotSigned",
+    3:"HashMismatch",
+    4:"NotTrusted",
+    5:"NotSupportedFileFormat",
+    6:"Incompatible",
+}
+_SIGNATURE_STATUS_BY_NAME={name:name for name in SIGNATURE_STATUS_BY_VALUE.values()}
+_SIGNATURE_STATUS_BY_CODE={str(code):name for code,name in SIGNATURE_STATUS_BY_VALUE.items()}
+
+def signature_status_name(status:object)->str|None:
+    """Map one Authenticode Status value onto Microsoft's SignatureStatus name.
+
+    Args:
+        status: Status field from ConvertTo-Json. Integers and canonical decimal
+            strings use SIGNATURE_STATUS_BY_VALUE. Enum names use that table's
+            names. Booleans are rejected first because bool is a subclass of int
+            and JSON false must not become Valid (0).
+
+    Returns:
+        The documented status name, or None when the value is outside the enum.
+
+    Raises:
+        This function does not raise.
+    """
+    if isinstance(status,bool) or not isinstance(status,(int,str)):
+        return None
+    if isinstance(status,int):
+        return SIGNATURE_STATUS_BY_VALUE.get(status)
+    if status in _SIGNATURE_STATUS_BY_NAME:
+        return status
+    return _SIGNATURE_STATUS_BY_CODE.get(status)
+
+def authenticode_status_verdict(status:object, expect_unsigned:bool)->str:
+    """Classify a certificate-table artifact from one SignatureStatus value.
+
+    Args:
+        status: Raw Status value from Get-AuthenticodeSignature JSON.
+        expect_unsigned: When true, NotSigned and UnknownError stay on the
+            existing unsigned path. Valid is never treated as unsigned.
+
+    Returns:
+        SIGNED_VALID, UNSIGNED_EXPECTED, or FAIL. Unmapped values are FAIL.
+
+    Raises:
+        This function does not raise.
+    """
+    name=signature_status_name(status)
+    if name=="Valid":
+        return "SIGNED_VALID"
+    if expect_unsigned and name in {"NotSigned","UnknownError"}:
+        return "UNSIGNED_EXPECTED"
+    return "FAIL"
+
+def _authenticode_verification_available()->bool:
+    """Return whether Get-AuthenticodeSignature can run on this host.
+
+    Returns:
+        True when os.name is nt.
+
+    Raises:
+        This function does not raise.
+    """
+    return os.name=="nt"
+
+def verify_signature(path:str, expect_unsigned:bool)->tuple[str,str]:
+    """Verify Authenticode status without deciding publisher or timestamp policy.
+
+    A PE with no certificate table follows the unsigned field-test path when
+    the caller expected that. A certificate table is checked with
+    Get-AuthenticodeSignature on Windows. Status is mapped through
+    SIGNATURE_STATUS_BY_VALUE, so numeric 0 and the name Valid are both signed.
+    Publisher identity and timestamp checks stay owner decisions.
+
+    Args:
+        path: Artifact path to inspect.
+        expect_unsigned: When true, a missing certificate table, NotSigned, or
+            UnknownError is UNSIGNED_EXPECTED.
+
+    Returns:
+        A status and detail pair. Status is SIGNED_VALID, UNSIGNED_EXPECTED,
+        NOT_RUN, or FAIL.
+
+    Raises:
+        OSError: The artifact cannot be read.
+        subprocess.TimeoutExpired: PowerShell does not finish within 30 seconds.
+    """
     artifact=Path(path)
     has_signature=pe_has_authenticode(artifact)
     if not has_signature:
         return ("UNSIGNED_EXPECTED" if expect_unsigned else "FAIL","PE has no Authenticode certificate table")
-    if os.name!="nt":
+    if not _authenticode_verification_available():
         return "NOT_RUN","Authenticode cryptographic verification requires Windows"
     escaped=str(Path(path)).replace("'","''")
-    ps="Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; (Get-AuthenticodeSignature -LiteralPath '"+escaped+"') | Select-Object Status,StatusMessage,SignerCertificate,TimeStamperCertificate | ConvertTo-Json -Depth 4"
+    ps=(
+        "Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; "
+        "(Get-AuthenticodeSignature -LiteralPath '"+escaped+"') | "
+        "Select-Object @{Name='Status';Expression={$_.Status.ToString()}},"
+        "StatusMessage,SignerCertificate,TimeStamperCertificate | "
+        "ConvertTo-Json -Compress -Depth 4"
+    )
     winps=Path(os.environ.get("SystemRoot",r"C:\\Windows"))/"System32"/"WindowsPowerShell"/"v1.0"/"powershell.exe"
     exe=str(winps) if winps.exists() else "powershell.exe"
     cp=subprocess.run([exe,"-NoProfile","-NonInteractive","-Command",ps],capture_output=True,text=True,timeout=30)
-    if cp.returncode: return "FAIL",cp.stderr.strip()
-    data=json.loads(cp.stdout); status=data.get("Status")
-    if status=="Valid": return "SIGNED_VALID",json.dumps(data,sort_keys=True)
-    if expect_unsigned and status in {"NotSigned","UnknownError"}: return "UNSIGNED_EXPECTED",json.dumps(data,sort_keys=True)
-    return "FAIL",json.dumps(data,sort_keys=True)
+    if cp.returncode:
+        return "FAIL",cp.stderr.strip()
+    try:
+        data=json.loads(cp.stdout)
+    except json.JSONDecodeError:
+        return "FAIL","Authenticode status output was not valid JSON"
+    if not isinstance(data,dict):
+        return "FAIL","Authenticode status output was not a JSON object"
+    detail=json.dumps(data,sort_keys=True)
+    return authenticode_status_verdict(data.get("Status"),expect_unsigned),detail
 
 def main():
     """Dispatch qualification harness commands.

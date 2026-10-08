@@ -96,7 +96,19 @@ def _install_osd(monkeypatch, token: str, *, position_type: str = "UpperLeft"):
     monkeypatch.setattr(
         config,
         "get_osd_options",
-        AsyncMock(return_value={"types": ["Text"], "maximum_total": 8}),
+        AsyncMock(
+            return_value={
+                "types": ["Text", "Plain"],
+                "positions": [
+                    "UpperLeft",
+                    "UpperRight",
+                    "LowerLeft",
+                    "LowerRight",
+                    "Custom",
+                ],
+                "maximum_total": 8,
+            }
+        ),
     )
     monkeypatch.setattr(
         config,
