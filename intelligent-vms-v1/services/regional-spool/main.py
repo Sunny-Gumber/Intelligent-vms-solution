@@ -55,6 +55,26 @@ SPOOL_REQUEST_TIMEOUT_SECONDS = max(
     1.0, float(os.getenv("SPOOL_REQUEST_TIMEOUT_SECONDS", "5"))
 )
 INITIAL_SPOOL_REVISION = 1
+SPOOL_REVISION_MAX = 2**63 - 1
+
+
+def _next_revision(current: int) -> int:
+    """Return the next spool revision, refusing values SQLite cannot store as integers.
+
+    Args:
+        current: Highest revision already issued for this spool key. Zero means none.
+
+    Returns:
+        The following positive revision.
+
+    Raises:
+        OverflowError: If current is not an int, or the next value would exceed int64.
+    """
+    if isinstance(current, bool) or not isinstance(current, int):
+        raise OverflowError("spool revision is not an integer")
+    if current < 0 or current >= SPOOL_REVISION_MAX:
+        raise OverflowError("spool revision cannot increase past int64")
+    return current + 1
 
 
 def _require_revision(revision: int) -> int:
@@ -134,6 +154,11 @@ class Store:
                     created_at REAL NOT NULL,
                     failed_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS spool_revision_marks (
+                    id TEXT PRIMARY KEY,
+                    high_revision INTEGER NOT NULL
+                );
                 """
             )
             self._ensure_spool_revision(db)
@@ -149,7 +174,8 @@ class Store:
             db: Open SQLite connection for this spool file.
 
         Returns:
-            None after the column is present.
+            None after the column is present and each current row has a
+            high-water mark at least as large as its stored revision.
 
         Raises:
             sqlite3.Error: If the table cannot be altered.
@@ -157,17 +183,104 @@ class Store:
         # Serialize the check and ALTER. Two openers otherwise both observe the
         # missing column and the second ALTER fails with "duplicate column name".
         db.execute("BEGIN IMMEDIATE")
-        if self._has_revision_column(db):
-            return
-        try:
-            db.execute(
-                "ALTER TABLE spool_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
+        if not self._has_revision_column(db):
+            try:
+                db.execute(
+                    "ALTER TABLE spool_items ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+                if not self._has_revision_column(db):
+                    raise
+        self._ensure_revision_marks(db)
+
+    def _ensure_revision_marks(self, db) -> None:
+        """Keep the highest issued revision for each spool id across deletes.
+
+        The mark is not removed when a row is acknowledged. A later coalesce that
+        has to insert the key again continues past that mark, so an acknowledgement
+        already in flight cannot match the new row.
+
+        Args:
+            db: Open SQLite connection holding the write lock.
+
+        Returns:
+            None after every current spool row is covered by a mark.
+
+        Raises:
+            sqlite3.Error: If the mark table cannot be created or filled.
+        """
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS spool_revision_marks (
+                id TEXT PRIMARY KEY,
+                high_revision INTEGER NOT NULL
             )
-        except sqlite3.OperationalError as exc:
-            if "duplicate column name" not in str(exc).lower():
-                raise
-            if not self._has_revision_column(db):
-                raise
+            """
+        )
+        # WHERE true is required. SQLite rejects INSERT...SELECT...ON CONFLICT
+        # without a WHERE clause ("near DO: syntax error") on 3.45.
+        db.execute(
+            """
+            INSERT INTO spool_revision_marks(id, high_revision)
+            SELECT id, revision FROM spool_items WHERE true
+            ON CONFLICT(id) DO UPDATE SET
+                high_revision = MAX(
+                    spool_revision_marks.high_revision,
+                    excluded.high_revision
+                )
+            """
+        )
+
+    def _remember_revision(self, db, item_id: str, revision: int) -> None:
+        """Record that this revision has been issued for the spool id.
+
+        Args:
+            db: Open SQLite connection holding the write lock.
+            item_id: Spool item identifier.
+            revision: Revision just stored or about to be stored.
+
+        Returns:
+            None.
+
+        Raises:
+            sqlite3.Error: If the mark cannot be stored.
+        """
+        db.execute(
+            """
+            INSERT INTO spool_revision_marks(id, high_revision) VALUES(?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                high_revision = MAX(
+                    spool_revision_marks.high_revision,
+                    excluded.high_revision
+                )
+            """,
+            (item_id, revision),
+        )
+
+    def _claim_revision(self, db, item_id: str) -> int:
+        """Allocate a revision strictly above any revision ever issued for this id.
+
+        Args:
+            db: Open SQLite connection holding the write lock.
+            item_id: Spool item identifier being inserted.
+
+        Returns:
+            The revision to store on the new row.
+
+        Raises:
+            OverflowError: If the next revision would exceed int64.
+            sqlite3.Error: If the mark cannot be read or stored.
+        """
+        row = db.execute(
+            "SELECT high_revision FROM spool_revision_marks WHERE id=?",
+            (item_id,),
+        ).fetchone()
+        current = 0 if row is None else row["high_revision"]
+        revision = _next_revision(current)
+        self._remember_revision(db, item_id, revision)
+        return revision
 
     def _has_revision_column(self, db) -> bool:
         """Return whether spool_items already stores a revision.
@@ -204,8 +317,10 @@ class Store:
             kind: Item kind: recording, event or heartbeat.
             body: JSON-serializable payload.
             coalesce: Whether an existing item should be replaced in place.
-                Replacement updates the body and increments revision so an
-                acknowledgement of a previously read body cannot remove it.
+                Replacement stores the next revision above every revision
+                already issued for this id, including after the previous row
+                was deleted, so an acknowledgement already in flight cannot
+                remove the new body.
 
         Returns:
             None after the item is stored or an existing duplicate is retained.
@@ -215,6 +330,7 @@ class Store:
         Raises:
             SpoolPayloadTooLarge: If the serialized body exceeds the configured limit.
             SpoolFull: If queued-item capacity is exhausted.
+            OverflowError: If the next revision would exceed int64.
             sqlite3.Error: If durable storage fails.
         """
         now = time.time()
@@ -272,26 +388,35 @@ class Store:
 
         Raises:
             SpoolFull: If a new row would exceed queued-item capacity.
+            OverflowError: If the next revision would exceed int64.
             sqlite3.Error: If durable storage fails.
         """
         if coalesce and self._exists(db, item_id):
             # A newer body invalidates any revision already read for sending.
-            updated = db.execute(
-                """
-                UPDATE spool_items
-                SET body_json=?, updated_at=?, revision=revision+1
-                WHERE id=?
-                """,
-                (body_json, now, item_id),
-            )
-            if updated.rowcount == 1:
-                return
+            current = db.execute(
+                "SELECT revision FROM spool_items WHERE id=?",
+                (item_id,),
+            ).fetchone()
+            if current is not None:
+                revision = _next_revision(current["revision"])
+                updated = db.execute(
+                    """
+                    UPDATE spool_items
+                    SET body_json=?, updated_at=?, revision=?
+                    WHERE id=? AND revision=?
+                    """,
+                    (body_json, now, revision, item_id, current["revision"]),
+                )
+                if updated.rowcount == 1:
+                    self._remember_revision(db, item_id, revision)
+                    return
         elif self._exists(db, item_id):
             return
 
         count = db.execute("SELECT COUNT(*) FROM spool_items").fetchone()[0]
         if int(count) >= self.max_items:
             raise SpoolFull("regional spool is full")
+        revision = self._claim_revision(db, item_id)
         db.execute(
             """
             INSERT INTO spool_items(
@@ -308,7 +433,7 @@ class Store:
                 None,
                 now,
                 now,
-                INITIAL_SPOOL_REVISION,
+                revision,
             ),
         )
 

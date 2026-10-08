@@ -275,7 +275,7 @@ def test_legacy_spool_database_upgrades_in_place(tmp_path, monkeypatch):
             ("event:legacy",),
         ).fetchone()
 
-    assert tables == ["dead_letters", "spool_items"]
+    assert tables == ["dead_letters", "spool_items", "spool_revision_marks"]
     assert columns[:8] == [
         "id",
         "kind",
@@ -536,10 +536,7 @@ def test_qa007_coalesce_gap_keeps_newer_body(tmp_path, monkeypatch, operation):
     pending = mod.store.due(10)
     assert len(pending) == 1
     assert pending[0]["body"]["load"]["active_sources"] == 9
-    if operation == "retry":
-        assert pending[0]["revision"] == old_revision + 1
-    else:
-        assert pending[0]["revision"] == 1
+    assert pending[0]["revision"] == old_revision + 1
 
     follow_up = Client(statuses=[202])
     delivered = asyncio.run(mod.flush_once(follow_up))
@@ -683,3 +680,205 @@ def test_qa007_concurrent_openers_upgrade_legacy_database(tmp_path, monkeypatch)
     assert len(pending) == 1
     assert pending[0]["body"]["load"]["active_sources"] == 4
     assert pending[0]["revision"] == 1
+
+
+BODY_N1 = '{"n":1}'
+BODY_N9 = '{"n":9}'
+BODY_N10 = '{"n":10}'
+
+
+def _ack_revision(store, operation, item_id, revision):
+    if operation == "success":
+        return store.success(item_id, revision)
+    if operation == "retry":
+        return store.retry(item_id, "HTTP 503", 3600, revision)
+    return store.dead_letter(item_id, 422, "HTTP 422", revision)
+
+
+def _mark_revision(db_path, item_id):
+    with sqlite3.connect(db_path) as db:
+        row = db.execute(
+            "SELECT revision FROM spool_items WHERE id=?",
+            (item_id,),
+        ).fetchone()
+    return None if row is None else row[0]
+
+
+@pytest.mark.parametrize("operation", ["success", "retry", "dead_letter"])
+def test_qa007_101_second_inflight_ack_misses_reinserted_body(
+    tmp_path, monkeypatch, operation
+):
+    """A second ack of revision 1 must not match a body inserted after the first ack."""
+    mod = load_spool(tmp_path, monkeypatch)
+    db_path = tmp_path / "spool.db"
+    mod.store.enqueue(HEARTBEAT_ID, "heartbeat", {"n": 1}, coalesce=True)
+    read = mod.store.due(1)
+    assert read[0]["body"] == {"n": 1}
+    assert read[0]["revision"] == 1
+
+    early = _ack_revision(mod.store, operation, HEARTBEAT_ID, 1)
+    assert early is True
+    mod.store.enqueue(HEARTBEAT_ID, "heartbeat", {"n": 9}, coalesce=True)
+    late = _ack_revision(mod.store, operation, HEARTBEAT_ID, 1)
+    assert late is False
+
+    row = _queued_row(db_path, HEARTBEAT_ID)
+    assert row is not None
+    assert row[0] == BODY_N9
+    stored_revision = _mark_revision(db_path, HEARTBEAT_ID)
+    assert stored_revision != 1
+    with sqlite3.connect(db_path) as db:
+        dead = db.execute(
+            "SELECT body_json, status_code, reason FROM dead_letters"
+        ).fetchall()
+    if operation == "dead_letter":
+        assert dead == [(BODY_N1, 422, "HTTP 422")]
+        assert row[1] == 0
+        assert row[2] == 0.0
+    elif operation == "retry":
+        assert dead == []
+        assert row[1] == 1
+        assert row[2] > 0
+    else:
+        assert dead == []
+        assert row[1] == 0
+        assert row[2] == 0.0
+
+    if operation == "retry":
+        assert mod.store.success(HEARTBEAT_ID, stored_revision) is True
+        mod.store.enqueue(HEARTBEAT_ID, "heartbeat", {"n": 10}, coalesce=True)
+        assert _queued_row(db_path, HEARTBEAT_ID)[0] == BODY_N10
+        reinserted = _mark_revision(db_path, HEARTBEAT_ID)
+        assert reinserted not in (None, 1)
+        assert mod.store.success(HEARTBEAT_ID, 1) is False
+        pending = mod.store.due(1)
+        assert pending[0]["body"] == {"n": 10}
+        assert pending[0]["revision"] == reinserted
+        follow_up = Client(statuses=[202])
+        assert asyncio.run(mod.flush_once(follow_up)) == 1
+        assert follow_up.calls[0][1]["json"] == {"n": 10}
+        return
+
+    if row[2] > 0:
+        with sqlite3.connect(db_path) as db:
+            db.execute(
+                "UPDATE spool_items SET next_attempt_at=0 WHERE id=?",
+                (HEARTBEAT_ID,),
+            )
+    pending = mod.store.due(1)
+    assert pending[0]["body"] == {"n": 9}
+    assert pending[0]["revision"] == stored_revision
+    assert mod.store.success(HEARTBEAT_ID, 1) is False
+    follow_up = Client(statuses=[202])
+    assert asyncio.run(mod.flush_once(follow_up)) == 1
+    assert follow_up.calls[0][1]["json"] == {"n": 9}
+
+
+class _HoldClient:
+    """Block inside post until the test releases this flusher."""
+
+    def __init__(self, status_code, release):
+        self.status_code = status_code
+        self.release = release
+        self.calls = []
+        self.entered = asyncio.Event()
+
+    async def post(self, url, **kwargs):
+        self.calls.append(kwargs.get("json"))
+        self.entered.set()
+        await self.release.wait()
+        return Response(self.status_code)
+
+
+async def _two_flush_once(mod, status_code):
+    release_a = asyncio.Event()
+    release_b = asyncio.Event()
+    client_a = _HoldClient(status_code, release_a)
+    client_b = _HoldClient(status_code, release_b)
+    task_a = asyncio.create_task(mod.flush_once(client_a))
+    await client_a.entered.wait()
+    task_b = asyncio.create_task(mod.flush_once(client_b))
+    await client_b.entered.wait()
+    release_a.set()
+    result_a = await task_a
+    mod.store.enqueue(HEARTBEAT_ID, "heartbeat", {"n": 9}, coalesce=True)
+    release_b.set()
+    result_b = await task_b
+    return result_a, result_b, client_a, client_b
+
+
+@pytest.mark.parametrize(
+    "status_code",
+    [
+        pytest.param(202, id="success"),
+        pytest.param(503, id="retry"),
+        pytest.param(422, id="dead_letter"),
+    ],
+)
+def test_qa007_101_two_flush_once_calls_keep_reinserted_body(
+    tmp_path, monkeypatch, caplog, status_code
+):
+    """Two flushers that both read revision 1 must not ack the later body."""
+    mod = load_spool(tmp_path, monkeypatch)
+    db_path = tmp_path / "spool.db"
+    mod.store.enqueue(HEARTBEAT_ID, "heartbeat", {"n": 1}, coalesce=True)
+    with caplog.at_level(logging.INFO, logger="regional-spool"):
+        result_a, result_b, client_a, client_b = asyncio.run(
+            _two_flush_once(mod, status_code)
+        )
+    assert client_a.calls == [{"n": 1}]
+    assert client_b.calls == [{"n": 1}]
+    assert result_a == (1 if status_code == 202 else 0)
+    assert result_b == 0
+    row = _queued_row(db_path, HEARTBEAT_ID)
+    assert row is not None
+    assert row[0] == BODY_N9
+    assert _mark_revision(db_path, HEARTBEAT_ID) != 1
+    if status_code == 422:
+        assert caplog.text.count("spool_dead_letter") == 1
+        assert "spool_stale_ack" in caplog.text
+        assert "op=dead_letter" in caplog.text
+        with sqlite3.connect(db_path) as db:
+            dead = db.execute("SELECT body_json FROM dead_letters").fetchall()
+        assert [item[0] for item in dead] == [BODY_N1]
+    elif status_code == 503:
+        assert "spool_stale_ack" in caplog.text
+        assert "op=retry" in caplog.text
+        assert "spool_dead_letter" not in caplog.text
+        assert row[1] == 1
+        assert row[2] > 0
+        current = _mark_revision(db_path, HEARTBEAT_ID)
+        assert mod.store.success(HEARTBEAT_ID, current) is True
+        mod.store.enqueue(HEARTBEAT_ID, "heartbeat", {"n": 10}, coalesce=True)
+        assert _queued_row(db_path, HEARTBEAT_ID)[0] == BODY_N10
+        assert _mark_revision(db_path, HEARTBEAT_ID) not in (None, 1)
+        assert mod.store.success(HEARTBEAT_ID, 1) is False
+    else:
+        assert "spool_stale_ack" in caplog.text
+        assert "op=success" in caplog.text
+        assert mod.store.counts() == (1, 0)
+    assert mod.store.success(HEARTBEAT_ID, 1) is False
+
+
+def test_qa007_101_revision_does_not_pass_int64(tmp_path, monkeypatch):
+    """Coalesce refuses to store a revision SQLite cannot keep as an integer."""
+    mod = load_spool(tmp_path, monkeypatch)
+    db_path = tmp_path / "spool.db"
+    mod.store.enqueue(HEARTBEAT_ID, "heartbeat", {"n": 1}, coalesce=True)
+    maximum = 2**63 - 1
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            "UPDATE spool_items SET revision=? WHERE id=?",
+            (maximum, HEARTBEAT_ID),
+        )
+        try:
+            db.execute(
+                "UPDATE spool_revision_marks SET high_revision=? WHERE id=?",
+                (maximum, HEARTBEAT_ID),
+            )
+        except sqlite3.OperationalError:
+            pass
+    with pytest.raises(OverflowError):
+        mod.store.enqueue(HEARTBEAT_ID, "heartbeat", {"n": 2}, coalesce=True)
+    assert _queued_row(db_path, HEARTBEAT_ID)[0] == BODY_N1
+    assert _mark_revision(db_path, HEARTBEAT_ID) == maximum
