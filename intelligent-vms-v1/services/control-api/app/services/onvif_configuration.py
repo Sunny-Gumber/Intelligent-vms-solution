@@ -2,7 +2,6 @@ from copy import deepcopy
 import re
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
-from xml.sax.saxutils import escape
 
 from app.services.network_policy import pin_site_http_xaddr
 from app.services.onvif_client import (
@@ -16,6 +15,8 @@ from app.services.onvif_client import (
     _local,
     _service_xaddr,
     _soap,
+    _xml_attr,
+    _xml_text,
 )
 
 
@@ -115,6 +116,31 @@ def _service(
     if not xaddr:
         raise _unsupported(f"Camera did not advertise {fragment} service")
     return pin_site_http_xaddr(xaddr, tenant_id, site_id)
+
+
+def _optional_token_attr(token: object) -> str:
+    """Quote an optional ONVIF token attribute without changing a legal token.
+
+    Args:
+        token: Token to place in a ``token`` attribute. ``None`` and ``""`` omit it.
+
+    Returns:
+        `` token="..."`` including a leading space, or an empty string.
+
+    Raises:
+        OnvifError: If the token contains a character XML 1.0 forbids.
+    """
+    if token is None or token == "":
+        return ""
+    return f" token={_xml_attr(token)}"
+
+
+def _points_xml(points) -> str:
+    """Build Media2 polygon point elements with quoted coordinates."""
+    return "".join(
+        f"<tt:Point x={_xml_attr(point[0])} y={_xml_attr(point[1])}/>"
+        for point in points
+    )
 
 
 def _validate_range(name: str, value: float | int | None, bounds: dict | None) -> None:
@@ -274,7 +300,7 @@ async def get_encoder(
         f"{MEDIA_NS}/GetVideoEncoderConfiguration",
         (
             "<trt:GetVideoEncoderConfiguration>"
-            f"<trt:ConfigurationToken>{escape(config_token)}</trt:ConfigurationToken>"
+            f"<trt:ConfigurationToken>{_xml_text(config_token)}</trt:ConfigurationToken>"
             "</trt:GetVideoEncoderConfiguration>"
         ),
         username,
@@ -287,8 +313,8 @@ async def get_encoder(
         f"{MEDIA_NS}/GetVideoEncoderConfigurationOptions",
         (
             "<trt:GetVideoEncoderConfigurationOptions>"
-            f"<trt:ConfigurationToken>{escape(config_token)}</trt:ConfigurationToken>"
-            f"<trt:ProfileToken>{escape(profile_token)}</trt:ProfileToken>"
+            f"<trt:ConfigurationToken>{_xml_text(config_token)}</trt:ConfigurationToken>"
+            f"<trt:ProfileToken>{_xml_text(profile_token)}</trt:ProfileToken>"
             "</trt:GetVideoEncoderConfigurationOptions>"
         ),
         username,
@@ -566,7 +592,7 @@ async def get_imaging(
             409,
         )
     imaging = _service(services, "/ver20/imaging/wsdl", tenant_id, site_id)
-    token = escape(video_source_token)
+    token = _xml_text(video_source_token)
     settings_root = await _soap(
         imaging,
         f"{IMAGING_NS}/GetImagingSettings",
@@ -780,7 +806,7 @@ async def set_imaging(
         f"{IMAGING_NS}/SetImagingSettings",
         (
             "<timg:SetImagingSettings>"
-            f"<timg:VideoSourceToken>{escape(video_source_token)}</timg:VideoSourceToken>"
+            f"<timg:VideoSourceToken>{_xml_text(video_source_token)}</timg:VideoSourceToken>"
             f"{xml}"
             "<timg:ForcePersistence>true</timg:ForcePersistence>"
             "</timg:SetImagingSettings>"
@@ -903,7 +929,7 @@ async def set_date_time(
     if changes.get("timezone"):
         timezone_xml = (
             "<tds:TimeZone>"
-            f"<tt:TZ>{escape(changes['timezone'])}</tt:TZ>"
+            f"<tt:TZ>{_xml_text(changes['timezone'])}</tt:TZ>"
             "</tds:TimeZone>"
         )
     utc_xml = ""
@@ -1031,7 +1057,7 @@ async def set_ir_lamp(
         f"{DEVICE_NS}/SendAuxiliaryCommand",
         (
             "<tds:SendAuxiliaryCommand>"
-            f"<tds:AuxiliaryCommand>{escape(command)}</tds:AuxiliaryCommand>"
+            f"<tds:AuxiliaryCommand>{_xml_text(command)}</tds:AuxiliaryCommand>"
             "</tds:SendAuxiliaryCommand>"
         ),
         username,
@@ -1143,7 +1169,7 @@ async def get_osd_options(
         f"{MEDIA_NS}/GetOSDOptions",
         (
             "<trt:GetOSDOptions>"
-            f"<trt:VideoSourceConfigurationToken>{escape(video_source_configuration_token)}</trt:VideoSourceConfigurationToken>"
+            f"<trt:VideoSourceConfigurationToken>{_xml_text(video_source_configuration_token)}</trt:VideoSourceConfigurationToken>"
             "</trt:GetOSDOptions>"
         ),
         username,
@@ -1175,7 +1201,8 @@ async def create_osd(
     Args:
         services: Stored service descriptors.
         video_source_configuration_token: Target ONVIF source configuration token.
-        payload: Validated OSD text/type/position values.
+        payload: Validated OSD text/type/position values. An optional ``token``
+            key is emitted as the OSD token attribute when it is non-empty.
         username: Optional camera username.
         password: Optional camera password.
         tenant_id: Camera tenant.
@@ -1185,7 +1212,8 @@ async def create_osd(
         Full OSD list after creation.
 
     Raises:
-        OnvifError: If the device does not support the requested OSD operation.
+        OnvifError: If the device does not support the requested OSD operation,
+            or a supplied token contains a character XML 1.0 forbids.
     """
     media = _service(services, "/ver10/media/wsdl", tenant_id, site_id)
     options = await get_osd_options(
@@ -1213,19 +1241,19 @@ async def create_osd(
         raise _unsupported("Camera did not advertise text OSD support")
     plain = ""
     if payload["osd_type"] == "Plain":
-        plain = f"<tt:PlainText>{escape(payload['text'])}</tt:PlainText>"
+        plain = f"<tt:PlainText>{_xml_text(payload['text'])}</tt:PlainText>"
     pos = ""
     if payload["position_type"] == "Custom":
-        pos = f'<tt:Pos x="{payload["x"]}" y="{payload["y"]}"/>'
+        pos = f"<tt:Pos x={_xml_attr(payload['x'])} y={_xml_attr(payload['y'])}/>"
     body = (
-        "<trt:CreateOSD><trt:OSD>"
-        f"<tt:VideoSourceConfigurationToken>{escape(video_source_configuration_token)}</tt:VideoSourceConfigurationToken>"
+        f"<trt:CreateOSD><trt:OSD{_optional_token_attr(payload.get('token'))}>"
+        f"<tt:VideoSourceConfigurationToken>{_xml_text(video_source_configuration_token)}</tt:VideoSourceConfigurationToken>"
         "<tt:Type>Text</tt:Type>"
         "<tt:Position>"
-        f"<tt:Type>{payload['position_type']}</tt:Type>{pos}"
+        f"<tt:Type>{_xml_text(payload['position_type'])}</tt:Type>{pos}"
         "</tt:Position>"
         "<tt:TextString>"
-        f"<tt:Type>{payload['osd_type']}</tt:Type>{plain}"
+        f"<tt:Type>{_xml_text(payload['osd_type'])}</tt:Type>{plain}"
         "</tt:TextString>"
         "</trt:OSD></trt:CreateOSD>"
     )
@@ -1280,18 +1308,18 @@ async def update_osd(
     position_type = row.get("position_type") or "Custom"
     position = ""
     if position_type == "Custom" and x is not None and y is not None:
-        position = f'<tt:Pos x="{x}" y="{y}"/>'
-    text_xml = f"<tt:Type>{escape(text_type)}</tt:Type>"
+        position = f"<tt:Pos x={_xml_attr(x)} y={_xml_attr(y)}/>"
+    text_xml = f"<tt:Type>{_xml_text(text_type)}</tt:Type>"
     if text_type == "Plain":
-        text_xml += f"<tt:PlainText>{escape(text_value or '')}</tt:PlainText>"
+        text_xml += f"<tt:PlainText>{_xml_text(text_value or '')}</tt:PlainText>"
     media = _service(services, "/ver10/media/wsdl", tenant_id, site_id)
     body = (
         "<trt:SetOSD>"
-        f'<trt:OSD token="{escape(osd_token)}">'
-        f"<tt:VideoSourceConfigurationToken>{escape(row.get('video_source_configuration_token') or '')}</tt:VideoSourceConfigurationToken>"
+        f"<trt:OSD token={_xml_attr(osd_token)}>"
+        f"<tt:VideoSourceConfigurationToken>{_xml_text(row.get('video_source_configuration_token') or '')}</tt:VideoSourceConfigurationToken>"
         "<tt:Type>Text</tt:Type>"
         "<tt:Position>"
-        f"<tt:Type>{escape(position_type)}</tt:Type>{position}"
+        f"<tt:Type>{_xml_text(position_type)}</tt:Type>{position}"
         "</tt:Position>"
         f"<tt:TextString>{text_xml}</tt:TextString>"
         "</trt:OSD>"
@@ -1336,7 +1364,7 @@ async def delete_osd(
         f"{MEDIA_NS}/DeleteOSD",
         (
             "<trt:DeleteOSD>"
-            f"<trt:OSDToken>{escape(osd_token)}</trt:OSDToken>"
+            f"<trt:OSDToken>{_xml_text(osd_token)}</trt:OSDToken>"
             "</trt:DeleteOSD>"
         ),
         username,
@@ -1447,7 +1475,7 @@ async def list_masks(
         f"{MEDIA2_NS}/GetMasks",
         (
             "<tr2:GetMasks>"
-            f"<tr2:ConfigurationToken>{escape(video_source_configuration_token)}</tr2:ConfigurationToken>"
+            f"<tr2:ConfigurationToken>{_xml_text(video_source_configuration_token)}</tr2:ConfigurationToken>"
             "</tr2:GetMasks>"
         ),
         username,
@@ -1472,7 +1500,8 @@ async def create_mask(
     Args:
         services: Stored service descriptors.
         video_source_configuration_token: Target source configuration.
-        payload: Validated normalized polygon/type/enabled values.
+        payload: Validated normalized polygon/type/enabled values. An optional
+            ``token`` key is emitted as the mask token attribute when it is non-empty.
         username: Optional camera username.
         password: Optional camera password.
         tenant_id: Camera tenant.
@@ -1482,7 +1511,8 @@ async def create_mask(
         Privacy-mask list after creation.
 
     Raises:
-        OnvifError: If Media2 mask options reject the request or write fails.
+        OnvifError: If Media2 mask options reject the request, write fails, or a
+            supplied token contains a character XML 1.0 forbids.
     """
     media2 = _service(services, "/ver20/media/wsdl", tenant_id, site_id)
     options_root = await _soap(
@@ -1490,7 +1520,7 @@ async def create_mask(
         f"{MEDIA2_NS}/GetMaskOptions",
         (
             "<tr2:GetMaskOptions>"
-            f"<tr2:ConfigurationToken>{escape(video_source_configuration_token)}</tr2:ConfigurationToken>"
+            f"<tr2:ConfigurationToken>{_xml_text(video_source_configuration_token)}</tr2:ConfigurationToken>"
             "</tr2:GetMaskOptions>"
         ),
         username,
@@ -1532,14 +1562,11 @@ async def create_mask(
             "Requested privacy-mask type is not advertised by the camera",
             422,
         )
-    points_xml = "".join(
-        f'<tt:Point x="{point[0]}" y="{point[1]}"/>'
-        for point in payload["points"]
-    )
+    points_xml = _points_xml(payload["points"])
     body = (
-        "<tr2:CreateMask><tr2:Mask>"
-        f"<tr2:ConfigurationToken>{escape(video_source_configuration_token)}</tr2:ConfigurationToken>"
-        f"<tr2:Type>{payload['mask_type']}</tr2:Type>"
+        f"<tr2:CreateMask><tr2:Mask{_optional_token_attr(payload.get('token'))}>"
+        f"<tr2:ConfigurationToken>{_xml_text(video_source_configuration_token)}</tr2:ConfigurationToken>"
+        f"<tr2:Type>{_xml_text(payload['mask_type'])}</tr2:Type>"
         f"<tr2:Enabled>{str(payload['enabled']).lower()}</tr2:Enabled>"
         f"<tr2:Polygon>{points_xml}</tr2:Polygon>"
         "</tr2:Mask></tr2:CreateMask>"
@@ -1616,7 +1643,7 @@ async def update_mask(
         f"{MEDIA2_NS}/GetMaskOptions",
         (
             "<tr2:GetMaskOptions>"
-            f"<tr2:ConfigurationToken>{escape(video_source_configuration_token)}</tr2:ConfigurationToken>"
+            f"<tr2:ConfigurationToken>{_xml_text(video_source_configuration_token)}</tr2:ConfigurationToken>"
             "</tr2:GetMaskOptions>"
         ),
         username,
@@ -1644,14 +1671,12 @@ async def update_mask(
             "Requested privacy-mask type is not advertised by the camera",
             422,
         )
-    points_xml = "".join(
-        f'<tt:Point x="{point[0]}" y="{point[1]}"/>' for point in points
-    )
+    points_xml = _points_xml(points)
     body = (
         "<tr2:SetMask>"
-        f'<tr2:Mask token="{escape(mask_token)}">'
-        f"<tr2:ConfigurationToken>{escape(video_source_configuration_token)}</tr2:ConfigurationToken>"
-        f"<tr2:Type>{escape(mask_type)}</tr2:Type>"
+        f"<tr2:Mask token={_xml_attr(mask_token)}>"
+        f"<tr2:ConfigurationToken>{_xml_text(video_source_configuration_token)}</tr2:ConfigurationToken>"
+        f"<tr2:Type>{_xml_text(mask_type)}</tr2:Type>"
         f"<tr2:Enabled>{str(enabled).lower()}</tr2:Enabled>"
         f"<tr2:Polygon>{points_xml}</tr2:Polygon>"
         "</tr2:Mask></tr2:SetMask>"
@@ -1704,7 +1729,7 @@ async def delete_mask(
         f"{MEDIA2_NS}/DeleteMask",
         (
             "<tr2:DeleteMask>"
-            f"<tr2:Token>{escape(mask_token)}</tr2:Token>"
+            f"<tr2:Token>{_xml_text(mask_token)}</tr2:Token>"
             "</tr2:DeleteMask>"
         ),
         username,
@@ -1830,7 +1855,7 @@ async def get_orientation(
             409,
         )
     media = _service(services, "/ver10/media/wsdl", tenant_id, site_id)
-    token_xml = escape(token)
+    token_xml = _xml_text(token)
     config_root = await _soap(
         media,
         f"{MEDIA_NS}/GetVideoSourceConfiguration",
@@ -1850,7 +1875,7 @@ async def get_orientation(
         (
             "<trt:GetVideoSourceConfigurationOptions>"
             f"<trt:ConfigurationToken>{token_xml}</trt:ConfigurationToken>"
-            f"<trt:ProfileToken>{escape(profile.get('token') or '')}</trt:ProfileToken>"
+            f"<trt:ProfileToken>{_xml_text(profile.get('token') or '')}</trt:ProfileToken>"
             "</trt:GetVideoSourceConfigurationOptions>"
         ),
         username,
@@ -2073,7 +2098,7 @@ async def get_video_source_modes(
         f"{MEDIA_NS}/GetVideoSourceModes",
         (
             "<trt:GetVideoSourceModes>"
-            f"<trt:VideoSourceToken>{escape(video_source_token)}</trt:VideoSourceToken>"
+            f"<trt:VideoSourceToken>{_xml_text(video_source_token)}</trt:VideoSourceToken>"
             "</trt:GetVideoSourceModes>"
         ),
         username,
@@ -2130,8 +2155,8 @@ async def set_video_source_mode(
         f"{MEDIA_NS}/SetVideoSourceMode",
         (
             "<trt:SetVideoSourceMode>"
-            f"<trt:VideoSourceToken>{escape(video_source_token)}</trt:VideoSourceToken>"
-            f"<trt:VideoSourceModeToken>{escape(mode_token)}</trt:VideoSourceModeToken>"
+            f"<trt:VideoSourceToken>{_xml_text(video_source_token)}</trt:VideoSourceToken>"
+            f"<trt:VideoSourceModeToken>{_xml_text(mode_token)}</trt:VideoSourceModeToken>"
             "</trt:SetVideoSourceMode>"
         ),
         username,

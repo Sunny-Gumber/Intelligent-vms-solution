@@ -6,10 +6,9 @@ site network policy.
 """
 
 import math
-from xml.sax.saxutils import escape
 
 from app.services.network_policy import pin_site_http_xaddr
-from app.services.onvif_client import OnvifError, _local, _service_xaddr, _soap
+from app.services.onvif_client import OnvifError, _local, _service_xaddr, _soap, _xml_attr, _xml_text
 
 PTZ_NS = "http://www.onvif.org/ver20/ptz/wsdl"
 
@@ -47,7 +46,7 @@ async def capabilities(
     root = await _soap(
         xaddr,
         f"{PTZ_NS}/GetNodes",
-        f'<GetNodes xmlns="{PTZ_NS}"/>',
+        f"<GetNodes xmlns={_xml_attr(PTZ_NS)}/>",
         username,
         password,
         tenant_id=tenant_id,
@@ -93,12 +92,12 @@ async def continuous_move(
 
     velocity = ""
     if pan != 0.0 or tilt != 0.0:
-        velocity += f'<tt:PanTilt x="{pan:.6g}" y="{tilt:.6g}"/>'
+        velocity += f"<tt:PanTilt x={_xml_attr(f'{pan:.6g}')} y={_xml_attr(f'{tilt:.6g}')}/>"
     if zoom != 0.0:
-        velocity += f'<tt:Zoom x="{zoom:.6g}"/>'
+        velocity += f"<tt:Zoom x={_xml_attr(f'{zoom:.6g}')}/>"
     body = (
-        f'<ContinuousMove xmlns="{PTZ_NS}">'
-        f"<ProfileToken>{escape(profile_token)}</ProfileToken>"
+        f"<ContinuousMove xmlns={_xml_attr(PTZ_NS)}>"
+        f"<ProfileToken>{_xml_text(profile_token)}</ProfileToken>"
         f"<Velocity>{velocity}</Velocity>"
         "</ContinuousMove>"
     )
@@ -125,8 +124,8 @@ async def stop(
     if not profile_token:
         raise _unsupported("Camera has no managed ONVIF profile for PTZ")
     body = (
-        f'<Stop xmlns="{PTZ_NS}">'
-        f"<ProfileToken>{escape(profile_token)}</ProfileToken>"
+        f"<Stop xmlns={_xml_attr(PTZ_NS)}>"
+        f"<ProfileToken>{_xml_text(profile_token)}</ProfileToken>"
         "<PanTilt>true</PanTilt><Zoom>true</Zoom>"
         "</Stop>"
     )
