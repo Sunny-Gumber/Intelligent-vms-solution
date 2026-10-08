@@ -22,6 +22,7 @@ class Evidence:
 
     Attributes:
         benchmark_id: Source benchmark identifier.
+        fingerprint: Immutable full-result fingerprint, including benchmark_id.
         commit_sha: Benchmarked source revision.
         hardware_key: Stable hardware/environment identity.
         hardware: Captured hardware metadata.
@@ -38,6 +39,7 @@ class Evidence:
     """
 
     benchmark_id: str
+    fingerprint: str
     commit_sha: str
     hardware_key: str
     hardware: dict[str, Any]
@@ -57,6 +59,77 @@ def _num(value: Any) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
     return None
+
+
+def _repeated_values(values: list[str]) -> list[str]:
+    """Return values that occur more than once, in sorted order.
+
+    Args:
+        values: Benchmark identities or result fingerprints in submission order.
+
+    Returns:
+        Deterministic list of values whose count is greater than one.
+    """
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return sorted(value for value, count in counts.items() if count > 1)
+
+
+def _duplicate_repeat_reason(items: list[Evidence]) -> str | None:
+    """Reject copies that reuse one benchmark identity or result fingerprint.
+
+    Args:
+        items: Evidence rows already grouped by role, dimension, commit and hardware.
+
+    Returns:
+        Rejection reason when an identity or fingerprint repeats, otherwise None.
+    """
+    reasons: list[str] = []
+    duplicate_identities = _repeated_values([item.benchmark_id for item in items])
+    if duplicate_identities:
+        reasons.append(
+            "duplicate benchmark identities are not independent repeats: "
+            + ", ".join(duplicate_identities)
+        )
+    duplicate_fingerprints = _repeated_values([item.fingerprint for item in items])
+    if duplicate_fingerprints:
+        reasons.append("duplicate benchmark fingerprints are not independent repeats")
+    if not reasons:
+        return None
+    return "; ".join(reasons)
+
+
+def _role_duplicate_reason(
+    evidence: list[Evidence],
+    *,
+    role: str,
+    dimension: str,
+) -> str | None:
+    """Find a duplicate-repeat rejection for one demanded role.
+
+    Args:
+        evidence: Extracted benchmark evidence, including rows that failed thresholds.
+        role: Capacity role being qualified.
+        dimension: Capacity dimension required for that role.
+
+    Returns:
+        A duplicate identity or fingerprint reason for a qualified-threshold group,
+        or None when no such group reused an identity.
+    """
+    groups: dict[tuple[str, str], list[Evidence]] = {}
+    for item in evidence:
+        if not item.qualified or item.role != role or item.dimension != dimension:
+            continue
+        groups.setdefault((item.commit_sha, item.hardware_key), []).append(item)
+    reasons = [
+        reason
+        for grouped in groups.values()
+        if (reason := _duplicate_repeat_reason(grouped)) is not None
+    ]
+    if not reasons:
+        return None
+    return sorted(reasons)[0]
 
 
 def hardware_key(result: dict[str, Any]) -> str:
@@ -186,6 +259,7 @@ def extract_evidence(
     env = result["environment"]
     return Evidence(
         benchmark_id=str(result["benchmark_id"]),
+        fingerprint=result_fingerprint(result),
         commit_sha=str(env["commit_sha"]),
         hardware_key=hardware_key(result),
         hardware=dict(env.get("hardware", {})),
@@ -243,6 +317,8 @@ def grouped_qualified_evidence(
 
     Returns:
         Best conservative qualified evidence row for each role/dimension pair.
+        Groups that reuse a benchmark identity or result fingerprint are omitted
+        so one run cannot satisfy the independent-repeat minimum.
     """
     groups: dict[tuple[str, str, str, str], list[Evidence]] = {}
     for item in evidence:
@@ -253,7 +329,10 @@ def grouped_qualified_evidence(
 
     best: dict[tuple[str, str], dict[str, Any]] = {}
     for (role, dimension, commit_sha, hw_key), items in groups.items():
-        if len(items) < min_repeats:
+        if _duplicate_repeat_reason(items) is not None:
+            continue
+        independent_repeats = len({item.benchmark_id for item in items})
+        if independent_repeats < min_repeats:
             continue
         conservative_capacity = min(i.observed_capacity for i in items)
         candidate = {
@@ -262,7 +341,7 @@ def grouped_qualified_evidence(
             "commit_sha": commit_sha,
             "hardware_key": hw_key,
             "hardware": items[0].hardware,
-            "repeat_count": len(items),
+            "repeat_count": independent_repeats,
             "benchmark_ids": [i.benchmark_id for i in items],
             "observed_capacity_min": conservative_capacity,
             "observed_capacity_values": [i.observed_capacity for i in items],
@@ -291,6 +370,9 @@ def build_matrix(
     approved_benchmark_fingerprints: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build deployment node requirements strictly from qualified measured evidence.
+
+    Duplicate benchmark identities and duplicate result fingerprints are not
+    independent repeats and cannot produce QUALIFIED_FROM_MEASURED_EVIDENCE.
 
     Args:
         results: Phase-8 benchmark results.
@@ -387,11 +469,17 @@ def build_matrix(
                 }
                 continue
             if evidence_row is None:
+                duplicate_reason = _role_duplicate_reason(
+                    evidence,
+                    role=role,
+                    dimension=dimension,
+                )
                 roles[role] = {
                     "status": "UNQUALIFIED",
                     "dimension": dimension,
                     "demand": requested,
-                    "reason": f"no evidence with >= {min_repeats} qualified repeats",
+                    "reason": duplicate_reason
+                    or f"no evidence with >= {min_repeats} qualified repeats",
                 }
                 continue
 

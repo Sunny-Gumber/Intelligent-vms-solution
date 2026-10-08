@@ -1,3 +1,4 @@
+import copy
 import sys
 from pathlib import Path
 
@@ -259,3 +260,73 @@ def test_storage_repeatability_uses_write_mbps():
     group = reproducibility.build_report(results=results)["groups"][0]
     assert group["status"] == "PASS"
     assert group["metrics"]["capacity"]["dimension"] == "storage_write_mbps"
+
+
+def test_three_copies_of_one_benchmark_fail_independent_repeat_gate():
+    one_run = result(benchmark_id="same-run", throughput=1000, p95_ms=10.0)
+    copies = [copy.deepcopy(one_run) for _ in range(3)]
+
+    report = reproducibility.build_report(results=copies)
+
+    assert report["summary"] == {"groups": 1, "passed": 0, "failed": 1}
+    group = report["groups"][0]
+    assert group["status"] == "FAIL"
+    assert group["repeat_count"] == 1
+    reasons = " ".join(group["reasons"])
+    assert "duplicate benchmark identities" in reasons
+    assert "same-run" in reasons
+    assert "duplicate benchmark fingerprints" in reasons
+    assert len(group["benchmark_fingerprints"]) == 1
+    assert list(group["benchmark_fingerprints"]) == ["same-run"]
+
+
+def test_repeated_benchmark_id_with_different_payloads_is_not_three_repeats():
+    results = [
+        result(benchmark_id="same-run", throughput=1000, p95_ms=10.0),
+        result(benchmark_id="same-run", throughput=1000, p95_ms=10.2),
+        result(benchmark_id="same-run", throughput=1010, p95_ms=10.1),
+    ]
+
+    group = reproducibility.build_report(results=results)["groups"][0]
+
+    assert group["status"] == "FAIL"
+    assert group["repeat_count"] == 1
+    reasons = " ".join(group["reasons"])
+    assert "duplicate benchmark identities" in reasons
+    assert "same-run" in reasons
+    assert "duplicate benchmark fingerprints" not in reasons
+
+
+def test_extra_copy_does_not_satisfy_independent_repeat_gate():
+    results = [
+        result(benchmark_id="run-1", throughput=1000, p95_ms=10.0),
+        result(benchmark_id="run-2", throughput=980, p95_ms=10.5),
+        result(benchmark_id="run-3", throughput=1020, p95_ms=9.8),
+        result(benchmark_id="run-1", throughput=1005, p95_ms=10.1),
+    ]
+
+    group = reproducibility.build_report(results=results)["groups"][0]
+
+    assert group["status"] == "FAIL"
+    reasons = " ".join(group["reasons"])
+    assert "duplicate benchmark identities" in reasons
+    assert "run-1" in reasons
+    assert group["repeat_count"] == 3
+
+
+def test_three_distinct_benchmarks_still_pass_independent_repeat_gate():
+    results = [
+        result(benchmark_id="run-1", throughput=1000, p95_ms=10.0),
+        result(benchmark_id="run-2", throughput=980, p95_ms=10.5),
+        result(benchmark_id="run-3", throughput=1020, p95_ms=9.8),
+    ]
+
+    report = reproducibility.build_report(results=results)
+
+    assert report["summary"] == {"groups": 1, "passed": 1, "failed": 0}
+    group = report["groups"][0]
+    assert group["status"] == "PASS"
+    assert group["repeat_count"] == 3
+    assert group["benchmark_ids"] == ["run-1", "run-2", "run-3"]
+    assert len(group["benchmark_fingerprints"]) == 3
+    assert not any("duplicate" in reason for reason in group["reasons"])

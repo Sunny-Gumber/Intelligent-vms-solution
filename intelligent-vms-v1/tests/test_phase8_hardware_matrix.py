@@ -1,3 +1,4 @@
+import copy
 import sys
 from pathlib import Path
 
@@ -7,6 +8,7 @@ if str(TOOLS) not in sys.path:
 
 import phase8_benchmark_common as common
 import phase8_hardware_matrix as matrix
+import phase8_reproducibility as reproducibility
 
 
 def fake_result(
@@ -332,3 +334,143 @@ def test_changed_result_is_rejected_even_when_benchmark_id_was_approved():
 
     assert output["profiles"][0]["roles"]["event_ingest"]["status"] == "UNQUALIFIED"
     assert output["qa_fingerprint_mismatch_benchmark_ids"] == ["b3"]
+
+
+def test_three_copies_of_one_benchmark_cannot_qualify_hardware_matrix():
+    one_run = fake_result(benchmark_id="same-run", capacity=1000)
+    copies = [copy.deepcopy(one_run) for _ in range(3)]
+
+    output = matrix.build_matrix(
+        results=copies,
+        demand=demand(1500),
+        design_headroom_fraction=0.80,
+    )
+
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert "duplicate benchmark identities" in role["reason"]
+    assert "duplicate benchmark fingerprints" in role["reason"]
+    assert "same-run" in role["reason"]
+    assert output["qualified_evidence"] == []
+    assert "observed_capacity_per_node_min" not in role
+    assert "nodes_required" not in role
+
+
+def test_repeated_benchmark_id_cannot_qualify_even_when_payloads_differ():
+    output = matrix.build_matrix(
+        results=[
+            fake_result(benchmark_id="same-run", capacity=1000),
+            fake_result(benchmark_id="same-run", capacity=980),
+            fake_result(benchmark_id="same-run", capacity=1020),
+        ],
+        demand=demand(1500),
+    )
+
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert "duplicate benchmark identities" in role["reason"]
+    assert "duplicate benchmark fingerprints" not in role["reason"]
+    assert output["qualified_evidence"] == []
+    assert "observed_capacity_per_node_min" not in role
+
+
+def test_reproducibility_handoff_rejects_duplicated_benchmark_identity():
+    one_run = fake_result(benchmark_id="same-run", capacity=1000)
+    copies = [copy.deepcopy(one_run) for _ in range(3)]
+    report = reproducibility.build_report(results=copies)
+    assert report["groups"][0]["status"] == "FAIL"
+
+    approved = {}
+    for group in report["groups"]:
+        if group["status"] == "PASS":
+            approved.update(group["benchmark_fingerprints"])
+
+    output = matrix.build_matrix(
+        results=copies,
+        demand=demand(1500),
+        approved_benchmark_fingerprints=approved,
+    )
+
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in role["status"]
+
+
+def test_extra_copy_does_not_qualify_hardware_matrix():
+    output = matrix.build_matrix(
+        results=[
+            fake_result(benchmark_id="run-1", capacity=1000),
+            fake_result(benchmark_id="run-2", capacity=900),
+            fake_result(benchmark_id="run-3", capacity=950),
+            fake_result(benchmark_id="run-1", capacity=940),
+        ],
+        demand=demand(1500),
+    )
+
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert "duplicate benchmark identities" in role["reason"]
+    assert "run-1" in role["reason"]
+    assert output["qualified_evidence"] == []
+    assert "observed_capacity_per_node_min" not in role
+
+
+def test_duplicate_fingerprint_with_distinct_ids_cannot_qualify():
+    source = matrix.extract_evidence(
+        fake_result(benchmark_id="run-1", capacity=1000),
+        min_duration_seconds=300,
+        min_warmup_seconds=30,
+        max_failure_rate=0.001,
+        max_cpu_p95_pct=70,
+        max_ram_p95_pct=75,
+    )
+    assert source is not None
+    copies = [
+        matrix.Evidence(
+            benchmark_id=f"run-{index}",
+            fingerprint=source.fingerprint,
+            commit_sha=source.commit_sha,
+            hardware_key=source.hardware_key,
+            hardware=source.hardware,
+            role=source.role,
+            dimension=source.dimension,
+            observed_capacity=source.observed_capacity,
+            duration_seconds=source.duration_seconds,
+            warmup_seconds=source.warmup_seconds,
+            failure_rate=source.failure_rate,
+            cpu_p95_pct=source.cpu_p95_pct,
+            ram_p95_pct=source.ram_p95_pct,
+            qualified=True,
+            reasons=(),
+        )
+        for index in range(3)
+    ]
+
+    assert matrix.grouped_qualified_evidence(copies, min_repeats=3) == {}
+    reason = matrix._role_duplicate_reason(
+        copies,
+        role="event_ingest",
+        dimension="events_per_second",
+    )
+    assert reason == "duplicate benchmark fingerprints are not independent repeats"
+
+
+def test_three_distinct_benchmarks_still_qualify_hardware_matrix():
+    results = [
+        fake_result(benchmark_id="run-1", capacity=1000),
+        fake_result(benchmark_id="run-2", capacity=900),
+        fake_result(benchmark_id="run-3", capacity=950),
+    ]
+
+    output = matrix.build_matrix(
+        results=results,
+        demand=demand(1500),
+        design_headroom_fraction=0.80,
+    )
+
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "QUALIFIED_FROM_MEASURED_EVIDENCE"
+    assert role["observed_capacity_per_node_min"] == 900
+    assert role["evidence"]["repeat_count"] == 3
+    assert role["evidence"]["benchmark_ids"] == ["run-1", "run-2", "run-3"]

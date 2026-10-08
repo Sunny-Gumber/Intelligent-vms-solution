@@ -23,6 +23,21 @@ def _num(value: Any) -> float | None:
     return None
 
 
+def _repeated_values(values: list[str]) -> list[str]:
+    """Return values that occur more than once, in sorted order.
+
+    Args:
+        values: Benchmark identities or result fingerprints in submission order.
+
+    Returns:
+        Deterministic list of values whose count is greater than one.
+    """
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return sorted(value for value, count in counts.items() if count > 1)
+
+
 def canonical_workload(result: dict[str, Any]) -> str:
     """Serialize workload type/config into a deterministic comparison string.
 
@@ -162,13 +177,31 @@ def review_group(
 
     Returns:
         PASS/FAIL group review with fingerprints, reasons, warnings and metrics.
+        Duplicate benchmark identities and duplicate result fingerprints fail the
+        group and do not increase the independent repeat count.
     """
     reasons: list[str] = []
     warnings: list[str] = []
 
-    repeats = len(results)
-    if repeats < min_repeats:
-        reasons.append(f"repeat_count {repeats} < required {min_repeats}")
+    identities = [str(result["benchmark_id"]) for result in results]
+    fingerprints = [result_fingerprint(result) for result in results]
+    duplicate_identities = _repeated_values(identities)
+    duplicate_fingerprints = _repeated_values(fingerprints)
+    # List length is not evidence. One copied run must not satisfy min_repeats.
+    independent_repeats = min(len(set(identities)), len(set(fingerprints)))
+    submitted_count = len(results)
+
+    if duplicate_identities:
+        reasons.append(
+            "duplicate benchmark identities are not independent repeats: "
+            + ", ".join(duplicate_identities)
+        )
+    if duplicate_fingerprints:
+        reasons.append("duplicate benchmark fingerprints are not independent repeats")
+    if independent_repeats < min_repeats:
+        reasons.append(
+            f"repeat_count {independent_repeats} < required {min_repeats}"
+        )
 
     durations = [float(r["workload"].get("duration_seconds") or 0.0) for r in results]
     warmups = [float(r["workload"].get("warmup_seconds") or 0.0) for r in results]
@@ -229,7 +262,7 @@ def review_group(
 
     if not capacity_values:
         warnings.append("no hardware-qualification capacity metric is defined for this workload")
-    elif len(capacity_values) != repeats or len(capacity_dimensions) != 1:
+    elif len(capacity_values) != submitted_count or len(capacity_dimensions) != 1:
         reasons.append("capacity metric is missing or inconsistent across repeats")
     else:
         if capacity_cv is not None and capacity_cv > max_capacity_cv:
@@ -245,7 +278,7 @@ def review_group(
                 f"{max_capacity_relative_range:.4f}"
             )
 
-    if len(p95_latencies) != repeats:
+    if len(p95_latencies) != submitted_count:
         warnings.append("p95 latency is not available for every repeat")
     elif p95_latency_cv is not None and p95_latency_cv > max_p95_latency_cv:
         reasons.append(
@@ -287,10 +320,10 @@ def review_group(
     commit_sha = str(results[0]["environment"]["commit_sha"]) if results else ""
     hw_key = hardware_key(results[0]) if results else ""
     workload_hash = workload_key(results[0]) if results else ""
-    benchmark_ids = [str(r["benchmark_id"]) for r in results]
+    benchmark_ids = identities
     benchmark_fingerprints = {
-        str(r["benchmark_id"]): result_fingerprint(r)
-        for r in results
+        identity: fingerprint
+        for identity, fingerprint in zip(identities, fingerprints, strict=True)
     }
 
     return {
@@ -306,7 +339,7 @@ def review_group(
             if results
             else {}
         ),
-        "repeat_count": repeats,
+        "repeat_count": independent_repeats,
         "benchmark_ids": benchmark_ids,
         "benchmark_fingerprints": benchmark_fingerprints,
         "source_files": [r.get("_source_file") for r in results],
