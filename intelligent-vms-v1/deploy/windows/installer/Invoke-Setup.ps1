@@ -178,7 +178,10 @@ function Uninstall-Managed {
   $owned=if($state){[string]$state.components}else{$Components}
   if($owned -in @("Server","Both")){
     $ctl=Join-Path $ServerRoot "app\deploy\windows\Vms-Windows.ps1"
-    if(Test-Path $ctl){try{& $ctl -Action Uninstall}catch{}}
+    if(Test-Path $ctl){
+      & $ctl -Action Uninstall
+      if($LASTEXITCODE -ne 0){throw "VMS service stop/remove failed; uninstall aborted before binary removal"}
+    }
     foreach($p in @((Join-Path $ServerRoot "app"),(Join-Path $ServerRoot "runtime"))){Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue}
   }
   if($owned -in @("Client","Both")){

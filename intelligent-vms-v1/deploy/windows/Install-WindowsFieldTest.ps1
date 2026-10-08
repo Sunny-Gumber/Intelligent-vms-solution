@@ -219,6 +219,7 @@ if ($Upgrade) {
     if (-not (Test-Path $EnvFile)) { throw "Upgrade requested but protected VMS configuration is missing." }
     & (Join-Path $SourceRoot "deploy\windows\Vms-Windows.ps1") -Action Backup
     & (Join-Path $SourceRoot "deploy\windows\Vms-Windows.ps1") -Action Stop
+    if ($LASTEXITCODE -ne 0) { throw "VMS service stop failed; upgrade aborted before application replacement" }
 }
 
 Write-Host "windows_field_test_stage=runtime_install"
