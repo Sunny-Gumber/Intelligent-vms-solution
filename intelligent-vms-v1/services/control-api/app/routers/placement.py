@@ -331,7 +331,7 @@ async def run_placement(
         principal: Authorized administrator.
 
     Returns:
-        PlacementRunRead containing scan/move/unplaced/deferred counts and cursor.
+        PlacementRunRead containing scan, move, unplaced, deferred, and renewed counts plus cursor.
 
     Raises:
         Exception: Placement service failures propagate to the API error handler.

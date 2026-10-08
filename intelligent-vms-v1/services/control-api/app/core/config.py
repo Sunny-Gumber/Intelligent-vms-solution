@@ -1,7 +1,8 @@
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.effective_authority import DEFAULT_FENCE_EXPIRY_GRACE_SECONDS
+from app.core.placement_renewal import assert_placement_renewal_budget
 
 
 class Settings(BaseSettings):
@@ -141,9 +142,38 @@ class Settings(BaseSettings):
     placement_offline_autonomy_seconds: int = 0
     placement_batch_size: int = 1000
     placement_max_moves_per_run: int = 200
+    # Lease renewal does not follow the camera-scan page above. The controller
+    # must visit every assignment inside the ceiling before the lease expires:
+    # ceil(max_assignments / renewal_batch) * interval < placement_lease_seconds.
+    # This is a fail-closed budget, not a measured capacity claim. Other fixes
+    # may add settings in this file; keep this block together.
+    placement_interval_seconds: float = Field(default=10.0, gt=0)
+    placement_renewal_batch_size: int = Field(default=5000, ge=1)
+    placement_renewal_max_assignments: int = Field(default=21000, ge=1)
     placement_execution_enabled: bool = False
     placement_local_node_id: str = "media-local-01"
     node_fence_snapshot_max_items: int = 10000
+
+    @model_validator(mode="after")
+    def reject_unsatisfiable_placement_renewal_budget(self) -> "Settings":
+        """Reject a renewal cadence that cannot visit every configured owner in time.
+
+        Returns:
+            This settings instance when the renewal cycle is strictly shorter
+            than the lease.
+
+        Raises:
+            PlacementRenewalBudgetError: When the configured ceiling, batch and
+                interval cannot refresh every owner before lease expiry. The
+                lease is not reduced to force a fit.
+        """
+        assert_placement_renewal_budget(
+            max_assignments=self.placement_renewal_max_assignments,
+            batch_size=self.placement_renewal_batch_size,
+            interval_seconds=self.placement_interval_seconds,
+            lease_seconds=self.placement_lease_seconds,
+        )
+        return self
 
 
 settings = Settings()
