@@ -14,6 +14,11 @@ sys.path.insert(0, str(CONTROL))
 from app.core.config import settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.models import entities  # noqa: F401,E402
+# Placement models live in a sibling module. Autogenerate only sees tables
+# registered on Base.metadata, so omitting this import makes `alembic check`
+# propose DROP TABLE for infrastructure_nodes, site_regions,
+# placement_assignments, and placement_revocations.
+from app.models import placement  # noqa: F401,E402
 
 config = context.config
 if config.config_file_name is not None:
