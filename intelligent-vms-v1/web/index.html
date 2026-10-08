@@ -136,7 +136,7 @@ code{color:#9cdcfe}@media(max-width:720px){.event{grid-template-columns:1fr 1fr}
 </main>
 <script>
 const API='/api/v1';
-let authenticated=false;
+let authenticated=false;let authEpoch=0;
 let deploymentCapabilities={deployment_profile:'enterprise-distributed',event_history:true,alarm_processing:true,ai_ui:true,distributed_placement:false};
 let cameraCache=[];let healthMap={};let aiCameraId=null;let aiPolicyCache=null;let liveSessions=new Map();let pendingLive=new Map();let snapshotBusy=new Set();let releasedWhepUrls=new Set();
 let liveWorkspace={tileCount:4,activeTile:0,assignments:[null,null,null,null],roles:[null,null,null,null],generations:[0,0,0,0]};
@@ -161,8 +161,12 @@ async function apiFetch(url,opts={}){
  }
  return fetch(url,{...opts,headers,credentials:'same-origin'});
 }
+function noteAuthLoss(){authEpoch+=1}
+function authAllowsLive(epoch){return authenticated&&epoch===authEpoch}
 function setAuthenticated(value,info=null){
- authenticated=!!value;
+ const next=!!value;
+ if(!next)noteAuthLoss();
+ authenticated=next;
  document.body.classList.toggle('auth-required',!authenticated);
  document.getElementById('authPanel').style.display=authenticated?'none':'block';
  const signOut=document.getElementById('signOut'),identity=document.getElementById('identity');
@@ -178,10 +182,13 @@ async function jsonFetch(url,opts={}){
  return r.json();
 }
 async function initializeSession(){
- const message=document.getElementById('authMessage');
+ const epoch=authEpoch,message=document.getElementById('authMessage');
  try{
   const info=await jsonFetch(`${API}/auth/session`);
-  setAuthenticated(true,info);await refreshAll();
+  if(epoch!==authEpoch)return;
+  setAuthenticated(true,info);
+  if(!authAllowsLive(epoch))return;
+  await refreshAll();
  }catch(e){
   setAuthenticated(false);
   message.textContent=String(e.message||'Authentication required');
@@ -189,19 +196,31 @@ async function initializeSession(){
  }
 }
 async function loginWithToken(event){
+ const epoch=authEpoch;
  event.preventDefault();
  const input=document.getElementById('authToken'),message=document.getElementById('authMessage'),token=input.value.trim();
  if(!token){message.textContent='Paste a valid VMS access token.';return}
  message.textContent='Authenticating…';
  try{
   const r=await fetch(`${API}/auth/session`,{method:'POST',headers:{Authorization:'Bearer '+token},credentials:'same-origin'});
+  if(epoch!==authEpoch)return;
   input.value='';
   if(!r.ok)throw new Error(await r.text());
-  const info=await r.json();setAuthenticated(true,info);message.textContent='Authenticated.';await refreshAll();
+  const info=await r.json();
+  if(epoch!==authEpoch)return;
+  setAuthenticated(true,info);
+  if(!authAllowsLive(epoch))return;
+  message.textContent='Authenticated.';await refreshAll();
  }catch(e){input.value='';setAuthenticated(false);message.textContent='Login failed: '+String(e.message||'invalid token')}
 }
 async function signOut(){
- await stopLiveSessions();closePlayback(false);closeCameraSetup();setAuthenticated(false);
+ noteAuthLoss();authenticated=false;
+ document.body.classList.toggle('auth-required',true);
+ document.getElementById('authPanel').style.display='block';
+ document.getElementById('signOut').hidden=true;
+ document.getElementById('identity').textContent='';
+ cameraCache=[];closePlayback(false);closeCameraSetup();
+ await stopLiveSessions();renderLiveGrid();
  document.getElementById('authMessage').textContent='Signed out. Paste a valid VMS access token to continue.';
  try{await apiFetch(`${API}/auth/session`,{method:'DELETE'})}catch{}
 }
@@ -227,6 +246,7 @@ function cameraSetupMode(){
 }
 function closeCameraSetup(){document.getElementById('cameraSetup').style.display='none';document.getElementById('camPassword').value=''}
 async function saveCamera(event){
+ const epoch=authEpoch;
  event.preventDefault();
  const password=document.getElementById('camPassword'),message=document.getElementById('cameraSetupMessage');
  const optional=id=>{const value=document.getElementById(id).value.trim();return value||null};
@@ -254,6 +274,7 @@ async function saveCamera(event){
  try{
   const url=replace?`${API}/cameras/${encodeURIComponent(cameraId)}/replace`:`${API}/cameras`;
   await jsonFetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(!authAllowsLive(epoch))return;
   message.textContent=replace?'Camera source replaced.':'Camera added. Select it in an active live tile.';await refreshCameras();
  }catch{message.textContent='Camera source request failed. Check target policy, protocol and certificate trust.'}
  finally{password.value=''}
@@ -398,9 +419,10 @@ function abandonLiveStart(tileIndex,pc,sessionUrl,access){
  if(sessionUrl&&access&&rememberWhepDelete(sessionUrl))if(sessionUrl)fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true}).catch(()=>{});
 }
 async function startTile(tileIndex,cameraId,role=liveWorkspace.roles[tileIndex]){
+ const epoch=authEpoch;if(!authAllowsLive(epoch))return;
  const current=liveWorkspace.generations[tileIndex]=(liveWorkspace.generations[tileIndex]||0)+1;
  let access=null,pc=null,sessionUrl=null,mediaStream=null;
- const stale=()=>current!==liveWorkspace.generations[tileIndex]||liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role;
+ const stale=()=>!authAllowsLive(epoch)||current!==liveWorkspace.generations[tileIndex]||liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role;
  try{
   await detachTile(tileIndex);
   if(stale())return;
@@ -412,8 +434,8 @@ async function startTile(tileIndex,cameraId,role=liveWorkspace.roles[tileIndex])
   if(stale())return;
   pc=new RTCPeerConnection({iceServers:parseIceServers(options.headers.get('Link'))});pc.addTransceiver('video',{direction:'recvonly'});pc.addTransceiver('audio',{direction:'recvonly'});
   pendingLive.set(tileIndex,{pc,sessionUrl:null,token:access.access_token,cameraId,role,generation:current,stream:null,state:'CONNECTING'});
-  pc.ontrack=e=>{if(current!==liveWorkspace.generations[tileIndex])return;if(e.streams&&e.streams[0]){mediaStream=e.streams[0];const video=document.getElementById('tile-video-'+tileIndex);if(video)video.srcObject=mediaStream;const pending=pendingLive.get(tileIndex);if(pending)pending.stream=mediaStream}};
-  pc.onconnectionstatechange=()=>{if(current!==liveWorkspace.generations[tileIndex])return;if(pc.connectionState==='connected')setTileState(tileIndex,'LIVE');if(['failed','disconnected'].includes(pc.connectionState)){setTileState(tileIndex,'FAILED','connection lost');cleanupTile(tileIndex)}};
+  pc.ontrack=e=>{if(!authAllowsLive(epoch)||current!==liveWorkspace.generations[tileIndex])return;if(e.streams&&e.streams[0]){mediaStream=e.streams[0];const video=document.getElementById('tile-video-'+tileIndex);if(video)video.srcObject=mediaStream;const pending=pendingLive.get(tileIndex);if(pending)pending.stream=mediaStream}};
+  pc.onconnectionstatechange=()=>{if(!authAllowsLive(epoch)||current!==liveWorkspace.generations[tileIndex])return;if(pc.connectionState==='connected')setTileState(tileIndex,'LIVE');if(['failed','disconnected'].includes(pc.connectionState)){setTileState(tileIndex,'FAILED','connection lost');cleanupTile(tileIndex)}};
   if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
   const offer=await pc.createOffer();if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
   await pc.setLocalDescription(offer);if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
@@ -490,29 +512,42 @@ async function stopManualRecording(){
  try{const stopped=await jsonFetch(`${API}/manual-recordings/${encodeURIComponent(id)}/stop`,{method:'POST'});manualSessions=manualSessions.filter(x=>x.id!==id);recentManualSessions=[stopped,...recentManualSessions.filter(x=>x.id!==id)].slice(0,20);renderManualState();const a=document.createElement('a');a.href=`${API}/manual-recordings/${encodeURIComponent(stopped.id)}/export`;a.rel='noopener';a.click()}catch(e){document.getElementById('manualStatus').textContent=String(e.message||'manual recording stop failed')}
 }
 async function assignCamera(tileIndex,cameraId){
+ const epoch=authEpoch;if(!authAllowsLive(epoch))return;
  if(cameraId&&liveWorkspace.assignments.some((id,i)=>i!==tileIndex&&id===cameraId)){renderLiveGrid();return}
- await cleanupTile(tileIndex);liveWorkspace.assignments[tileIndex]=cameraId||null;const c=cameraCache.find(x=>x.id===cameraId);liveWorkspace.roles[tileIndex]=c?defaultRole(c):null;renderLiveGrid();if(tileIndex===liveWorkspace.activeTile)refreshRecordingControls();if(cameraId)startTile(tileIndex,cameraId,liveWorkspace.roles[tileIndex]);
+ await cleanupTile(tileIndex);
+ if(!authAllowsLive(epoch))return;
+ liveWorkspace.assignments[tileIndex]=cameraId||null;const c=cameraCache.find(x=>x.id===cameraId);liveWorkspace.roles[tileIndex]=c?defaultRole(c):null;renderLiveGrid();if(tileIndex===liveWorkspace.activeTile)refreshRecordingControls();if(cameraId&&authAllowsLive(epoch))startTile(tileIndex,cameraId,liveWorkspace.roles[tileIndex]);
 }
 async function removeCamera(i){await assignCamera(i,'')}
-async function switchRole(i,role){const c=cameraCache.find(x=>x.id===liveWorkspace.assignments[i]);if(!c||!(c.available_live_roles||[]).includes(role))return;liveWorkspace.roles[i]=role;setTileState(i,'LOADING','switching to '+role.toUpperCase());await startTile(i,c.id,role);renderLiveGrid()}
-function retryTile(i){const id=liveWorkspace.assignments[i],role=liveWorkspace.roles[i];if(id&&role)startTile(i,id,role)}
+async function switchRole(i,role){
+ const epoch=authEpoch;if(!authAllowsLive(epoch))return;
+ const c=cameraCache.find(x=>x.id===liveWorkspace.assignments[i]);if(!c||!(c.available_live_roles||[]).includes(role))return;liveWorkspace.roles[i]=role;setTileState(i,'LOADING','switching to '+role.toUpperCase());await startTile(i,c.id,role);if(!authAllowsLive(epoch))return;renderLiveGrid()
+}
+function retryTile(i){const epoch=authEpoch;if(!authAllowsLive(epoch))return;const id=liveWorkspace.assignments[i],role=liveWorkspace.roles[i];if(id&&role)startTile(i,id,role)}
 async function setLayout(count){
+ const epoch=authEpoch;if(!authAllowsLive(epoch))return;
  if(![1,4,9,16].includes(count))return;
- if(count<liveWorkspace.tileCount){await Promise.allSettled(Array.from({length:liveWorkspace.tileCount-count},(_,n)=>cleanupTile(count+n)));liveWorkspace.assignments=liveWorkspace.assignments.slice(0,count);liveWorkspace.roles=liveWorkspace.roles.slice(0,count);liveWorkspace.generations=liveWorkspace.generations.slice(0,count)}
+ if(count<liveWorkspace.tileCount){await Promise.allSettled(Array.from({length:liveWorkspace.tileCount-count},(_,n)=>cleanupTile(count+n)));if(!authAllowsLive(epoch))return;liveWorkspace.assignments=liveWorkspace.assignments.slice(0,count);liveWorkspace.roles=liveWorkspace.roles.slice(0,count);liveWorkspace.generations=liveWorkspace.generations.slice(0,count)}
  else{while(liveWorkspace.assignments.length<count)liveWorkspace.assignments.push(null);while(liveWorkspace.roles.length<count)liveWorkspace.roles.push(null);while(liveWorkspace.generations.length<count)liveWorkspace.generations.push(0)}
+ if(!authAllowsLive(epoch))return;
  liveWorkspace.tileCount=count;liveWorkspace.activeTile=Math.min(liveWorkspace.activeTile,count-1);renderLiveGrid();refreshRecordingControls();
- liveWorkspace.assignments.forEach((id,i)=>{if(id&&!liveSessions.has(i))startTile(i,id,liveWorkspace.roles[i])});
+ if(!authAllowsLive(epoch))return;
+ liveWorkspace.assignments.forEach((id,i)=>{if(id&&!liveSessions.has(i)&&authAllowsLive(epoch))startTile(i,id,liveWorkspace.roles[i])});
 }
 async function refreshCameras(){
+ const epoch=authEpoch;if(!authAllowsLive(epoch))return;
  try{
   cameraCache=await jsonFetch(`${API}/cameras`);
+  if(!authAllowsLive(epoch))return;
   const existing=document.getElementById('camExisting'),selected=existing.value;
   existing.replaceChildren(new Option('Select camera',''),...cameraCache.map(c=>new Option(c.name,c.id)));existing.value=selected;
   const authorizedIds=new Set(cameraCache.map(c=>c.id));
-  for(let i=0;i<liveWorkspace.assignments.length;i++){if(liveWorkspace.assignments[i]&&!authorizedIds.has(liveWorkspace.assignments[i])){await cleanupTile(i);liveWorkspace.assignments[i]=null;liveWorkspace.roles[i]=null}}
+  for(let i=0;i<liveWorkspace.assignments.length;i++){if(liveWorkspace.assignments[i]&&!authorizedIds.has(liveWorkspace.assignments[i])){await cleanupTile(i);if(!authAllowsLive(epoch))return;liveWorkspace.assignments[i]=null;liveWorkspace.roles[i]=null}}
+  if(!authAllowsLive(epoch))return;
   renderLiveGrid();refreshRecordingControls();
   if(playbackState.cameraId&&!authorizedIds.has(playbackState.cameraId))closePlayback(false);
-  liveWorkspace.assignments.forEach((id,i)=>{if(id&&!liveSessions.has(i))startTile(i,id,liveWorkspace.roles[i])});
+  if(!authAllowsLive(epoch))return;
+  liveWorkspace.assignments.forEach((id,i)=>{if(id&&!liveSessions.has(i)&&authAllowsLive(epoch))startTile(i,id,liveWorkspace.roles[i])});
  }catch{document.getElementById('content').innerHTML='<div class="empty">Control API unavailable or authorization required.</div>'}
 }
 async function refreshEvents(cameraId=''){
@@ -779,14 +814,16 @@ function closePlayback(scrollToLive=false){
 function returnToLive(){closePlayback(true)}
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':'&quot;'}[c]))}
 async function refreshAll(){
- await refreshCapabilities();
- await refreshManualRecordings();
- await refreshHealth();
+ const epoch=authEpoch;if(!authAllowsLive(epoch))return;
+ await refreshCapabilities();if(!authAllowsLive(epoch))return;
+ await refreshManualRecordings();if(!authAllowsLive(epoch))return;
+ await refreshHealth();if(!authAllowsLive(epoch))return;
  const tasks=[refreshCameras()];
  if(deploymentCapabilities.event_history)tasks.push(refreshEvents());
  if(deploymentCapabilities.alarm_processing)tasks.push(refreshAlarms());
  if(deploymentCapabilities.ai_ui)tasks.push(refreshAIStatus());
  await Promise.all(tasks);
+ if(!authAllowsLive(epoch))return;
 }
 window.addEventListener('pagehide',()=>{closePlayback(false)});
 window.addEventListener('pagehide',()=>{stopLiveSessions()});

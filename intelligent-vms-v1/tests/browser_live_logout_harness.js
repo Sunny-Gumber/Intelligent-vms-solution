@@ -24,6 +24,9 @@ const SCENARIOS = new Set([
   "retry-overlap-logout-401",
   "sign-out-during-sdp-body",
   "relogin-before-old-post",
+  "layout-shrink-logout-rejected",
+  "relogin-cameras-held-logout-rejected",
+  "auth-epoch-held-steps",
 ]);
 
 const harness = {
@@ -41,6 +44,12 @@ const harness = {
   failNextHealth: false,
   logoutMode: null,
   inflight: 0,
+  holds: [],
+  holdTarget: 1,
+  holdCameras: false,
+  holdLogin: false,
+  holdLayoutDelete: false,
+  createdSessions: [],
 };
 
 function decodeEntities(text) {
@@ -357,6 +366,7 @@ function jsonResponse(body, status = 200) {
 }
 
 function whepResponse(deferBody, location = SESSION_URL) {
+  harness.createdSessions.push(location);
   const headers = new Headers({
     Location: location,
     "Content-Type": "application/sdp",
@@ -384,6 +394,32 @@ function isWhep(href) {
   return pathnameOf(href).endsWith("/whep");
 }
 
+function sessionLocation(scenario) {
+  if (scenario === "layout-shrink-logout-rejected" || scenario === "relogin-cameras-held-logout-rejected" || scenario === "auth-epoch-held-steps") {
+    return `https://media.example/whep/sessions/s-${harness.whepPostCount}`;
+  }
+  return SESSION_URL;
+}
+
+function cameraList() {
+  return [
+    { id: "cam-1", name: "Gate", site_id: "site-01", tenant_id: "tenant-a", available_live_roles: ["main"] },
+    { id: "cam-2", name: "Dock", site_id: "site-01", tenant_id: "tenant-a", available_live_roles: ["main"] },
+  ];
+}
+
+function holdUntilRelease(build) {
+  return new Promise((resolve) => {
+    harness.holds.push(() => resolve(build()));
+    if (harness.holds.length >= harness.holdTarget) harness.reachedHold = true;
+  });
+}
+
+function releaseHolds() {
+  const pending = harness.holds.splice(0);
+  for (const release of pending) release();
+}
+
 function route(method, href, scenario) {
   const pathname = pathnameOf(href);
   if (method === "OPTIONS" && isWhep(href)) return new Response("", { status: 200 });
@@ -401,9 +437,13 @@ function route(method, href, scenario) {
     }
     if (scenario === "relogin-before-old-post") return whepResponse(false, RESTARTED_SESSION_URL);
     if (scenario === "deferred-sdp-sign-out" || scenario === "sign-out-during-sdp-body") return whepResponse(true);
-    return whepResponse(false);
+    return whepResponse(false, sessionLocation(scenario));
   }
   if (method === "DELETE" && href.startsWith("https://media.example/")) {
+    if (harness.holdLayoutDelete && harness.mediaDeletes.length === 1) {
+      harness.holdLayoutDelete = false;
+      return holdUntilRelease(() => new Response(null, { status: 200 }));
+    }
     const holdCleanupDelete = scenario.startsWith("retry-overlap-") && harness.mediaDeletes.length === 1;
     if (holdCleanupDelete) {
       harness.reachedHold = true;
@@ -421,11 +461,16 @@ function route(method, href, scenario) {
     });
   }
   if (pathname === "/api/v1/auth/session" && method === "POST") {
-    return jsonResponse({
+    const body = () => jsonResponse({
       tenant_id: "tenant-a",
       roles: ["operator"],
       browser_session_enabled: true,
     });
+    if (harness.holdLogin) {
+      harness.holdLogin = false;
+      return holdUntilRelease(body);
+    }
+    return body();
   }
   if (pathname === "/api/v1/auth/session" && method === "DELETE") {
     if (harness.logoutMode === "reject") throw new Error("logout failed");
@@ -461,13 +506,11 @@ function route(method, href, scenario) {
   }
   if (pathname === "/api/v1/health/cameras") return jsonResponse([]);
   if (pathname === "/api/v1/cameras" && method === "GET") {
-    return jsonResponse([{
-      id: "cam-1",
-      name: "Gate",
-      site_id: "site-01",
-      tenant_id: "tenant-a",
-      available_live_roles: ["main"],
-    }]);
+    if (harness.holdCameras) {
+      harness.holdCameras = false;
+      return holdUntilRelease(() => jsonResponse(cameraList()));
+    }
+    return jsonResponse(cameraList());
   }
   if (pathname === "/api/v1/events") return jsonResponse([]);
   if (pathname === "/api/v1/alarms") return jsonResponse([]);
@@ -647,7 +690,7 @@ async function runScenario(scenario, htmlPath) {
     fetch: pageFetch(scenario),
   });
 
-  const source = `${script}\nglobalThis.__vms = {\n  signOut,\n  assignCamera,\n  refreshHealth,\n  retryTile,\n  loginWithToken,\n  inspect() {\n    return {\n      authenticated,\n      liveSessionCount: liveSessions.size,\n    };\n  },\n};\n`;
+  const source = `${script}\nglobalThis.__vms = {\n  signOut,\n  assignCamera,\n  setLayout,\n  refreshCameras,\n  refreshHealth,\n  retryTile,\n  loginWithToken,\n  inspect() {\n    return {\n      authenticated,\n      liveSessionCount: liveSessions.size,\n    };\n  },\n};\n`;
   vm.runInContext(source, context, { filename: htmlPath });
   await waitFor(
     () => harness.inflight === 0 && context.__vms.inspect().authenticated === true,
@@ -662,6 +705,15 @@ async function runScenario(scenario, htmlPath) {
   }
   if (scenario === "relogin-before-old-post") {
     return runReloginBeforeOldPost(context, document, htmlPath, script.length);
+  }
+  if (scenario === "layout-shrink-logout-rejected") {
+    return runLayoutShrinkLogout(context, document, htmlPath, script.length);
+  }
+  if (scenario === "relogin-cameras-held-logout-rejected") {
+    return runReloginCamerasHeld(context, document, htmlPath, script.length);
+  }
+  if (scenario === "auth-epoch-held-steps") {
+    return runAuthEpochHeldSteps(context, document, htmlPath, script.length);
   }
 
   const assigned = context.__vms.assignCamera(0, "cam-1");
@@ -716,7 +768,93 @@ function observe(scenario, context, document, htmlPath, scriptBytes) {
     peer_closed: Boolean(peer && peer.closed),
     remote_description_applied: Boolean(peer && peer.remoteDescriptionApplied),
     unknown_requests: harness.unknown,
+    tile_states: tileStates(document),
+    whep_sessions: harness.createdSessions.slice(),
   };
+}
+
+function tileStates(document) {
+  const states = [];
+  for (let index = 0; index < 16; index += 1) {
+    const tile = document.getElementById(`tile-state-${index}`);
+    if (!tile) break;
+    states.push(tile.textContent);
+  }
+  return states;
+}
+
+async function settleSignedOut(context) {
+  let idleTurns = 0;
+  await waitFor(() => {
+    const openPeer = harness.peers.some((peer) => !peer.closed);
+    if (context.__vms.inspect().liveSessionCount > 0 || openPeer) return true;
+    if (harness.inflight === 0) idleTurns += 1;
+    else idleTurns = 0;
+    return idleTurns >= 10;
+  }, "signed-out settlement");
+}
+
+async function establishLiveTiles(context, count) {
+  const cameras = ["cam-1", "cam-2"];
+  for (let index = 0; index < count; index += 1) {
+    await context.__vms.assignCamera(index, cameras[index]);
+  }
+  await waitFor(() => context.__vms.inspect().liveSessionCount === count, `${count} live tiles`);
+}
+
+async function runLayoutShrinkLogout(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 2);
+  harness.holdLayoutDelete = true;
+  harness.holdTarget = 1;
+  harness.holds = [];
+  harness.reachedHold = false;
+  const layout = context.__vms.setLayout(1);
+  await waitFor(() => harness.reachedHold, "removed tile DELETE hold");
+  harness.logoutMode = "reject";
+  await context.__vms.signOut();
+  releaseHolds();
+  await layout;
+  await settleSignedOut(context);
+  return observe("layout-shrink-logout-rejected", context, document, htmlPath, scriptBytes);
+}
+
+async function runReloginCamerasHeld(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 1);
+  await context.__vms.signOut();
+  harness.holdCameras = true;
+  harness.holdTarget = 1;
+  harness.holds = [];
+  harness.reachedHold = false;
+  document.getElementById("authToken").value = "field-token";
+  const login = context.__vms.loginWithToken({ preventDefault() {} });
+  await waitFor(() => harness.reachedHold, "camera list hold");
+  harness.logoutMode = "reject";
+  await context.__vms.signOut();
+  releaseHolds();
+  await login;
+  await settleSignedOut(context);
+  return observe("relogin-cameras-held-logout-rejected", context, document, htmlPath, scriptBytes);
+}
+
+async function runAuthEpochHeldSteps(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 2);
+  harness.holdLayoutDelete = true;
+  harness.holdCameras = true;
+  harness.holdLogin = true;
+  harness.holdTarget = 3;
+  harness.holds = [];
+  harness.reachedHold = false;
+  const layout = context.__vms.setLayout(1);
+  const refresh = context.__vms.refreshCameras();
+  document.getElementById("authToken").value = "field-token";
+  const login = context.__vms.loginWithToken({ preventDefault() {} });
+  await waitFor(() => harness.holds.length >= 3, "layout, camera, and login holds");
+  harness.logoutMode = "reject";
+  await context.__vms.signOut();
+  releaseHolds();
+  await Promise.allSettled([layout, refresh, login]);
+  await settleSignedOut(context);
+  return observe("auth-epoch-held-steps", context, document, htmlPath, scriptBytes);
 }
 
 async function settleOverlap(context) {

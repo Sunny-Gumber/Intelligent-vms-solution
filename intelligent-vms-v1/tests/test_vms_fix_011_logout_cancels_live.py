@@ -210,6 +210,48 @@ def test_relogin_before_old_post_deletes_old_session_and_keeps_new_live():
     assert RESTARTED_SESSION_URL not in {item["url"] for item in result["media_deletes"]}
 
 
+def assert_signed_out_without_live(result: dict) -> None:
+    """A resumed layout, refresh, or login must not leave live video after sign-out.
+
+    Args:
+        result: Observations after every held step was released.
+    """
+    assert result["script_bytes"] > 10000
+    assert str(result["page_path"]).endswith("web/index.html")
+    assert result["authenticated"] is False
+    assert result["auth_required"] is True
+    assert result["auth_panel_display"] == "block"
+    assert result["live_session_count"] == 0
+    assert result["open_peer_count"] == 0
+    assert result["unknown_requests"] == []
+    assert result["whep_sessions"]
+    assert all(not str(state).startswith("LIVE") for state in result["tile_states"])
+    deleted = {item["url"] for item in result["media_deletes"]}
+    assert set(result["whep_sessions"]) <= deleted
+    assert all(item["authorization"] == GRANT for item in result["media_deletes"])
+
+
+def test_layout_shrink_during_failed_logout_does_not_go_live():
+    """setLayout must not restart a tile when logout fails while a shrink DELETE is held."""
+    result = run_scenario("layout-shrink-logout-rejected")
+    assert_signed_out_without_live(result)
+    assert result["whep_post_count"] == 2
+
+
+def test_relogin_camera_refresh_during_failed_logout_does_not_go_live():
+    """A camera list that arrives after a second failed logout must not go live."""
+    result = run_scenario("relogin-cameras-held-logout-rejected")
+    assert_signed_out_without_live(result)
+    assert result["whep_post_count"] == 1
+
+
+def test_held_layout_refresh_and_login_do_not_go_live_after_sign_out():
+    """Held setLayout, refreshCameras, and login steps must not start video after sign-out."""
+    result = run_scenario("auth-epoch-held-steps")
+    assert_signed_out_without_live(result)
+    assert result["whep_post_count"] == 2
+
+
 def test_deferred_whep_post_after_auth_expiry_does_not_leave_a_live_session():
     """Auth expiry (HTTP 401) must cancel an in-flight WHEP POST the same way."""
     result = run_scenario("deferred-post-auth-expiry")
