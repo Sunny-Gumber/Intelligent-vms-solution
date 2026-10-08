@@ -753,6 +753,7 @@ async def camera_health(
 
     Returns:
         CameraHealth derived from the assigned or local MediaMTX path state.
+        ``path_present`` is null when that list is truncated or inconsistent.
 
     Raises:
         HTTPException: If authorization fails or media-node health is unavailable.
@@ -771,6 +772,24 @@ async def camera_health(
             502,
             {"code": "MEDIA_HEALTH_UNAVAILABLE", "message": "Media node health is unavailable"},
         ) from exc
+
+    if isinstance(data, dict) and (
+        data.get("truncated") is True or data.get("inconsistent") is True
+    ):
+        reason = "inconsistent" if data.get("inconsistent") is True else "truncated"
+        log.warning(
+            "camera_health_list_untrusted camera_id=%s enumeration=%s",
+            entity.id,
+            reason,
+        )
+        return CameraHealth(
+            camera_id=entity.id,
+            stream_key=entity.stream_key,
+            path_present=None,
+            ready=False,
+            tracks=[],
+            detail={"enumeration": reason},
+        )
 
     items = data.get("items", []) if isinstance(data, dict) else []
     match = next((item for item in items if item.get("name") == entity.stream_key), None)
