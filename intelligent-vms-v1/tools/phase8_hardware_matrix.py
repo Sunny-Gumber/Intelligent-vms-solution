@@ -97,6 +97,22 @@ def _repeated_values(values: list[str]) -> list[str]:
     return sorted(value for value, count in counts.items() if count > 1)
 
 
+def _ensure_path_reason(reasons: list[str], path: str) -> None:
+    """Add a missing-field reason when no reason already names the path.
+
+    Args:
+        reasons: Qualification reasons collected for one record.
+        path: Required measured path that was not parsed as a number.
+
+    Returns:
+        None. The list gains MISSING_MEASURED_FIELD:<path> only when that path
+        is not already named by a null or missing-field reason.
+    """
+    if any(path in reason for reason in reasons):
+        return
+    reasons.append(f"MISSING_MEASURED_FIELD:{path}")
+
+
 def _duplicate_repeat_reason(items: list[Evidence]) -> str | None:
     """Reject copies that reuse one benchmark identity or measured-content fingerprint.
 
@@ -266,11 +282,11 @@ def extract_evidence(
             f"failure_rate {failure_rate:.6f} > allowed {max_failure_rate:.6f}"
         )
     if cpu_p95 is None:
-        reasons.append("CPU p95 not measured")
+        _ensure_path_reason(reasons, "resources.cpu_pct.p95")
     elif cpu_p95 > max_cpu_p95_pct:
         reasons.append(f"CPU p95 {cpu_p95:.1f}% > allowed {max_cpu_p95_pct:.1f}%")
     if ram_p95 is None:
-        reasons.append("RAM p95 not measured")
+        _ensure_path_reason(reasons, "resources.ram_pct.p95")
     elif ram_p95 > max_ram_p95_pct:
         reasons.append(f"RAM p95 {ram_p95:.1f}% > allowed {max_ram_p95_pct:.1f}%")
 

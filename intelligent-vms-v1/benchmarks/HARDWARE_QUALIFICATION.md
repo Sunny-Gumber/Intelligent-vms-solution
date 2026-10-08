@@ -91,9 +91,15 @@ Every qualified row includes benchmark IDs, commit SHA, hardware fingerprint, co
 
 ## Required measured fields
 
-`QUALIFIED_FROM_MEASURED_EVIDENCE` requires every repeat to satisfy the measured-field schema for its workload. The lists live in `tools/phase8_benchmark_common.py` (`required_measured_fields` and `required_measured_fields_for_workload`). The hardware matrix and the reproducibility gate both call those functions. They do not keep a second copy.
+`QUALIFIED_FROM_MEASURED_EVIDENCE` requires every repeat to satisfy the measured-field schema for its workload. The lists live in `tools/phase8_benchmark_common.py` (`required_measured_fields` and `required_measured_fields_for_workload`). The hardware matrix and the reproducibility gate both use `missing_measured_field_reasons`, which calls `required_measured_fields_for_workload`. They do not keep a second copy of the path list.
 
-A required path that is missing or `{}` is `UNQUALIFIED` with `MISSING_MEASURED_FIELD:<path>`. A present JSON null on a required path stays unqualified with `<path> is null`. A non-finite number is rejected with `<path> is not a finite number`.
+Every required path uses one classification. The reason always names the full path:
+
+- a missing key, `{}`, `[]`, or any other object or list is `UNQUALIFIED` with `MISSING_MEASURED_FIELD:<path>`;
+- a present JSON null is unqualified with `<path> is null`;
+- a non-finite number (`NaN`, infinity), or a non-numeric scalar such as a string or boolean, is rejected with `<path> is not a finite number`.
+
+A boolean is not coerced to 0 or 1 on a required path. A missing `failure_rate`, including `{}` or `[]`, stays unset. It is not stored as `0.0`, and its reason is `MISSING_MEASURED_FIELD:result.failure_rate`.
 
 Shared core for hardware-matrix and reproducibility repeats, and for the reconnect driver (`tcp-reconnect-storm`):
 

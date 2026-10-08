@@ -374,6 +374,145 @@ def test_non_finite_required_field_is_unqualified(bases, bad):
     assert "is not a finite number" in rejected
 
 
+_CLASSIFICATIONS = (
+    "missing",
+    "empty-object",
+    "empty-list",
+    "null",
+    "nan",
+    "inf",
+    "string",
+    "bool-true",
+    "bool-false",
+)
+_CONTAINER_LABELS = ("missing", "empty-object", "empty-list")
+_SCALAR_REJECT_LABELS = ("nan", "inf", "string", "bool-true", "bool-false")
+_WORKLOAD_EXTRA_CASES = (
+    ("recording-directory-growth", "result.observed_recording_mbps", "observed_recording_mbps"),
+    ("media-relay", "result.observed_media_mbps", "observed_media_mbps"),
+    ("ai-inference", "result.observed_ai_mpix_s", "observed_ai_mpix_s"),
+)
+_CLASSIFICATION_CASES = [
+    (kind, path, label)
+    for kind, paths in (
+        ("storage", STORAGE_PATHS),
+        ("reconnect", RECONNECT_PATHS),
+        ("hardware-matrix", HARDWARE_MATRIX_PATHS),
+        ("reproducibility", REPRODUCIBILITY_PATHS),
+    )
+    for path in paths
+    for label in _CLASSIFICATIONS
+] + [
+    (workload, path, label)
+    for workload, path, _metric in _WORKLOAD_EXTRA_CASES
+    for label in _CLASSIFICATIONS
+]
+
+
+def _assign(record, path, value):
+    cursor = record
+    parts = path.split(".")
+    for part in parts[:-1]:
+        cursor = cursor[part]
+    cursor[parts[-1]] = value
+
+
+def _apply_classification(record, path, label):
+    if label == "missing":
+        _delete(record, path)
+        return
+    values = {
+        "empty-object": {},
+        "empty-list": [],
+        "null": None,
+        "nan": float("nan"),
+        "inf": float("inf"),
+        "string": "not-a-number",
+        "bool-true": True,
+        "bool-false": False,
+    }
+    _assign(record, path, values[label])
+
+
+def _expected_classification(path, label):
+    if label in _CONTAINER_LABELS:
+        return f"MISSING_MEASURED_FIELD:{path}"
+    if label == "null":
+        return f"{path} is null"
+    return f"{path} is not a finite number"
+
+
+def _demand_for_case(kind):
+    if kind == "recording-directory-growth":
+        return {
+            "required_roles": {"recording": "recording_mbps"},
+            "profiles": [
+                {"name": "probe", "cameras": 1, "demands": {"recording_mbps": 1.0}}
+            ],
+        }
+    if kind == "media-relay":
+        return {
+            "required_roles": {"media": "media_mbps"},
+            "profiles": [
+                {"name": "probe", "cameras": 1, "demands": {"media_mbps": 1.0}}
+            ],
+        }
+    if kind == "ai-inference":
+        return {
+            "required_roles": {"ai": "ai_mpix_s"},
+            "profiles": [
+                {"name": "probe", "cameras": 1, "demands": {"ai_mpix_s": 1.0}}
+            ],
+        }
+    return _demand_for(kind)
+
+
+def _case_record(bases, kind):
+    if kind in bases:
+        return copy.deepcopy(bases[kind])
+    for workload, _path, metric in _WORKLOAD_EXTRA_CASES:
+        if workload == kind:
+            return _record(workload, {metric: 10.0})
+    raise AssertionError(kind)
+
+
+@pytest.mark.parametrize("kind,path,label", _CLASSIFICATION_CASES)
+def test_required_path_classification(bases, kind, path, label):
+    """Every required path uses one path-named reason for each bad value."""
+    record = _case_record(bases, kind)
+    _apply_classification(record, path, label)
+    expected = _expected_classification(path, label)
+    parsed = common.parse_benchmark_record(record)
+    if label in _CONTAINER_LABELS or label == "null":
+        assert not isinstance(parsed, common.Rejection)
+        assert expected in parsed.null_measured_reasons
+        assert "measured value is not a finite number" not in parsed.null_measured_reasons
+        if label in _CONTAINER_LABELS:
+            assert f"{path} is not a finite number" not in parsed.null_measured_reasons
+        else:
+            assert f"MISSING_MEASURED_FIELD:{path}" not in parsed.null_measured_reasons
+        if path == "result.failure_rate":
+            assert parsed.failure_rate is None
+    else:
+        assert isinstance(parsed, common.Rejection)
+        assert parsed.reason == expected
+    report = _report([record])
+    text = _gate_text(report)
+    assert report["summary"]["passed"] == 0
+    assert report["groups"][0]["repeat_count"] == 0
+    assert expected in text
+    assert "measured value is not a finite number" not in text
+    output = _matrix([record], _demand_for_case(kind))
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in json.dumps(output)
+    mapped = kind != "reconnect" or label in _SCALAR_REJECT_LABELS
+    if mapped:
+        rejected = " ".join(
+            reason for row in output["rejected_evidence"] for reason in row["reasons"]
+        )
+        assert expected in rejected
+        assert "measured value is not a finite number" not in rejected
+
+
 def test_missing_failure_rate_is_not_zero(bases):
     record = copy.deepcopy(bases["storage"])
     record["result"]["operations_failed"] = 4

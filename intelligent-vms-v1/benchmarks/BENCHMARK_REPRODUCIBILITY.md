@@ -41,7 +41,7 @@ The qualification-capacity dimension is workload specific. Examples:
 
 A repeat counts only when its required measured fields are present and finite. The schema is `required_measured_fields_for_workload` in `tools/phase8_benchmark_common.py`, the same function the hardware matrix uses. See `HARDWARE_QUALIFICATION.md` for the storage, reconnect, hardware-matrix, and reproducibility lists.
 
-A missing key or `{}` fails the group with `MISSING_MEASURED_FIELD:<path>` and `repeat_count` 0. A missing `failure_rate` stays unset. It is not stored as `0.0`. A present null on a required field remains `<path> is null`. Non-finite numbers remain `<path> is not a finite number`.
+Each required path uses one reason, and that reason names the full path. A missing key, `{}`, `[]`, or any other object or list fails the group with `MISSING_MEASURED_FIELD:<path>` and `repeat_count` 0. A present null remains `<path> is null`. A non-finite number, string, or boolean remains `<path> is not a finite number`. A boolean is not stored as 0 or 1. A missing `failure_rate`, including `{}` or `[]`, stays unset. It is not stored as `0.0`, and the reason is `MISSING_MEASURED_FIELD:result.failure_rate`.
 
 Optional sensor nulls stay accepted: max CPU frequency, platform temperature, CPU frequency ratio, and NIC `speed_mbps`. Those nulls do not split a content fingerprint and do not, by themselves, reject the repeat.
 
