@@ -252,7 +252,7 @@ Added:
 - MediaMTX path measurements;
 - bounded heartbeat retry;
 - node-scoped service identity;
-- admin-only trusted node registration/endpoints/capacity;
+- trusted node registration/endpoints/capacity, limited to a global administrator (role `admin` and `tenant_id` `"*"`; see `docs/security/AUTH_RBAC.md`);
 - heartbeat carries measured load only;
 - node cannot self-register;
 - no fabricated recording Mbps/AI load;

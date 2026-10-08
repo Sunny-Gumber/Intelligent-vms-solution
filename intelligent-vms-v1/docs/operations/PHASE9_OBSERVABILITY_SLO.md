@@ -47,6 +47,8 @@ The deadline window is:
 
 Defaults are 120 seconds minimum and a 2.0 segment multiplier. The recording policy already bounds segment duration. Disabling recording clears the active gap deadline. Delayed older segment hooks never move completion health backwards.
 
+Owner decision C3 keeps microseconds in the segment-complete timestamp. Health treats a completion one microsecond earlier than the stored completion as older and does not move the deadline backward. An equal completion is not older. Non-finite, negative, and unbounded durations, and malformed segment names, are rejected instead of inventing the current clock.
+
 `intelligent_vms_recording_gap_candidates` counts only active continuous policies whose initialized deadline expired. Missing or uninitialized recording-health state is exported separately as `intelligent_vms_recording_health_untracked`.
 
 This separation is deliberate for upgrade safety: an existing deployment can have active recording policies before the new recording-health table has received its first segment-complete evidence. Those policies must not be reported immediately as confirmed gap candidates. The default Helm alert treats prolonged untracked health as a warning after 30 minutes, while expired initialized deadlines remain the critical continuity signal.

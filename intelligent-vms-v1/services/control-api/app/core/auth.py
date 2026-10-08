@@ -247,8 +247,71 @@ def require_scope(principal: Principal, tenant_id: str, site_id: str | None = No
         raise HTTPException(404, "Resource not found")
 
 
+def _is_global_admin(principal: Principal) -> bool:
+    """Return whether the identity is a global administrator.
+
+    A global administrator has role admin and tenant_id "*". A tenant-scoped
+    admin, an operator, a viewer, or a service identity is not one.
+
+    Args:
+        principal: Authenticated identity to test.
+
+    Returns:
+        True when both the admin role and the global tenant scope are present.
+    """
+    return principal.has_any_role("admin") and principal.tenant_id == "*"
+
+
+def require_global_admin(*, allow_node_service: bool = False) -> Callable:
+    """Build a dependency that admits only mutation of global control-plane state.
+
+    Callers that register, configure, or drain nodes, run placement, or requeue
+    the outbox use the default. Heartbeat and revocation acknowledgement pass
+    allow_node_service so the service identity bound to that node can still
+    report, which reuses require_node_scope. A tenant-scoped administrator is
+    refused with HTTP 403 before the route body runs.
+
+    Args:
+        allow_node_service: When true, also admit a service identity whose
+            node_id claim matches the route's node_id. Registration, placement,
+            and outbox routes leave this false.
+
+    Returns:
+        Async dependency returning the authorized principal.
+
+    Raises:
+        HTTPException: Raised by the dependency with HTTP 403 when the
+            principal must not mutate the global resource.
+    """
+
+    async def require_global_admin(
+        request: Request,
+        principal: Principal = Depends(get_principal),
+    ) -> Principal:
+        if _is_global_admin(principal):
+            return principal
+        if principal.has_any_role("admin"):
+            raise HTTPException(403, "Global administrator scope required")
+        if allow_node_service and principal.has_any_role("service"):
+            node_id = request.path_params.get("node_id")
+            if isinstance(node_id, str) and node_id:
+                require_node_scope(principal, node_id)
+                return principal
+        raise HTTPException(403, "Global administrator scope required")
+
+    require_global_admin.__vms_global_admin_dependency__ = True
+    require_global_admin.__vms_allow_node_service__ = allow_node_service
+    return require_global_admin
+
+
 def require_node_scope(principal: Principal, node_id: str) -> None:
     """Authorize an administrator or service identity for one node.
+
+    Any admin role, including a tenant-scoped admin, passes this check. That
+    bypass is not global-mutation authority. Routes that mutate nodes,
+    placement, failover, or the outbox depend on require_global_admin, which
+    admits only role admin with tenant_id "*". A service identity may operate
+    only the node named by its node_id claim.
 
     Args:
         principal: Authenticated identity to authorize.
@@ -270,17 +333,23 @@ def require_node_scope(principal: Principal, node_id: str) -> None:
 def require_global_service_scope(principal: Principal) -> None:
     """Authorize infrastructure operations requiring global service scope.
 
+    A global administrator (role admin and tenant_id "*") is admitted. A
+    tenant-scoped administrator is refused. A service identity is admitted
+    only when it has no node binding, tenant_id "*", and site scope "*".
+
     Args:
         principal: Authenticated identity to authorize.
 
     Returns:
-        None for administrators or globally scoped service identities.
+        None for a global administrator or a globally scoped service identity.
 
     Raises:
-        HTTPException: HTTP 403 when the identity lacks global service scope.
+        HTTPException: HTTP 403 when the identity lacks global scope.
     """
-    if principal.has_any_role("admin"):
+    if _is_global_admin(principal):
         return
+    if principal.has_any_role("admin"):
+        raise HTTPException(403, "Global administrator scope required")
     if (
         principal.has_any_role("service")
         and principal.node_id is None
