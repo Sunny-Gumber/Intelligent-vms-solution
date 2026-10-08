@@ -4,12 +4,14 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Iterable
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, exists, func, literal, select, update
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.config import settings
+from app.db.base import utcnow
 from app.core.effective_authority import (
     effective_authority_active,
     effective_authority_deadline,
@@ -229,6 +231,90 @@ def _aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _is_orm_session(session) -> bool:
+    return session is not None and type(session).__module__.startswith("sqlalchemy")
+
+
+class _FailoverSuperseded(Exception):
+    """Another session advanced this assignment before failover could write it."""
+
+    def __init__(self, row: PlacementAssignmentEntity):
+        self.row = row
+        super().__init__("placement failover superseded")
+
+
+async def _after_renewal_authority_read() -> None:
+    """Test seam after the renewal read and before any lease write.
+
+    Production does nothing. The placement transaction is still read-only when
+    the renewal cursor row already exists, so another session can commit.
+    """
+    return None
+
+
+async def _before_assignment_update() -> None:
+    """Test seam after the assignment is loaded and before failover writes it.
+
+    Production does nothing.
+    """
+    return None
+
+
+def _policy_view(enabled: bool | None):
+    if enabled is None:
+        return None
+    return SimpleNamespace(enabled=enabled)
+
+
+def _lease_authority_clauses(camera_id: str, role: str, node_id: str) -> list:
+    """SQL predicates that repeat the keep rule inside the lease UPDATE.
+
+    PostgreSQL evaluates these against the latest commit. A site move or a
+    disabled policy that landed after the Python read then matches no row.
+    """
+    site_region = (
+        select(SiteRegionEntity.region_id)
+        .join(
+            CameraEntity,
+            and_(
+                CameraEntity.tenant_id == SiteRegionEntity.tenant_id,
+                CameraEntity.site_id == SiteRegionEntity.site_id,
+            ),
+        )
+        .where(CameraEntity.id == camera_id)
+        .limit(1)
+        .scalar_subquery()
+    )
+    clauses = [
+        exists(
+            select(InfrastructureNodeEntity.id).where(
+                InfrastructureNodeEntity.id == node_id,
+                InfrastructureNodeEntity.region_id
+                == func.coalesce(site_region, literal(settings.placement_default_region)),
+            )
+        )
+    ]
+    if role == "recording":
+        clauses.append(
+            exists(
+                select(RecordingPolicyEntity.id).where(
+                    RecordingPolicyEntity.camera_id == camera_id,
+                    RecordingPolicyEntity.enabled.is_(True),
+                )
+            )
+        )
+    elif role == "ai":
+        clauses.append(
+            exists(
+                select(CameraAIPolicyEntity.id).where(
+                    CameraAIPolicyEntity.camera_id == camera_id,
+                    CameraAIPolicyEntity.enabled.is_(True),
+                )
+            )
+        )
+    return clauses
+
+
 async def _extend_owner_lease(
     session,
     row: PlacementAssignmentEntity,
@@ -270,6 +356,7 @@ async def _extend_owner_lease(
             PlacementAssignmentEntity.node_id == node_id,
             PlacementAssignmentEntity.generation == generation,
             PlacementAssignmentEntity.active.is_(True),
+            *_lease_authority_clauses(row.camera_id, row.role, node_id),
         )
         .values(
             lease_expires_at=new_lease,
@@ -330,6 +417,31 @@ def _owner_to_keep(
     if current is not None and node_eligible(current, role, region_id, now):
         return current
     return None
+
+
+def _owner_if_kept(nodes, existing, role: str, regions: list[str], now: datetime) -> NodeSnapshot | None:
+    """Return the owner only when every supplied region would keep that owner."""
+    if existing is None:
+        return None
+    kept = None
+    for region_id in regions:
+        found = _owner_to_keep(nodes, existing, role, region_id, now)
+        if found is None:
+            return None
+        kept = found
+    return kept
+
+
+def _failover_region(nodes, existing, role: str, fresh_region: str, scan_region: str, now: datetime) -> str:
+    """Pick the region a move must use when the owner is not kept.
+
+    A fresh committed site wins when that region no longer accepts the owner.
+    The scan region's answer wins when it is the one that rejects the owner,
+    so a scan-page disagreement cannot fall through to a keep.
+    """
+    if existing is None or _owner_to_keep(nodes, existing, role, fresh_region, now) is None:
+        return fresh_region
+    return scan_region
 
 
 async def _keep_owner(
@@ -406,12 +518,16 @@ class _RenewalCandidate:
     node: NodeSnapshot
 
 
-async def _collect_renewal_candidates(session, nodes: list[NodeSnapshot], now: datetime) -> list[_RenewalCandidate]:
+async def _collect_renewal_candidates(
+    session, nodes: list[NodeSnapshot], now: datetime
+) -> tuple[list[_RenewalCandidate], str | None]:
     """Select one page of owners the renewal read would keep.
 
-    This does not write leases. The scan may read a site move or a disabled
-    policy that committed after this read, and only the later read may extend
-    an owner the scan visits. The page advances even when a row is not kept.
+    This does not write leases and does not dirty the renewal cursor. The
+    caller persists the cursor at the end of the transaction. Every candidate
+    is checked again against committed site and policy state before a lease
+    is written, including a camera the scan page does not load. The page
+    advances even when a row is not kept.
 
     Args:
         session: Open placement transaction that already holds the execution lock.
@@ -419,13 +535,13 @@ async def _collect_renewal_candidates(session, nodes: list[NodeSnapshot], now: d
         now: Controller evaluation time shared with the camera scan.
 
     Returns:
-        Candidates in page order. At most placement_renewal_batch_size were read.
+        Candidates in page order, and the assignment id the cursor should store.
+        At most placement_renewal_batch_size rows were read.
     """
     state = await session.get(ServiceStateEntity, RENEWAL_CURSOR_KEY, with_for_update=True)
     if state is None:
         state = ServiceStateEntity(key=RENEWAL_CURSOR_KEY, value_json={})
         session.add(state)
-        await session.flush()
     current = (state.value_json or {}).get("assignment_id")
 
     async def _page(after: str | None) -> list[PlacementAssignmentEntity]:
@@ -435,8 +551,8 @@ async def _collect_renewal_candidates(session, nodes: list[NodeSnapshot], now: d
     if not rows and current:
         rows = await _page(None)
     if not rows:
-        state.value_json = {"assignment_id": None}
-        return []
+        await _after_renewal_authority_read()
+        return [], None
 
     camera_ids = [row.camera_id for row in rows]
     cameras = {
@@ -503,8 +619,96 @@ async def _collect_renewal_candidates(session, nodes: list[NodeSnapshot], now: d
         cursor = rows[-1].id
     else:
         cursor = None
-    state.value_json = {"assignment_id": cursor}
-    return candidates
+    await _after_renewal_authority_read()
+    return candidates, cursor
+
+
+@dataclass(frozen=True)
+class _CommittedAuthority:
+    """Site and policy authority read from a new session after other commits."""
+
+    region_id: str
+    recording_enabled: bool | None
+    ai_enabled: bool | None
+
+
+def _cameras_for_authority(cameras: list[CameraEntity], candidates: list[_RenewalCandidate]) -> list[CameraEntity]:
+    seen: set[str] = set()
+    ordered: list[CameraEntity] = []
+    for camera in [*cameras, *(candidate.camera for candidate in candidates)]:
+        if camera.id in seen:
+            continue
+        seen.add(camera.id)
+        ordered.append(camera)
+    return ordered
+
+
+async def _load_committed_authority(cameras: list[CameraEntity]) -> dict[str, _CommittedAuthority]:
+    """Read site region and policy flags from a session with an empty identity map.
+
+    The placement transaction can still be holding the renewal read's policy
+    objects, and a SQLite transaction does not see another connection's commit.
+    A new session sees that commit on both dialects.
+
+    Args:
+        cameras: Cameras whose current site and policies can authorize a lease.
+
+    Returns:
+        One entry per camera. A missing policy is None, which the keep rule
+        treats as not required. A missing site row uses the default region.
+    """
+    if not cameras:
+        return {}
+    camera_ids = [camera.id for camera in cameras]
+    site_ids = sorted({camera.site_id for camera in cameras})
+    tenant_ids = sorted({camera.tenant_id for camera in cameras})
+    async with SessionLocal() as fresh:
+        regions = {
+            (region.tenant_id, region.site_id): region.region_id
+            for region in (
+                await fresh.execute(
+                    select(SiteRegionEntity).where(
+                        SiteRegionEntity.site_id.in_(site_ids),
+                        SiteRegionEntity.tenant_id.in_(tenant_ids),
+                    )
+                )
+            ).scalars().all()
+        }
+        recording = {
+            policy.camera_id: bool(policy.enabled)
+            for policy in (
+                await fresh.execute(
+                    select(RecordingPolicyEntity).where(RecordingPolicyEntity.camera_id.in_(camera_ids))
+                )
+            ).scalars().all()
+        }
+        ai_policies = {
+            policy.camera_id: bool(policy.enabled)
+            for policy in (
+                await fresh.execute(
+                    select(CameraAIPolicyEntity).where(CameraAIPolicyEntity.camera_id.in_(camera_ids))
+                )
+            ).scalars().all()
+        }
+    return {
+        camera.id: _CommittedAuthority(
+            region_id=regions.get(
+                (camera.tenant_id, camera.site_id),
+                settings.placement_default_region,
+            ),
+            recording_enabled=recording.get(camera.id),
+            ai_enabled=ai_policies.get(camera.id),
+        )
+        for camera in cameras
+    }
+
+
+async def _save_renewal_cursor(session, assignment_id: str | None) -> None:
+    state = await session.get(ServiceStateEntity, RENEWAL_CURSOR_KEY)
+    if state is None:
+        session.add(ServiceStateEntity(key=RENEWAL_CURSOR_KEY, value_json={"assignment_id": assignment_id}))
+        return
+    state.value_json = {"assignment_id": assignment_id}
 
 
 async def _apply_renewal_candidates(
@@ -517,14 +721,15 @@ async def _apply_renewal_candidates(
     scan_recording: dict,
     scan_ai: dict,
     scan_site_regions: dict,
+    committed: dict[str, _CommittedAuthority],
 ) -> int:
-    """Extend candidates the scan would still keep.
+    """Extend candidates still authorized by committed site and policy state.
 
-    Cameras on the scan page are judged again with the scan's policy and site
-    region. A site move or a disabled recording policy that landed between the
-    two reads drops the candidate, so the fresh lease is never written. Cameras
-    the scan did not visit keep the renewal decision. The advisory lock is
-    still held by the caller; this predicate does not replace it.
+    Every candidate, including a camera the scan page did not load, is judged
+    from a new session's committed site region and policy flags. A camera on
+    the scan page must also pass the scan's own maps, so the two reads cannot
+    disagree and still extend. The lease UPDATE repeats the site and policy
+    check. The advisory lock is still held by the caller.
 
     Args:
         session: Open placement transaction that already holds the execution lock.
@@ -535,6 +740,7 @@ async def _apply_renewal_candidates(
         scan_recording: Recording policies from the scan's read.
         scan_ai: AI policies from the scan's read.
         scan_site_regions: Site regions from the scan's read.
+        committed: Site and policy authority from a new session.
 
     Returns:
         How many of those leases moved later.
@@ -542,6 +748,17 @@ async def _apply_renewal_candidates(
     renewed = 0
     for candidate in candidates:
         row = candidate.row
+        authority = committed.get(row.camera_id)
+        if authority is None:
+            continue
+        if not _role_required(
+            row.role,
+            _policy_view(authority.recording_enabled),
+            _policy_view(authority.ai_enabled),
+        ):
+            continue
+        regions = [authority.region_id]
+        recording = candidate.recording
         if row.camera_id in scan_camera_ids:
             if not _role_required(
                 row.role,
@@ -549,19 +766,15 @@ async def _apply_renewal_candidates(
                 scan_ai.get(row.camera_id),
             ):
                 continue
-            region_id = _site_region_id(scan_site_regions, candidate.camera)
-            kept = _owner_to_keep(nodes, row, row.role, region_id, now)
-            if kept is None:
-                continue
+            regions.append(_site_region_id(scan_site_regions, candidate.camera))
             recording = scan_recording
-            node = kept
-        else:
-            recording = candidate.recording
-            node = candidate.node
+        kept = _owner_if_kept(nodes, row, row.role, regions, now)
+        if kept is None:
+            continue
         if await _keep_owner(
             session,
             row,
-            node,
+            kept,
             recording,
             now,
             node_id=candidate.node_id,
@@ -569,6 +782,175 @@ async def _apply_renewal_candidates(
         ):
             renewed += 1
     return renewed
+
+
+def _execution_keys(camera: CameraEntity, role: str) -> list:
+    if role != "media":
+        return []
+    return [
+        camera.stream_key,
+        *([make_role_stream_key(camera.stream_key, "main")] if camera.sub_path else []),
+        *([camera.third_stream_key] if camera.third_stream_key else []),
+    ]
+
+
+def _adopt_committed_assignment(row: PlacementAssignmentEntity, current) -> None:
+    for name in (
+        "node_id",
+        "generation",
+        "region_id",
+        "lease_expires_at",
+        "autonomy_expires_at",
+        "active",
+        "reason",
+        "assigned_at",
+        "applied_generation",
+        "cleanup_node_ids_json",
+    ):
+        set_committed_value(row, name, getattr(current, name))
+
+
+async def _committed_assignment_state(assignment_id: str):
+    async with SessionLocal() as fresh:
+        current = (
+            await fresh.execute(
+                select(PlacementAssignmentEntity).where(PlacementAssignmentEntity.id == assignment_id)
+            )
+        ).scalar_one_or_none()
+        if current is None:
+            return None
+        return SimpleNamespace(
+            node_id=current.node_id,
+            generation=current.generation,
+            region_id=current.region_id,
+            lease_expires_at=current.lease_expires_at,
+            autonomy_expires_at=current.autonomy_expires_at,
+            active=current.active,
+            reason=current.reason,
+            assigned_at=current.assigned_at,
+            applied_generation=current.applied_generation,
+            cleanup_node_ids_json=list(current.cleanup_node_ids_json or []),
+        )
+
+
+def _raise_failover_superseded(row, current, camera, role, observed_node, observed_generation) -> None:
+    log.critical(
+        "placement_failover_superseded camera_id=%s role=%s observed_node=%s observed_generation=%s",
+        camera.id,
+        role,
+        observed_node,
+        observed_generation,
+    )
+    if current is not None:
+        _adopt_committed_assignment(row, current)
+    raise _FailoverSuperseded(row)
+
+
+async def _assign_matching_owner(
+    session,
+    camera: CameraEntity,
+    role: str,
+    region_id: str,
+    node: NodeSnapshot,
+    row: PlacementAssignmentEntity,
+    *,
+    reason: str,
+    now: datetime,
+    lease: datetime,
+    autonomy: datetime | None,
+) -> None:
+    """Write failover only while the loaded owner and generation are still current.
+
+    A concurrent commit that advanced the generation makes this a no-op. The
+    loaded object is marked with that committed state so the session cannot
+    flush the stale owner by primary key.
+    """
+    observed_node = row.node_id
+    observed_generation = row.generation
+    ownership_changed = observed_node != node.id
+    changed = ownership_changed or row.region_id != region_id
+    await _before_assignment_update()
+    current = await _committed_assignment_state(row.id)
+    if (
+        current is None
+        or current.node_id != observed_node
+        or current.generation != observed_generation
+    ):
+        _raise_failover_superseded(row, current, camera, role, observed_node, observed_generation)
+
+    values = {
+        "active": True,
+        "lease_expires_at": lease,
+        "autonomy_expires_at": autonomy,
+        "updated_at": utcnow(),
+    }
+    cleanup = list(row.cleanup_node_ids_json or [])
+    if changed:
+        values.update(
+            {
+                "node_id": node.id,
+                "region_id": region_id,
+                "reason": reason,
+                "assigned_at": now,
+            }
+        )
+        if ownership_changed:
+            cleanup = [old_id for old_id in cleanup if old_id != node.id]
+            if observed_node not in cleanup:
+                cleanup.append(observed_node)
+            values["generation"] = observed_generation + 1
+            values["applied_generation"] = None
+            values["cleanup_node_ids_json"] = cleanup
+
+    result = await session.execute(
+        update(PlacementAssignmentEntity)
+        .where(
+            PlacementAssignmentEntity.id == row.id,
+            PlacementAssignmentEntity.node_id == observed_node,
+            PlacementAssignmentEntity.generation == observed_generation,
+            PlacementAssignmentEntity.active.is_(True),
+        )
+        .values(**values)
+        .returning(PlacementAssignmentEntity.id)
+        .execution_options(synchronize_session=False)
+    )
+    if result.scalar_one_or_none() is None:
+        current = await _committed_assignment_state(row.id)
+        _raise_failover_superseded(row, current, camera, role, observed_node, observed_generation)
+
+    for name, value in values.items():
+        set_committed_value(row, name, value)
+
+    if ownership_changed:
+        valid_until = effective_authority_deadline(
+            current.lease_expires_at,
+            current.autonomy_expires_at,
+            settings.placement_fence_expiry_grace_seconds,
+        )
+        session.add(
+            PlacementRevocationEntity(
+                assignment_id=row.id,
+                camera_id=row.camera_id,
+                role=row.role,
+                node_id=observed_node,
+                revoked_generation=observed_generation,
+                execution_keys_json=_execution_keys(camera, role),
+                reason=reason,
+                valid_until=valid_until,
+            )
+        )
+        pending_for_new_owner = (
+            await session.execute(
+                select(PlacementRevocationEntity).where(
+                    PlacementRevocationEntity.assignment_id == row.id,
+                    PlacementRevocationEntity.node_id == node.id,
+                    PlacementRevocationEntity.acknowledged_at.is_(None),
+                    PlacementRevocationEntity.cancelled_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        for pending in pending_for_new_owner:
+            pending.cancelled_at = now
 
 
 async def _assign(
@@ -600,6 +982,19 @@ async def _assign(
             assigned_at=now,
         )
         session.add(row)
+    elif _is_orm_session(session):
+        await _assign_matching_owner(
+            session,
+            camera,
+            role,
+            region_id,
+            node,
+            row,
+            reason=reason,
+            now=now,
+            lease=lease,
+            autonomy=autonomy,
+        )
     else:
         if changed:
             old_node_id = row.node_id
@@ -711,8 +1106,9 @@ async def run_placement_once() -> dict:
 
     Eligible owners are renewed from a cursor that does not follow the camera
     scan page, and only after the placement execution lock is held. Renewal
-    keeps an owner only when the scan would keep that same owner, including
-    when the scan's later read disagrees. A missed lock is retried with a
+    keeps an owner only when committed site and policy state still authorize
+    that owner, including a camera the scan page did not load. A missed lock
+    is retried with a
     short backoff before this cycle gives up. Every attempt failing is logged.
     A live population above the renewal ceiling skips renewal and still scans.
 
@@ -794,8 +1190,11 @@ async def _run_placement_once_locked() -> dict | None:
                 for n in node_rows
             ]
             candidates: list[_RenewalCandidate] = []
+            renewal_cursor: str | None = None
+            track_renewal_cursor = False
             if not renewal_budget_exceeded:
-                candidates = await _collect_renewal_candidates(session, nodes, now)
+                candidates, renewal_cursor = await _collect_renewal_candidates(session, nodes, now)
+                track_renewal_cursor = True
 
             state = await session.get(ServiceStateEntity, CURSOR_KEY, with_for_update=True)
             if state is None:
@@ -815,6 +1214,7 @@ async def _run_placement_once_locked() -> dict | None:
                 cameras = list((await session.execute(camera_query(None))).scalars().all())
             if not cameras:
                 state.value_json = {"camera_id": None}
+                committed = await _load_committed_authority(_cameras_for_authority([], candidates))
                 renewed = await _apply_renewal_candidates(
                     session,
                     candidates,
@@ -824,7 +1224,10 @@ async def _run_placement_once_locked() -> dict | None:
                     scan_recording={},
                     scan_ai={},
                     scan_site_regions={},
+                    committed=committed,
                 )
+                if track_renewal_cursor:
+                    await _save_renewal_cursor(session, renewal_cursor)
                 return _placement_result(
                     renewed=renewed,
                     renewal_budget_exceeded=renewal_budget_exceeded,
@@ -870,6 +1273,7 @@ async def _run_placement_once_locked() -> dict | None:
                     )
                 ).scalars().all()
             }
+            committed = await _load_committed_authority(_cameras_for_authority(cameras, candidates))
             renewed = await _apply_renewal_candidates(
                 session,
                 candidates,
@@ -879,6 +1283,7 @@ async def _run_placement_once_locked() -> dict | None:
                 scan_recording=recording,
                 scan_ai=ai,
                 scan_site_regions=site_regions,
+                committed=committed,
             )
 
             last_processed: str | None = None
@@ -888,16 +1293,27 @@ async def _run_placement_once_locked() -> dict | None:
                     exhausted_moves = True
                     break
 
-                region_id = _site_region_id(site_regions, camera)
+                scan_region = _site_region_id(site_regions, camera)
+                authority = committed[camera.id]
+                fresh_recording = _policy_view(authority.recording_enabled)
+                fresh_ai = _policy_view(authority.ai_enabled)
 
                 for role in ("media", "recording", "ai"):
+                    if not _role_required(role, fresh_recording, fresh_ai):
+                        continue
                     if not _role_required(role, recording.get(camera.id), ai.get(camera.id)):
                         continue
 
                     existing = assignments.get((camera.id, role))
                     observed_node = existing.node_id if existing is not None else None
                     observed_generation = existing.generation if existing is not None else None
-                    kept = _owner_to_keep(nodes, existing, role, region_id, now)
+                    kept = _owner_if_kept(
+                        nodes,
+                        existing,
+                        role,
+                        [authority.region_id, scan_region],
+                        now,
+                    )
                     if kept is not None and existing is not None:
                         await _keep_owner(
                             session,
@@ -925,22 +1341,30 @@ async def _run_placement_once_locked() -> dict | None:
                         deferred_autonomy += 1
                         continue
 
-                    target = choose_node(nodes, role, region_id, now)
+                    move_region = _failover_region(
+                        nodes, existing, role, authority.region_id, scan_region, now
+                    )
+                    target = choose_node(nodes, role, move_region, now)
                     if target is None:
                         unplaced += 1
                         continue
 
                     reason = "initial" if existing is None else "failover"
-                    row, changed = await _assign(
-                        session,
-                        camera,
-                        role,
-                        region_id,
-                        target,
-                        existing,
-                        reason=reason,
-                        now=now,
-                    )
+                    try:
+                        row, changed = await _assign(
+                            session,
+                            camera,
+                            role,
+                            move_region,
+                            target,
+                            existing,
+                            reason=reason,
+                            now=now,
+                        )
+                    except _FailoverSuperseded as superseded:
+                        assignments[(camera.id, role)] = superseded.row
+                        deferred_autonomy += 1
+                        continue
                     assignments[(camera.id, role)] = row
                     if changed:
                         moved += 1
@@ -961,6 +1385,8 @@ async def _run_placement_once_locked() -> dict | None:
             else:
                 cursor = None
             state.value_json = {"camera_id": cursor}
+            if track_renewal_cursor:
+                await _save_renewal_cursor(session, renewal_cursor)
 
     return _placement_result(
         scanned=scanned,

@@ -2,21 +2,22 @@
 
 The node drops a cached lease at that lease's end. It learns a replacement
 only on its next fence poll, and clock skew can make the cached deadline
-arrive early. One missed placement lock can consume a whole controller cycle
-when retries are exhausted. The budget therefore requires:
+arrive early. Every controller cycle can sleep its lock retries before the
+attempt that acquires the lock, and a fully missed cycle sleeps those retries
+and then the interval. The budget therefore requires:
 
-    pages * (interval + max_run)
-        + missed_lock_cycles * (interval + max_run)
-        + missed_lock_cycles * retry_sleep
+    pages * (retry_sleep + max_run + interval)
+        + missed_lock_cycles * (retry_sleep + interval)
         + fence_poll
         + clock_skew
         + safety_margin
         < lease
 
 pages is ceil(max_assignments / batch_size). missed_lock_cycles is at least 1.
-retry_sleep is the delay a full lock miss actually sleeps: (attempts - 1) times
-the retry delay. The last attempt does not sleep, so attempts times the delay
-would overstate the clock.
+retry_sleep is (attempts - 1) times the retry delay. The last attempt does not
+sleep. A successful cycle still pays that sleep, then max_run, then the
+interval the controller sleeps after the run. A fully missed cycle does not
+spend max_run.
 Fence grace is not added to the lease and is not spent as extra budget: using
 it would loosen the node side to make the arithmetic fit. The lease duration
 is never reduced to force a pass.
@@ -108,8 +109,9 @@ def renewal_budget_seconds(
         lock_retry_limit: Total lock attempts in one cycle, including the first.
 
     Returns:
-        Tuple of required seconds, page count, one cycle's seconds (interval
-        plus max run), and the retry sleep charged for one full lock miss.
+        Tuple of required seconds, page count, one successful cycle's seconds
+        (retry sleep plus max run plus the interval), and the retry sleep a
+        cycle spends before its last lock attempt.
 
     Raises:
         PlacementRenewalBudgetError: When an input cannot be used in the formula.
@@ -131,17 +133,19 @@ def renewal_budget_seconds(
         )
     interval = resolved_placement_interval_seconds(interval_seconds)
     pages = math.ceil(max_assignments / batch_size)
-    cycle = interval + float(max_run_seconds)
     retry_sleep = _retry_sleep_seconds(lock_retry_seconds, lock_retry_limit)
+    # The granting run can acquire immediately. Every later cycle, including
+    # the revisit, can burn every retry before the attempt that gets the lock.
+    page_cycle = retry_sleep + float(max_run_seconds) + interval
+    miss_cycle = retry_sleep + interval
     required = (
-        pages * cycle
-        + int(missed_lock_cycles) * cycle
-        + int(missed_lock_cycles) * retry_sleep
+        pages * page_cycle
+        + int(missed_lock_cycles) * miss_cycle
         + float(fence_poll_seconds)
         + float(clock_skew_seconds)
         + float(safety_margin_seconds)
     )
-    return required, pages, cycle, retry_sleep
+    return required, pages, page_cycle, retry_sleep
 
 
 def assert_placement_renewal_budget(
@@ -160,10 +164,11 @@ def assert_placement_renewal_budget(
 ) -> float:
     """Reject a renewal cadence that is not strictly inside the lease.
 
-    A pages*interval comparison is not enough, and charging a missed lock as
-    only interval plus max run is not enough either. The sleeps between lock
-    attempts are on the clock. The probe that accepted 59s against a 60s lease
-    revisited the owner at 62s once those sleeps and the fence poll were included.
+    A pages*interval comparison is not enough. Charging retry sleeps only on a
+    fully missed lock is not enough either: a cycle that fails the first
+    attempts and then acquires still sleeps those retries before it stamps
+    now. The probe that accepted 56s against a 60s lease committed the
+    replacement at 81s.
 
     Args:
         max_assignments: Ceiling of active assignments the budget must cover.
@@ -227,8 +232,9 @@ def assert_placement_renewal_budget(
             f"fence_poll={_seconds_text(fence_poll_seconds)}s, "
             f"clock_skew={_seconds_text(clock_skew_seconds)}s, "
             f"safety_margin={_seconds_text(safety_margin_seconds)}s). "
-            "A pages*interval bound inside the lease is not sufficient, and a "
-            "missed lock is more than one cycle when retries sleep. "
+            "A pages*interval bound inside the lease is not sufficient. Every "
+            "cycle may spend its lock retries before it acquires, and a fully "
+            "missed cycle adds that retry sleep plus the interval. "
             "Raise the renewal batch or lower the interval; do not shorten the lease "
             "and do not spend fence grace as extra life."
         )

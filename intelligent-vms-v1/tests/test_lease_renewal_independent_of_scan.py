@@ -14,9 +14,12 @@ import asyncio
 import importlib.util
 import logging
 import math
+import os
+import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -30,7 +33,7 @@ from app.core.placement_renewal import (
     assert_settings_renewal_budget,
 )
 from app.db.base import Base
-from app.models.entities import CameraEntity, RecordingPolicyEntity
+from app.models.entities import CameraAIPolicyEntity, CameraEntity, RecordingPolicyEntity, ServiceStateEntity
 from app.models.placement import (
     InfrastructureNodeEntity,
     PlacementAssignmentEntity,
@@ -1072,7 +1075,7 @@ def test_one_missed_lock_renews_before_the_deadline(tmp_path, monkeypatch):
 
 
 def _repro_budget_kwargs():
-    """The QA-014-101 inputs. Without retry sleeps the bound is 59s, under 60s."""
+    """The QA-014-101 inputs. Charging retries on every cycle rejects them."""
     return {
         "placement_lease_seconds": 60,
         "placement_interval_seconds": 10,
@@ -1089,12 +1092,12 @@ def _repro_budget_kwargs():
 
 
 def test_retry_sleeps_are_inside_the_renewal_budget():
-    """59s plus the 9s a full miss actually sleeps must not fit a 60s lease.
+    """Retry sleeps on every cycle, not only on a full miss, stay inside the lease.
 
-    pages * cycle + missed cycle + fence + skew + safety = 3*12 + 12 + 5 + 5 + 1
-    = 59, and the 9s retry window is under the 10s interval. A full miss still
-    sleeps those 9s. Required equal to the lease stays rejected. The stock
-    defaults stay inside 60s.
+    The QA-014-101 inputs are 3 pages, a 12s run, a 9s retry sleep, and 11s of
+    allowances. Charging that retry sleep on each successful page as well makes
+    the required budget 93s. Required equal to the lease stays rejected. The
+    stock defaults stay inside 60s.
     """
 
     try:
@@ -1119,10 +1122,10 @@ def test_retry_sleeps_are_inside_the_renewal_budget():
             safety_margin_seconds=1,
             lock_retry_seconds=3,
             lock_retry_limit=4,
-            lease_seconds=68,
+            lease_seconds=93,
         )
     except PlacementRenewalBudgetError as exc:
-        assert "required 68s >= lease 68s" in str(exc), str(exc)
+        assert "required 93s >= lease 93s" in str(exc), str(exc)
     else:
         raise AssertionError("required == lease was accepted")
 
@@ -1431,5 +1434,537 @@ def test_exhausted_lock_attempts_are_logged(tmp_path, monkeypatch, caplog):
         row = (await _assignments(factory))[0]
         assert row.node_id == NODE_ID
         assert _as_utc(row.lease_expires_at) == original_lease
+
+    asyncio.run(scenario())
+
+
+def _tcp_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def _authority_database_urls():
+    """SQLite always. PostgreSQL when a local server is accepting connections.
+
+    The hosted unit job has no PostgreSQL service. This is not a skip of a
+    failing assertion: the SQLite case is collected everywhere, and the
+    PostgreSQL case is collected when the server is up.
+    """
+    urls = ["sqlite"]
+    configured = os.environ.get("VMS_PLACEMENT_AUTHORITY_TEST_DATABASE_URL")
+    if configured:
+        urls.append(configured)
+        return urls
+    if _tcp_open("127.0.0.1", 5432):
+        urls.append("postgresql+asyncpg://vms:vms@127.0.0.1:5432/vms_fix_014")
+    return urls
+
+
+async def _open_database(tmp_path, name, url):
+    if url == "sqlite":
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / name}")
+    else:
+        engine = create_async_engine(url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+        await connection.run_sync(Base.metadata.create_all)
+    return factory, engine
+
+
+def _cursor(key, value):
+    return ServiceStateEntity(key=key, value_json=value)
+
+
+def _qa_201_budget_kwargs():
+    """The configuration QA-014-201 showed startup accepting at required 56s."""
+    return {
+        "placement_lease_seconds": 60,
+        "placement_interval_seconds": 5,
+        "placement_renewal_batch_size": 1,
+        "placement_renewal_max_assignments": 9,
+        "placement_renewal_max_run_seconds": 0,
+        "placement_renewal_missed_lock_cycles": 1,
+        "placement_renewal_fence_poll_seconds": 1,
+        "placement_renewal_clock_skew_seconds": 0,
+        "placement_renewal_safety_margin_seconds": 1,
+        "placement_renewal_lock_retry_seconds": 2,
+        "placement_renewal_lock_retry_limit": 3,
+    }
+
+
+def test_successful_lock_retries_are_inside_the_renewal_budget(tmp_path, monkeypatch):
+    """QA-014-201. Retries before a successful acquire have to fit in the lease.
+
+    Startup must reject lease 60, interval 5, batch 1, ceiling 9, max run 0,
+    one reserved miss, fence 1, skew 0, margin 1, retry 2s and 3 attempts.
+    The same numbers on the controller loop, with the first cycle acquiring
+    immediately and every later cycle sleeping 4s before it acquires, commit
+    cam-01's replacement at 12:01:21.
+    """
+
+    try:
+        Settings(**_qa_201_budget_kwargs())
+    except ValidationError as exc:
+        message = str(exc)
+        assert "renewal budget" in message.lower(), message
+        assert "required 92s >= lease 60s" in message, message
+        assert "retry_sleep=4s" in message, message
+    else:
+        raise AssertionError("budget 56s was accepted; successful cycles can spend 4s of retries")
+
+    async def scenario():
+        _configure_budget(
+            monkeypatch,
+            lease=60,
+            interval=5,
+            scan_batch=1,
+            renewal_batch=1,
+            max_assignments=9,
+            max_run=0,
+            lock_retry_seconds=2,
+            lock_retry_limit=3,
+        )
+        monkeypatch.setattr(placement, "assert_settings_renewal_budget", lambda _values: 0.0)
+        factory = await _session_factory(tmp_path, "retry-timeline.db")
+        cameras = [f"cam-{index:02d}" for index in range(1, 10)]
+        await _seed(
+            factory,
+            [
+                _node(NODE_ID, T0),
+                *[_camera(camera_id) for camera_id in cameras],
+                *[_assignment(camera_id, NODE_ID, T0 + timedelta(seconds=50)) for camera_id in cameras],
+            ],
+        )
+        monkeypatch.setattr(placement, "SessionLocal", factory)
+        monkeypatch.setattr(placement, "datetime", MutableClock)
+        controller = _load_controller()
+        calls = {"n": 0}
+
+        async def lock(_session):
+            calls["n"] += 1
+            number = calls["n"]
+            acquired = number == 1 or (number - 2) % 3 == 2
+            if acquired:
+                async with factory() as heartbeat_session:
+                    async with heartbeat_session.begin():
+                        node = await heartbeat_session.get(InfrastructureNodeEntity, NODE_ID)
+                        node.heartbeat_at = MutableClock.instant
+            return acquired
+
+        async def advance(delay):
+            MutableClock.instant = MutableClock.instant + timedelta(seconds=delay)
+
+        monkeypatch.setattr(placement, "_leader_lock", lock)
+        monkeypatch.setattr(placement.asyncio, "sleep", advance)
+        monkeypatch.setattr(controller.asyncio, "sleep", advance)
+        MutableClock.instant = T0
+        stamps = []
+        for index in range(10):
+            await placement.run_placement_once()
+            stamps.append(MutableClock.instant)
+            if index == 0:
+                first = {row.camera_id: row for row in await _assignments(factory)}["cam-01"]
+                assert _as_utc(first.lease_expires_at) == T0 + timedelta(seconds=60)
+                assert first.node_id == NODE_ID
+                assert first.generation == 1
+            if index < 9:
+                await controller.asyncio.sleep(
+                    controller.resolved_placement_interval_seconds(settings.placement_interval_seconds)
+                )
+        assert stamps[0] == T0
+        assert stamps[7] == T0 + timedelta(seconds=63)
+        assert stamps[9] == T0 + timedelta(seconds=81)
+        commit_at = stamps[9]
+        assert commit_at > T0 + timedelta(seconds=62)
+        assert not effective_authority_active(T0 + timedelta(seconds=60), None, commit_at, 0)
+        assert not effective_authority_active(
+            T0 + timedelta(seconds=60),
+            None,
+            commit_at,
+            GRACE_SECONDS,
+        )
+        renewed = {row.camera_id: row for row in await _assignments(factory)}["cam-01"]
+        assert renewed.node_id == NODE_ID
+        assert renewed.generation == 1
+        assert _as_utc(renewed.lease_expires_at) == commit_at + timedelta(seconds=60)
+
+    asyncio.run(scenario())
+
+
+async def _move_site_after_renewal_read(factory):
+    async def move():
+        async with factory() as other:
+            async with other.begin():
+                region = (
+                    await other.execute(
+                        select(SiteRegionEntity).where(SiteRegionEntity.site_id == "site-a")
+                    )
+                ).scalar_one()
+                region.region_id = "region-b"
+
+    return move
+
+
+@pytest.mark.parametrize("database_url", _authority_database_urls())
+def test_off_page_site_move_committed_by_a_second_session_is_not_renewed(
+    tmp_path, monkeypatch, database_url
+):
+    """QA-014-202. A site move committed after the renewal read must not extend.
+
+    Scan batch 1 and the camera cursor already at cam-a, so this run scans
+    cam-b only. A second session commits region-b. cam-a is not on that page
+    and must keep the lease it had.
+    """
+
+    async def scenario():
+        factory, engine = await _open_database(tmp_path, "off-page-region.db", database_url)
+        try:
+            _configure_budget(
+                monkeypatch,
+                lease=60,
+                interval=2,
+                scan_batch=1,
+                renewal_batch=1,
+                max_assignments=10,
+                lock_retry_limit=1,
+            )
+            original_lease = T0 + timedelta(seconds=50)
+            await _seed(
+                factory,
+                [
+                    _node("node-a", T0, region_id="region-a"),
+                    _node("node-b", T0, region_id="region-b"),
+                    _site_region("site-a", "region-a"),
+                    _camera("cam-a"),
+                    _camera("cam-b"),
+                    _assignment(
+                        "cam-a",
+                        "node-a",
+                        original_lease,
+                        region_id="region-a",
+                        assignment_id="pa-cam-a",
+                    ),
+                    _assignment(
+                        "cam-b",
+                        "node-a",
+                        original_lease,
+                        region_id="region-a",
+                        assignment_id="pa-cam-b",
+                    ),
+                    _cursor(placement.CURSOR_KEY, {"camera_id": "cam-a"}),
+                    _cursor(placement.RENEWAL_CURSOR_KEY, {}),
+                ],
+            )
+            monkeypatch.setattr(placement, "SessionLocal", factory)
+            monkeypatch.setattr(placement, "datetime", MutableClock)
+            real_collect = placement._collect_renewal_candidates
+            move_site = await _move_site_after_renewal_read(factory)
+
+            async def collecting(*args, **kwargs):
+                result = await real_collect(*args, **kwargs)
+                await move_site()
+                return result
+
+            monkeypatch.setattr(placement, "_collect_renewal_candidates", collecting)
+            MutableClock.instant = T0 + timedelta(seconds=10)
+            await _touch_heartbeat(factory, "node-a", MutableClock.instant)
+            await _touch_heartbeat(factory, "node-b", MutableClock.instant)
+            result = await placement.run_placement_once()
+            rows = {row.camera_id: row for row in await _assignments(factory)}
+            assert result["renewed"] == 0, result
+            assert result["moved"] == 0, result
+            assert result["deferred_autonomy"] == 1, result
+            assert result["scanned"] == 1, result
+            for camera_id in ("cam-a", "cam-b"):
+                assert rows[camera_id].node_id == "node-a"
+                assert rows[camera_id].generation == 1
+                assert rows[camera_id].region_id == "region-a"
+                assert _as_utc(rows[camera_id].lease_expires_at) == original_lease
+
+            monkeypatch.setattr(settings, "placement_batch_size", 10)
+            monkeypatch.setattr(settings, "placement_renewal_batch_size", 10)
+            monkeypatch.setattr(placement, "_collect_renewal_candidates", real_collect)
+            follow = await placement.run_placement_once()
+            rows = {row.camera_id: row for row in await _assignments(factory)}
+            assert follow["renewed"] == 0, follow
+            assert follow["moved"] == 0, follow
+            assert follow["deferred_autonomy"] == 2, follow
+            assert _as_utc(rows["cam-a"].lease_expires_at) == original_lease
+            assert rows["cam-a"].node_id == "node-a"
+            assert rows["cam-a"].generation == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+async def _disable_policies(factory, camera_ids):
+    async def disable():
+        async with factory() as other:
+            async with other.begin():
+                policies = (
+                    await other.execute(
+                        select(RecordingPolicyEntity).where(RecordingPolicyEntity.camera_id.in_(camera_ids))
+                    )
+                ).scalars().all()
+                for policy in policies:
+                    policy.enabled = False
+                ai_rows = (
+                    await other.execute(
+                        select(CameraAIPolicyEntity).where(CameraAIPolicyEntity.camera_id.in_(camera_ids))
+                    )
+                ).scalars().all()
+                for policy in ai_rows:
+                    policy.enabled = False
+
+    return disable
+
+
+@pytest.mark.parametrize("database_url", _authority_database_urls())
+def test_recording_disabled_by_a_second_session_is_not_renewed(tmp_path, monkeypatch, database_url):
+    """QA-014-203. A committed enabled=false is not renewed from the identity map.
+
+    The disabling row is committed by a second session. This does not patch
+    _role_required. Media, which stays required, is still renewed.
+    """
+
+    async def scenario():
+        factory, engine = await _open_database(tmp_path, "recording-commit.db", database_url)
+        try:
+            lease = 60
+            _configure_budget(
+                monkeypatch,
+                lease=lease,
+                interval=2,
+                scan_batch=10,
+                renewal_batch=10,
+                max_assignments=10,
+                lock_retry_limit=1,
+            )
+            original_lease = T0 + timedelta(seconds=50)
+            await _seed(
+                factory,
+                [
+                    _node(
+                        "node-a",
+                        T0,
+                        roles=("media", "recording"),
+                        capacity=_capacity_all(),
+                        load=_load_all(),
+                    ),
+                    _camera("cam-a"),
+                    _camera("cam-b"),
+                    _recording_policy("cam-a", enabled=True),
+                    _recording_policy("cam-b", enabled=True),
+                    _assignment("cam-a", "node-a", original_lease, assignment_id="pa-cam-a-media"),
+                    _assignment(
+                        "cam-a",
+                        "node-a",
+                        original_lease,
+                        role="recording",
+                        assignment_id="pa-cam-a-recording",
+                    ),
+                    _assignment("cam-b", "node-a", original_lease, assignment_id="pa-cam-b-media"),
+                    _assignment(
+                        "cam-b",
+                        "node-a",
+                        original_lease,
+                        role="recording",
+                        assignment_id="pa-cam-b-recording",
+                    ),
+                    _cursor(placement.CURSOR_KEY, {}),
+                    _cursor(placement.RENEWAL_CURSOR_KEY, {}),
+                ],
+            )
+            monkeypatch.setattr(placement, "SessionLocal", factory)
+            monkeypatch.setattr(placement, "datetime", MutableClock)
+            real_collect = placement._collect_renewal_candidates
+            disable = await _disable_policies(factory, ["cam-a", "cam-b"])
+
+            async def collecting(*args, **kwargs):
+                result = await real_collect(*args, **kwargs)
+                await disable()
+                return result
+
+            monkeypatch.setattr(placement, "_collect_renewal_candidates", collecting)
+            MutableClock.instant = T0 + timedelta(seconds=10)
+            await _touch_heartbeat(factory, "node-a", MutableClock.instant)
+            result = await placement.run_placement_once()
+            rows = {(row.camera_id, row.role): row for row in await _assignments(factory)}
+            assert result["renewed"] == 2, result
+            assert result["moved"] == 0, result
+            fresh_lease = MutableClock.instant + timedelta(seconds=lease)
+            for camera_id in ("cam-a", "cam-b"):
+                media = rows[(camera_id, "media")]
+                recording = rows[(camera_id, "recording")]
+                assert _as_utc(media.lease_expires_at) == fresh_lease
+                assert media.generation == 1
+                assert _as_utc(recording.lease_expires_at) == original_lease
+                assert recording.generation == 1
+                assert recording.node_id == "node-a"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("database_url", _authority_database_urls())
+def test_off_page_recording_and_ai_disabled_by_a_second_session_are_not_renewed(
+    tmp_path, monkeypatch, database_url
+):
+    """A policy commit for a camera the scan page did not load is not renewed."""
+
+    async def scenario():
+        factory, engine = await _open_database(tmp_path, "off-page-policy.db", database_url)
+        try:
+            lease = 60
+            _configure_budget(
+                monkeypatch,
+                lease=lease,
+                interval=2,
+                scan_batch=1,
+                renewal_batch=3,
+                max_assignments=10,
+                lock_retry_limit=1,
+            )
+            original_lease = T0 + timedelta(seconds=50)
+            await _seed(
+                factory,
+                [
+                    _node(
+                        "node-a",
+                        T0,
+                        roles=("media", "recording", "ai"),
+                        capacity=_capacity_all(),
+                        load=_load_all(),
+                    ),
+                    _camera("cam-a"),
+                    _camera("cam-b"),
+                    _recording_policy("cam-a", enabled=True),
+                    _assignment("cam-a", "node-a", original_lease, assignment_id="pa-cam-a-media"),
+                    _assignment(
+                        "cam-a",
+                        "node-a",
+                        original_lease,
+                        role="recording",
+                        assignment_id="pa-cam-a-recording",
+                    ),
+                    _assignment(
+                        "cam-a",
+                        "node-a",
+                        original_lease,
+                        role="ai",
+                        assignment_id="pa-cam-a-ai",
+                    ),
+                    _assignment("cam-b", "node-a", original_lease, assignment_id="pa-cam-b-media"),
+                    _cursor(placement.CURSOR_KEY, {"camera_id": "cam-a"}),
+                    _cursor(placement.RENEWAL_CURSOR_KEY, {}),
+                ],
+            )
+            await _seed(factory, [CameraAIPolicyEntity(id="ai-cam-a", camera_id="cam-a", enabled=True)])
+            monkeypatch.setattr(placement, "SessionLocal", factory)
+            monkeypatch.setattr(placement, "datetime", MutableClock)
+            real_collect = placement._collect_renewal_candidates
+            disable = await _disable_policies(factory, ["cam-a"])
+
+            async def collecting(*args, **kwargs):
+                result = await real_collect(*args, **kwargs)
+                await disable()
+                return result
+
+            monkeypatch.setattr(placement, "_collect_renewal_candidates", collecting)
+            MutableClock.instant = T0 + timedelta(seconds=10)
+            await _touch_heartbeat(factory, "node-a", MutableClock.instant)
+            result = await placement.run_placement_once()
+            rows = {(row.camera_id, row.role): row for row in await _assignments(factory)}
+            fresh_lease = MutableClock.instant + timedelta(seconds=lease)
+            assert result["moved"] == 0, result
+            assert _as_utc(rows[("cam-a", "media")].lease_expires_at) == fresh_lease
+            assert _as_utc(rows[("cam-a", "recording")].lease_expires_at) == original_lease
+            assert _as_utc(rows[("cam-a", "ai")].lease_expires_at) == original_lease
+            assert rows[("cam-a", "recording")].generation == 1
+            assert rows[("cam-a", "ai")].generation == 1
+            assert rows[("cam-a", "recording")].node_id == "node-a"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("database_url", _authority_database_urls())
+def test_failover_does_not_overwrite_a_newer_generation(tmp_path, monkeypatch, caplog, database_url):
+    """QA-014-204. Failover must not replace a generation another session committed.
+
+    cam-z is expired on node-a. node-b is the eligible successor. Before the
+    failover write, a second session commits node-c at generation 9.
+    """
+
+    async def scenario():
+        factory, engine = await _open_database(tmp_path, "failover-generation.db", database_url)
+        try:
+            _configure_budget(
+                monkeypatch,
+                lease=60,
+                interval=2,
+                scan_batch=10,
+                renewal_batch=10,
+                max_assignments=10,
+                lock_retry_limit=1,
+            )
+            successor_lease = T0 + timedelta(seconds=90)
+            await _seed(
+                factory,
+                [
+                    _node("node-a", T0 - timedelta(seconds=40)),
+                    _node("node-b", T0),
+                    _node("node-c", T0 - timedelta(seconds=40)),
+                    _camera("cam-z"),
+                    _assignment("cam-z", "node-a", T0, assignment_id="pa-cam-z"),
+                    _cursor(placement.CURSOR_KEY, {}),
+                    _cursor(placement.RENEWAL_CURSOR_KEY, {}),
+                ],
+            )
+            monkeypatch.setattr(placement, "SessionLocal", factory)
+            monkeypatch.setattr(placement, "datetime", MutableClock)
+            real_assign = placement._assign
+
+            async def commit_successor():
+                async with factory() as other:
+                    async with other.begin():
+                        row = (
+                            await other.execute(
+                                select(PlacementAssignmentEntity).where(
+                                    PlacementAssignmentEntity.camera_id == "cam-z"
+                                )
+                            )
+                        ).scalar_one()
+                        row.node_id = "node-c"
+                        row.generation = 9
+                        row.lease_expires_at = successor_lease
+
+            async def assigning(*args, **kwargs):
+                await asyncio.wait_for(commit_successor(), 3)
+                return await real_assign(*args, **kwargs)
+
+            monkeypatch.setattr(placement, "_assign", assigning)
+            caplog.set_level(logging.CRITICAL, logger="app.services.placement")
+            MutableClock.instant = T0 + timedelta(seconds=10)
+            await _touch_heartbeat(factory, "node-b", MutableClock.instant)
+            result = await placement.run_placement_once()
+            row = (await _assignments(factory))[0]
+            assert result["moved"] == 0, result
+            assert result["deferred_autonomy"] >= 1, result
+            assert row.node_id == "node-c"
+            assert row.generation == 9
+            assert _as_utc(row.lease_expires_at) == successor_lease
+            assert "placement_failover_superseded" in caplog.text
+            assert "cam-z" in caplog.text
+            assert await _revocations(factory) == []
+        finally:
+            await engine.dispose()
 
     asyncio.run(scenario())
