@@ -10,7 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from phase8_benchmark_common import result_fingerprint, validate_result
+from phase8_benchmark_common import (
+    Rejection,
+    parse_benchmark_record,
+    repeat_verdict,
+    result_fingerprint,
+)
+from phase8_benchmark_common import hardware_key as shared_hardware_key
 
 
 MATRIX_VERSION = "phase8-hardware-matrix-v1"
@@ -22,6 +28,8 @@ class Evidence:
 
     Attributes:
         benchmark_id: Source benchmark identifier.
+        content_fingerprint: Allowlisted measurement fingerprint. Descriptive
+            hardware text, notes, timestamps, and volatile host state are omitted.
         commit_sha: Benchmarked source revision.
         hardware_key: Stable hardware/environment identity.
         hardware: Captured hardware metadata.
@@ -30,14 +38,17 @@ class Evidence:
         observed_capacity: Observed workload capacity.
         duration_seconds: Measured workload duration.
         warmup_seconds: Warmup duration.
-        failure_rate: Observed operation failure rate.
+        failure_rate: Observed operation failure rate, or None when that field
+            was JSON null. Qualified rows always carry a number.
         cpu_p95_pct: CPU p95 utilization when measured.
         ram_p95_pct: RAM p95 utilization when measured.
         qualified: Whether policy thresholds are satisfied.
         reasons: Qualification rejection reasons.
+        workload_key: Allowlisted workload identity shared with the reproducibility gate.
     """
 
     benchmark_id: str
+    content_fingerprint: str
     commit_sha: str
     hardware_key: str
     hardware: dict[str, Any]
@@ -46,11 +57,12 @@ class Evidence:
     observed_capacity: float
     duration_seconds: float
     warmup_seconds: float
-    failure_rate: float
+    failure_rate: float | None
     cpu_p95_pct: float | None
     ram_p95_pct: float | None
     qualified: bool
     reasons: tuple[str, ...]
+    workload_key: str = ""
 
 
 def _num(value: Any) -> float | None:
@@ -59,32 +71,92 @@ def _num(value: Any) -> float | None:
     return None
 
 
+def _repeated_values(values: list[str]) -> list[str]:
+    """Return values that occur more than once, in sorted order.
+
+    Args:
+        values: Benchmark identities or result fingerprints in submission order.
+
+    Returns:
+        Deterministic list of values whose count is greater than one.
+    """
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return sorted(value for value, count in counts.items() if count > 1)
+
+
+def _duplicate_repeat_reason(items: list[Evidence]) -> str | None:
+    """Reject copies that reuse one benchmark identity or measured-content fingerprint.
+
+    Args:
+        items: Evidence rows already grouped by role, dimension, commit and hardware.
+
+    Returns:
+        Rejection reason when an identity or content fingerprint repeats, otherwise None.
+    """
+    _repeat_count, verdict = repeat_verdict(
+        [item.benchmark_id for item in items],
+        [item.content_fingerprint for item in items],
+        min_repeats=1,
+    )
+    reasons = [reason for reason in verdict if reason.startswith("duplicate ")]
+    if not reasons:
+        return None
+    return "; ".join(reasons)
+
+
+def _role_duplicate_reason(
+    evidence: list[Evidence],
+    *,
+    role: str,
+    dimension: str,
+) -> str | None:
+    """Find a duplicate-repeat rejection for one demanded role.
+
+    Args:
+        evidence: Extracted benchmark evidence, including rows that failed thresholds.
+        role: Capacity role being qualified.
+        dimension: Capacity dimension required for that role.
+
+    Returns:
+        A duplicate identity or fingerprint reason for a qualified-threshold group,
+        or None when no such group reused an identity or fingerprint.
+    """
+    groups: dict[tuple[str, str], list[Evidence]] = {}
+    for item in evidence:
+        if not item.qualified or item.role != role or item.dimension != dimension:
+            continue
+        groups.setdefault((item.commit_sha, item.hardware_key, item.workload_key), []).append(item)
+    reasons = [
+        reason
+        for grouped in groups.values()
+        if (reason := _duplicate_repeat_reason(grouped)) is not None
+    ]
+    if not reasons:
+        return None
+    return sorted(reasons)[0]
+
+
 def hardware_key(result: dict[str, Any]) -> str:
     """Build a stable identity for benchmark commit and hardware characteristics.
+
+    build_report and build_matrix both use this key. Descriptive text is
+    canonicalized, including OS name and version, and NIC and GPU inventories
+    are sorted. Letter case, repeated spaces, Unicode format characters, dotted
+    or dotless I, and inventory rotation therefore stay on one machine.
 
     Args:
         result: Validated Phase-8 benchmark result.
 
     Returns:
         Twenty-character SHA-256-derived hardware identity.
+
+    Raises:
+        ValueError: If a hardware number is not finite or a GPU index is missing
+            or duplicated.
     """
-    env = result["environment"]
-    hardware = env.get("hardware", {})
-    material = {
-        "commit_sha": env.get("commit_sha"),
-        "cpu_model": hardware.get("cpu_model"),
-        "cpu_logical_cores": hardware.get("cpu_logical_cores"),
-        "ram_total_bytes": hardware.get("ram_total_bytes"),
-        "network_interfaces": hardware.get("network_interfaces", []),
-        "gpus": hardware.get("gpus", []),
-        "storage_path": hardware.get("storage_path"),
-        "storage_device": hardware.get("storage_device"),
-        "storage_fstype": hardware.get("storage_fstype"),
-        "storage_total_bytes": hardware.get("storage_total_bytes"),
-    }
-    return hashlib.sha256(
-        json.dumps(material, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()[:20]
+    return shared_hardware_key(result)
 
 
 def capacity_dimension(result: dict[str, Any]) -> tuple[str, str, float] | None:
@@ -97,8 +169,11 @@ def capacity_dimension(result: dict[str, Any]) -> tuple[str, str, float] | None:
         Tuple of role, capacity-dimension name and positive observed capacity,
         or None when the workload has no qualification mapping.
     """
-    workload_type = result["workload"]["type"]
-    metrics = result["result"]
+    workload = result.get("workload") if isinstance(result, dict) else None
+    if not isinstance(workload, dict) or not isinstance(workload.get("type"), str):
+        return None
+    workload_type = workload["type"]
+    metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
 
     if workload_type == "event-ingest-http":
         capacity = _num(metrics.get("throughput_ops_s"))
@@ -148,29 +223,47 @@ def extract_evidence(
         max_ram_p95_pct: Maximum acceptable RAM p95 utilization.
 
     Returns:
-        Evidence object with qualification reasons, or None for an unmapped workload.
-
-    Raises:
-        ValueError: If benchmark result validation fails.
+        Evidence object with qualification reasons. Malformed content is an
+        unqualified evidence row, not an exception. None means the workload
+        has no capacity mapping.
     """
-    validate_result(result)
+    parsed = parse_benchmark_record(result)
+    if isinstance(parsed, Rejection):
+        return Evidence(
+            benchmark_id=parsed.benchmark_id,
+            content_fingerprint="",
+            commit_sha="",
+            hardware_key="",
+            workload_key="",
+            hardware={},
+            role="",
+            dimension="",
+            observed_capacity=0.0,
+            duration_seconds=0.0,
+            warmup_seconds=0.0,
+            failure_rate=0.0,
+            cpu_p95_pct=None,
+            ram_p95_pct=None,
+            qualified=False,
+            reasons=(parsed.reason,),
+        )
+    result = parsed.source
     mapping = capacity_dimension(result)
     if mapping is None:
         return None
     role, dimension, capacity = mapping
-    failure_rate = _num(result["result"].get("failure_rate"))
-    failure_rate = 0.0 if failure_rate is None else failure_rate
-    duration = float(result["workload"].get("duration_seconds") or 0.0)
-    warmup = float(result["workload"].get("warmup_seconds") or 0.0)
-    cpu_p95 = _num(result["resources"].get("cpu_pct", {}).get("p95"))
-    ram_p95 = _num(result["resources"].get("ram_pct", {}).get("p95"))
+    failure_rate = parsed.failure_rate
+    duration = parsed.duration_seconds
+    warmup = parsed.warmup_seconds
+    cpu_p95 = parsed.cpu_p95_pct
+    ram_p95 = parsed.ram_p95_pct
 
-    reasons = []
+    reasons = list(parsed.null_measured_reasons)
     if duration < min_duration_seconds:
         reasons.append(f"duration {duration:.1f}s < required {min_duration_seconds:.1f}s")
     if warmup < min_warmup_seconds:
         reasons.append(f"warmup {warmup:.1f}s < required {min_warmup_seconds:.1f}s")
-    if failure_rate > max_failure_rate:
+    if failure_rate is not None and failure_rate > max_failure_rate:
         reasons.append(
             f"failure_rate {failure_rate:.6f} > allowed {max_failure_rate:.6f}"
         )
@@ -183,12 +276,15 @@ def extract_evidence(
     elif ram_p95 > max_ram_p95_pct:
         reasons.append(f"RAM p95 {ram_p95:.1f}% > allowed {max_ram_p95_pct:.1f}%")
 
-    env = result["environment"]
+    env = result.get("environment") if isinstance(result.get("environment"), dict) else {}
+    hardware = env.get("hardware") if isinstance(env.get("hardware"), dict) else {}
     return Evidence(
-        benchmark_id=str(result["benchmark_id"]),
-        commit_sha=str(env["commit_sha"]),
-        hardware_key=hardware_key(result),
-        hardware=dict(env.get("hardware", {})),
+        benchmark_id=parsed.benchmark_id,
+        content_fingerprint=parsed.content_fingerprint,
+        commit_sha=parsed.commit_sha,
+        hardware_key=parsed.hardware_key,
+        workload_key=parsed.workload_key,
+        hardware=dict(hardware),
         role=role,
         dimension=dimension,
         observed_capacity=float(capacity),
@@ -209,10 +305,10 @@ def load_results(paths: list[str]) -> list[dict[str, Any]]:
         paths: JSON files or directories containing JSON benchmark results.
 
     Returns:
-        Validated benchmark result dictionaries.
+        Loaded JSON values. Container and schema checks happen in
+        parse_benchmark_record so one bad file cannot abort the matrix.
 
     Raises:
-        ValueError: If any benchmark result is invalid.
         OSError: If an input path cannot be read.
         json.JSONDecodeError: If an input file is not valid JSON.
     """
@@ -225,7 +321,8 @@ def load_results(paths: list[str]) -> list[dict[str, Any]]:
             candidates = [path]
         for candidate in candidates:
             payload = json.loads(candidate.read_text(encoding="utf-8"))
-            validate_result(payload)
+            if isinstance(payload, dict):
+                payload["_source_file"] = str(candidate)
             results.append(payload)
     return results
 
@@ -243,17 +340,31 @@ def grouped_qualified_evidence(
 
     Returns:
         Best conservative qualified evidence row for each role/dimension pair.
+        Groups that reuse a benchmark identity or allowlisted content fingerprint
+        are omitted. repeat_count is the number of unique content fingerprints.
+        Copies that differ only by descriptive hardware text, labels, notes,
+        timestamps, number spelling, or volatile host state collide and are not
+        qualified. Byte-identical genuine aggregates fail closed. Distinct
+        fabricated numbers are outside this gate.
     """
-    groups: dict[tuple[str, str, str, str], list[Evidence]] = {}
+    groups: dict[tuple[str, str, str, str, str], list[Evidence]] = {}
     for item in evidence:
         if not item.qualified:
             continue
-        key = (item.role, item.dimension, item.commit_sha, item.hardware_key)
+        key = (item.role, item.dimension, item.commit_sha, item.hardware_key, item.workload_key)
         groups.setdefault(key, []).append(item)
 
     best: dict[tuple[str, str], dict[str, Any]] = {}
-    for (role, dimension, commit_sha, hw_key), items in groups.items():
-        if len(items) < min_repeats:
+    for (role, dimension, commit_sha, hw_key, _workload_key), items in groups.items():
+        repeat_count, verdict = repeat_verdict(
+            [item.benchmark_id for item in items],
+            [item.content_fingerprint for item in items],
+            min_repeats=min_repeats,
+        )
+        if any(reason.startswith("duplicate ") for reason in verdict):
+            continue
+        independent_repeats = repeat_count
+        if independent_repeats < min_repeats:
             continue
         conservative_capacity = min(i.observed_capacity for i in items)
         candidate = {
@@ -262,7 +373,7 @@ def grouped_qualified_evidence(
             "commit_sha": commit_sha,
             "hardware_key": hw_key,
             "hardware": items[0].hardware,
-            "repeat_count": len(items),
+            "repeat_count": independent_repeats,
             "benchmark_ids": [i.benchmark_id for i in items],
             "observed_capacity_min": conservative_capacity,
             "observed_capacity_values": [i.observed_capacity for i in items],
@@ -292,6 +403,15 @@ def build_matrix(
 ) -> dict[str, Any]:
     """Build deployment node requirements strictly from qualified measured evidence.
 
+    Duplicate benchmark identities and duplicate allowlisted content fingerprints
+    are not independent repeats and cannot produce QUALIFIED_FROM_MEASURED_EVIDENCE.
+    That uniqueness is enforced in this function, including when no reproducibility
+    report is supplied. repeat_count is the number of unique content fingerprints.
+    The fingerprint omits descriptive hardware text, notes, timestamps, and
+    volatile host state such as storage_free_bytes. That text is part of the
+    shared hardware key instead. Byte-identical aggregated measurements fail
+    closed. This gate does not defend against deliberately fabricated measurements.
+
     Args:
         results: Phase-8 benchmark results.
         demand: Deployment demand profiles and required dimensions.
@@ -309,7 +429,8 @@ def build_matrix(
         Hardware matrix with policy, qualified/rejected evidence and profile results.
 
     Raises:
-        ValueError: If policy values, benchmark evidence or deployment demands are invalid.
+        ValueError: If policy values or deployment demands are invalid. Malformed
+            benchmark content is reported as unqualified evidence.
     """
     if not 0 < design_headroom_fraction <= 1:
         raise ValueError("design_headroom_fraction must be in (0, 1]")
@@ -321,6 +442,9 @@ def build_matrix(
     if approved_benchmark_fingerprints is not None:
         approved_results = []
         for result in results:
+            if not isinstance(result, dict):
+                qa_excluded.append("")
+                continue
             benchmark_id = str(result.get("benchmark_id"))
             expected = approved_benchmark_fingerprints.get(benchmark_id)
             if expected is None:
@@ -387,11 +511,17 @@ def build_matrix(
                 }
                 continue
             if evidence_row is None:
+                duplicate_reason = _role_duplicate_reason(
+                    evidence,
+                    role=role,
+                    dimension=dimension,
+                )
                 roles[role] = {
                     "status": "UNQUALIFIED",
                     "dimension": dimension,
                     "demand": requested,
-                    "reason": f"no evidence with >= {min_repeats} qualified repeats",
+                    "reason": duplicate_reason
+                    or f"no evidence with >= {min_repeats} qualified repeats",
                 }
                 continue
 
@@ -486,6 +616,34 @@ def approved_fingerprints_from_reproducibility_report(path: str) -> dict[str, st
     return approved
 
 
+def _fail_closed_matrix(reason: str) -> dict[str, Any]:
+    """Build a minimal unqualified matrix that is always safe to serialize.
+
+    Args:
+        reason: Controlled explanation of the load or serialization failure.
+
+    Returns:
+        Matrix with no qualified evidence.
+    """
+    return {
+        "report_version": "phase8-hardware-matrix-v1",
+        "qualified_evidence": [],
+        "rejected_evidence": [{"reason": reason}],
+        "profiles": [],
+    }
+
+
+def _serialize_matrix(matrix: dict[str, Any]) -> str:
+    try:
+        return json.dumps(matrix, indent=2, sort_keys=True)
+    except RecursionError:
+        return json.dumps(
+            _fail_closed_matrix("report nesting exceeds the serialization limit"),
+            indent=2,
+            sort_keys=True,
+        )
+
+
 def main():
     """Build and write a hardware matrix from reproducibility-approved evidence."""
     parser = argparse.ArgumentParser(
@@ -508,28 +666,32 @@ def main():
     parser.add_argument("--design-headroom-fraction", type=float, default=0.80)
     parser.add_argument("--no-n-plus-one", action="store_true")
     args = parser.parse_args()
-
-    results = load_results(args.results)
-    demand = json.loads(Path(args.demand).read_text(encoding="utf-8"))
-    approved_fingerprints = approved_fingerprints_from_reproducibility_report(
-        args.reproducibility_report
-    )
-    matrix = build_matrix(
-        results=results,
-        demand=demand,
-        approved_benchmark_fingerprints=approved_fingerprints,
-        min_repeats=args.min_repeats,
-        min_duration_seconds=args.min_duration_seconds,
-        min_warmup_seconds=args.min_warmup_seconds,
-        max_failure_rate=args.max_failure_rate,
-        max_cpu_p95_pct=args.max_cpu_p95_pct,
-        max_ram_p95_pct=args.max_ram_p95_pct,
-        design_headroom_fraction=args.design_headroom_fraction,
-        n_plus_one=not args.no_n_plus_one,
-    )
     target = Path(args.output)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(matrix, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        results = load_results(args.results)
+        demand = json.loads(Path(args.demand).read_text(encoding="utf-8"))
+        approved_fingerprints = approved_fingerprints_from_reproducibility_report(
+            args.reproducibility_report
+        )
+        matrix = build_matrix(
+            results=results,
+            demand=demand,
+            approved_benchmark_fingerprints=approved_fingerprints,
+            min_repeats=args.min_repeats,
+            min_duration_seconds=args.min_duration_seconds,
+            min_warmup_seconds=args.min_warmup_seconds,
+            max_failure_rate=args.max_failure_rate,
+            max_cpu_p95_pct=args.max_cpu_p95_pct,
+            max_ram_p95_pct=args.max_ram_p95_pct,
+            design_headroom_fraction=args.design_headroom_fraction,
+            n_plus_one=not args.no_n_plus_one,
+        )
+    except RecursionError:
+        matrix = _fail_closed_matrix("benchmark record nesting exceeds the serialization limit")
+    except (OSError, json.JSONDecodeError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        matrix = _fail_closed_matrix(str(exc) or exc.__class__.__name__)
+    target.write_text(_serialize_matrix(matrix), encoding="utf-8")
 
     qualified_roles = sum(
         1

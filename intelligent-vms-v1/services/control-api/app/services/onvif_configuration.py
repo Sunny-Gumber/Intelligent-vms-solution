@@ -168,6 +168,60 @@ def _validate_mode(name: str, value: str | None, modes: list[str]) -> None:
         )
 
 
+def _require_advertised(value: str, advertised: list[str] | None, message: str) -> None:
+    """Reject a device write when ``value`` was not advertised.
+
+    Args:
+        value: Value that would be written.
+        advertised: Advertised values. ``None`` and an empty list both reject.
+        message: Client-safe explanation.
+
+    Returns:
+        None when ``value`` is in ``advertised``.
+
+    Raises:
+        OnvifError: ``VALUE_NOT_SUPPORTED`` with status 422 when the advertised
+            list is empty, missing, or does not contain ``value``. Callers must
+            not send a mutation after this raises.
+    """
+    if value not in (advertised or []):
+        raise OnvifError("VALUE_NOT_SUPPORTED", message, 422)
+
+
+def _require_osd_write(options: dict, *, text_type: str, position_type: str) -> None:
+    """Reject an OSD mutation the camera did not advertise.
+
+    CreateOSD and SetOSD always emit OSD type ``Text``, one text-string type
+    and one position. Each value must appear in the advertised lists. An empty
+    or missing list rejects the write.
+
+    Args:
+        options: OSD options from ``get_osd_options``. Missing ``types`` or
+            ``positions`` is treated as no advertisement.
+        text_type: TextString type that would be written.
+        position_type: Position type that would be written.
+
+    Returns:
+        None when ``Text``, ``text_type`` and ``position_type`` are advertised.
+
+    Raises:
+        OnvifError: ``VALUE_NOT_SUPPORTED`` with status 422. Callers must not
+            send CreateOSD or SetOSD after this raises.
+    """
+    advertised_types = options.get("types") or []
+    if "Text" not in advertised_types or text_type not in advertised_types:
+        raise OnvifError(
+            "VALUE_NOT_SUPPORTED",
+            "Requested OSD type is not advertised by the camera",
+            422,
+        )
+    _require_advertised(
+        position_type,
+        options.get("positions"),
+        "Requested OSD position is not advertised by the camera",
+    )
+
+
 def profile_by_token(profiles: list[dict], token: str | None) -> dict:
     """Return a stored ONVIF profile by token.
 
@@ -1158,7 +1212,9 @@ async def get_osd_options(
         site_id: Camera site.
 
     Returns:
-        Bounded OSD option summary including supported types and maximum count.
+        Bounded OSD option summary including supported types, positions and
+        maximum count. ``positions`` is the advertised ``PositionOption`` list
+        and is empty when the device omits it.
 
     Raises:
         OnvifError: If Media/OSD options are unavailable.
@@ -1178,13 +1234,14 @@ async def get_osd_options(
         site_id=site_id,
     )
     types = _all_text(root, "Type")
+    positions = _all_text(root, "PositionOption")
     maximum = _first_element(root, "MaximumNumberOfOSDs")
     total = None
     if maximum is not None:
         raw = maximum.attrib.get("Total") or _child_text(maximum, "Total")
         if raw:
             total = int(raw)
-    return {"types": types, "maximum_total": total}
+    return {"types": types, "positions": positions, "maximum_total": total}
 
 
 async def create_osd(
@@ -1213,7 +1270,10 @@ async def create_osd(
 
     Raises:
         OnvifError: If the device does not support the requested OSD operation,
-            or a supplied token contains a character XML 1.0 forbids.
+            the OSD type or position is not advertised, or a supplied token
+            contains a character XML 1.0 forbids. An empty, missing or
+            unadvertised type or position raises ``VALUE_NOT_SUPPORTED`` (422)
+            and CreateOSD is not sent.
     """
     media = _service(services, "/ver10/media/wsdl", tenant_id, site_id)
     options = await get_osd_options(
@@ -1237,8 +1297,11 @@ async def create_osd(
             "Camera has reached its advertised maximum OSD count",
             422,
         )
-    if options["types"] and "Text" not in options["types"]:
-        raise _unsupported("Camera did not advertise text OSD support")
+    _require_osd_write(
+        options,
+        text_type=payload["osd_type"],
+        position_type=payload["position_type"],
+    )
     plain = ""
     if payload["osd_type"] == "Plain":
         plain = f"<tt:PlainText>{_xml_text(payload['text'])}</tt:PlainText>"
@@ -1293,7 +1356,10 @@ async def update_osd(
         Full OSD list after modification.
 
     Raises:
-        OnvifError: If the OSD does not exist or cannot be modified.
+        OnvifError: If the OSD does not exist, cannot be modified, or the type
+            or position that would be written is not advertised. An empty,
+            missing or unadvertised type or position raises
+            ``VALUE_NOT_SUPPORTED`` (422) and SetOSD is not sent.
     """
     existing = await list_osds(services, username, password, tenant_id, site_id)
     row = next((item for item in existing if item["token"] == osd_token), None)
@@ -1306,6 +1372,15 @@ async def update_osd(
     x = payload.get("x", row.get("x"))
     y = payload.get("y", row.get("y"))
     position_type = row.get("position_type") or "Custom"
+    options = await get_osd_options(
+        services,
+        row.get("video_source_configuration_token") or "",
+        username,
+        password,
+        tenant_id,
+        site_id,
+    )
+    _require_osd_write(options, text_type=text_type, position_type=position_type)
     position = ""
     if position_type == "Custom" and x is not None and y is not None:
         position = f"<tt:Pos x={_xml_attr(x)} y={_xml_attr(y)}/>"
@@ -1512,7 +1587,9 @@ async def create_mask(
 
     Raises:
         OnvifError: If Media2 mask options reject the request, write fails, or a
-            supplied token contains a character XML 1.0 forbids.
+            supplied token contains a character XML 1.0 forbids. An empty,
+            missing or unadvertised mask type raises ``VALUE_NOT_SUPPORTED``
+            (422) and CreateMask is not sent.
     """
     media2 = _service(services, "/ver20/media/wsdl", tenant_id, site_id)
     options_root = await _soap(
@@ -1555,13 +1632,11 @@ async def create_mask(
             "Camera accepts only four-point privacy masks",
             422,
         )
-    supported_types = options["types"]
-    if supported_types and payload["mask_type"] not in supported_types:
-        raise OnvifError(
-            "VALUE_NOT_SUPPORTED",
-            "Requested privacy-mask type is not advertised by the camera",
-            422,
-        )
+    _require_advertised(
+        payload["mask_type"],
+        options.get("types"),
+        "Requested privacy-mask type is not advertised by the camera",
+    )
     points_xml = _points_xml(payload["points"])
     body = (
         f"<tr2:CreateMask><tr2:Mask{_optional_token_attr(payload.get('token'))}>"
@@ -1617,6 +1692,8 @@ async def update_mask(
 
     Raises:
         OnvifError: If the mask is absent or options reject the requested patch.
+            An empty, missing or unadvertised mask type raises
+            ``VALUE_NOT_SUPPORTED`` (422) and SetMask is not sent.
     """
     existing = await list_masks(
         services,
@@ -1664,13 +1741,11 @@ async def update_mask(
             "Camera accepts only four-point privacy masks",
             422,
         )
-    supported_types = options["types"]
-    if supported_types and mask_type not in supported_types:
-        raise OnvifError(
-            "VALUE_NOT_SUPPORTED",
-            "Requested privacy-mask type is not advertised by the camera",
-            422,
-        )
+    _require_advertised(
+        mask_type,
+        options.get("types"),
+        "Requested privacy-mask type is not advertised by the camera",
+    )
     points_xml = _points_xml(points)
     body = (
         "<tr2:SetMask>"
