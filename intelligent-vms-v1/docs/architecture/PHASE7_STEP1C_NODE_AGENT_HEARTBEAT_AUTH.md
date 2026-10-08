@@ -20,7 +20,7 @@ This step is **telemetry + auth hardening only**. It does not change placement a
 
 ### control-api (existing service, hardened)
 - Remains source of truth for `infrastructure_nodes` latest accepted snapshot.
-- Keeps trusted node registration admin-only and enforces node-scoped service tokens on heartbeat routes.
+- Keeps trusted node registration limited to a global administrator (role `admin` and `tenant_id` `"*"`) and enforces node-scoped service tokens on heartbeat routes. A tenant-scoped administrator is refused.
 - Persists heartbeat snapshots; placement-controller consumes persisted values.
 
 ---
@@ -101,7 +101,7 @@ Recommended defaults:
 - `NETWORK_INTERFACE` (optional; auto-detect if empty)
 - `MEDIAMTX_API_URL` (required when role contains `media` or `recording`)
 
-Configured-safe placement limits are not node-agent environment variables. They are registered by an administrator on the infrastructure-node record.
+Configured-safe placement limits are not node-agent environment variables. They are registered by a global administrator (role `admin` and `tenant_id` `"*"`) on the infrastructure-node record.
 
 Startup validation failures are fatal for bad URLs, bad role sets, invalid timing/backoff settings, or a missing MediaMTX API URL for media/recording roles.
 
@@ -119,9 +119,10 @@ Token model for node-agent -> control-api:
   - `node_id` (mandatory for node-agent calls)
 
 control-api enforcement:
-- `PUT /api/v1/infrastructure/nodes/{node_id}`: admin-only trusted registration/configuration.
+- `PUT /api/v1/infrastructure/nodes/{node_id}`: global-administrator trusted registration/configuration/drain. The caller must have role `admin` and `tenant_id` `"*"`. A tenant-scoped administrator receives HTTP 403 and the node record does not change. Drain is `state=draining` on this route. There is no node-delete route.
 - `POST /api/v1/infrastructure/nodes/{node_id}/heartbeat`:
-  - admin may operate any node;
+  - a global administrator (role `admin` and `tenant_id` `"*"`) may operate any node;
+  - a tenant-scoped administrator is refused with HTTP 403 and the heartbeat does not change node state;
   - service role must have claim `node_id == {node_id}`;
   - mismatch or missing claim -> 403.
 - Heartbeat cannot mutate trusted endpoints or capacity.
@@ -142,7 +143,7 @@ Heartbeat semantics:
 
 Retry policy:
 - Network error/timeout/5xx -> exponential backoff with jitter, capped by `HEARTBEAT_BACKOFF_MAX_SECONDS`.
-- 404 on heartbeat -> report registration-required and keep bounded retry; admin must create the node record.
+- 404 on heartbeat -> report registration-required and keep bounded retry; a global administrator (role `admin` and `tenant_id` `"*"`) must create the node record.
 - 401/403 -> keep process alive, continue bounded retries, emit auth-failure metric/log.
 - Never exit solely due to control-api failure.
 
@@ -207,7 +208,7 @@ Control-api tests:
 8. Service token with matching `node_id` can heartbeat its own node.
 9. Service token cannot register/change trusted node endpoints.
 10. Service token with mismatched/missing `node_id` is rejected (403).
-11. Admin token can register/configure any node.
+11. A global administrator token (role `admin` and `tenant_id` `"*"`) can register/configure/drain any node. A tenant-scoped administrator token is refused with HTTP 403 and no state change.
 
 Integration tests:
 12. Node missing -> heartbeat 404 -> registration-required state + bounded retry, with no unauthorized PUT.
