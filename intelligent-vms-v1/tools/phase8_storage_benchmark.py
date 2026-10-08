@@ -10,20 +10,107 @@ from pathlib import Path
 
 from phase8_benchmark_common import SystemSampler, build_result, utc_iso, write_result
 
+# A raw write that returns 0 or None made no progress. Retrying it would submit
+# the same bytes again, so the first stall fails the run instead of spinning.
+_MAX_CONSECUTIVE_ZERO_WRITES = 1
+
+
+class StorageBenchmarkWriteError(RuntimeError):
+    """The storage benchmark stopped before the requested bytes were accepted.
+
+    Short raw writes are retried until the submitted chunk is accepted. A write
+    that returns 0 or None does not shrink that remainder, and
+    ``_MAX_CONSECUTIVE_ZERO_WRITES`` is 1, so the first stall fails the run.
+    A stream total other than the requested size fails here as well, before a
+    result dictionary is built. ``OSError`` from the handle is not converted
+    into this type.
+
+    Args:
+        message: Why this run cannot be reported as a successful benchmark.
+
+    Returns:
+        None. Instances are raised.
+
+    Raises:
+        StorageBenchmarkWriteError: Propagated to the benchmark caller.
+    """
+
+
+def _accept_payload(handle, payload: bytes) -> int:
+    """Write one chunk, counting only bytes the raw handle accepts.
+
+    Files are opened with buffering disabled. ``RawIOBase.write`` may accept a
+    short count, so the unaccepted tail is submitted again. Each accepted call
+    moves the tail forward by at least one byte, which bounds the retry by the
+    chunk length. A zero-length or ``None`` return fails immediately.
+
+    Args:
+        handle: Binary handle opened with ``buffering=0``.
+        payload: Bytes that must all be accepted before this call returns.
+
+    Returns:
+        The number of accepted bytes, equal to ``len(payload)``.
+
+    Raises:
+        StorageBenchmarkWriteError: The handle made no progress, or returned a
+            count that is not a positive integer inside the submitted slice.
+        OSError: ``handle.write`` failed. Already-accepted bytes are not success.
+    """
+    accepted = 0
+    while accepted < len(payload):
+        count = handle.write(payload[accepted:])
+        if count is None or count == 0:
+            raise StorageBenchmarkWriteError(
+                "raw write accepted 0 bytes; "
+                f"stopping at {_MAX_CONSECUTIVE_ZERO_WRITES} consecutive zero write"
+            )
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise StorageBenchmarkWriteError(f"raw write returned a non-integer count: {count!r}")
+        remaining = len(payload) - accepted
+        if count < 0 or count > remaining:
+            raise StorageBenchmarkWriteError(
+                f"raw write returned {count}, outside the {remaining} bytes submitted"
+            )
+        accepted += count
+    return accepted
+
 
 def _write_stream(path: Path, total_bytes: int, chunk_bytes: int, fsync: bool) -> tuple[int, list[float]]:
+    """Write one stream and return bytes actually accepted plus chunk latencies.
+
+    ``buffering=0`` keeps the measurement on raw I/O. A buffered ``write`` would
+    report a full count before the kernel accepted the bytes and would move
+    ``fsync`` relative to that buffer. When ``fsync`` is true it still runs once
+    per completed chunk, after that chunk's bytes have been accepted. One
+    latency sample is recorded per chunk, including its short-write retries.
+
+    Args:
+        path: Destination file. The parent directory must already exist.
+        total_bytes: Exact number of bytes this stream must accept.
+        chunk_bytes: Maximum payload submitted for one chunk.
+        fsync: When true, fsync the handle after each completed chunk.
+
+    Returns:
+        Bytes actually accepted, and one latency sample per completed chunk.
+
+    Raises:
+        StorageBenchmarkWriteError: A raw write accepted no bytes or returned an
+            unusable count. The stream does not return a partial total.
+        OSError: A write or fsync failed.
+    """
     written = 0
     latencies = []
     block = b"\0" * chunk_bytes
+    # buffering=0 is required so short raw writes stay visible to _accept_payload.
     with path.open("wb", buffering=0) as handle:
         while written < total_bytes:
             payload = block[: min(chunk_bytes, total_bytes - written)]
             started = time.perf_counter()
-            handle.write(payload)
+            accepted = _accept_payload(handle, payload)
             if fsync:
                 os.fsync(handle.fileno())
             latencies.append(time.perf_counter() - started)
-            written += len(payload)
+            written += accepted
     return written, latencies
 
 
@@ -35,9 +122,13 @@ async def run(args) -> dict:
 
     Returns:
         Phase-8 benchmark result dictionary with write throughput/latency evidence.
+        Returned only after every requested byte was accepted.
 
     Raises:
         ValueError: If stream or chunk byte sizes are non-positive.
+        StorageBenchmarkWriteError: A raw write stalled, or the accepted total
+            differs from the requested size. No result dictionary is returned.
+        OSError: A stream write or fsync failed. No result dictionary is returned.
     """
     target_dir = Path(args.path)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -62,33 +153,53 @@ async def run(args) -> dict:
         target_dir / f"phase8-storage-{os.getpid()}-{index:04d}.bin"
         for index in range(args.streams)
     ]
+
+    def release_files():
+        if args.keep_files:
+            return
+        for path in paths:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
     sample_task = asyncio.create_task(sample_loop())
     started_at = utc_iso()
     started = time.perf_counter()
-    results = await asyncio.gather(
-        *[
-            asyncio.to_thread(
-                _write_stream,
-                path,
-                bytes_per_stream,
-                chunk_bytes,
-                args.fsync,
-            )
-            for path in paths
-        ]
-    )
+    try:
+        results = await asyncio.gather(
+            *[
+                asyncio.to_thread(
+                    _write_stream,
+                    path,
+                    bytes_per_stream,
+                    chunk_bytes,
+                    args.fsync,
+                )
+                for path in paths
+            ]
+        )
+    except Exception as write_error:
+        stop.set()
+        try:
+            await sample_task
+        except Exception as sample_error:
+            release_files()
+            raise write_error from sample_error
+        release_files()
+        raise
     duration = time.perf_counter() - started
     stop.set()
     await sample_task
 
     total_bytes = sum(item[0] for item in results)
     latencies = [latency for _, items in results for latency in items]
-    if not args.keep_files:
-        for path in paths:
-            try:
-                path.unlink()
-            except OSError:
-                pass
+    release_files()
+    expected_bytes = bytes_per_stream * len(paths)
+    if total_bytes != expected_bytes:
+        raise StorageBenchmarkWriteError(
+            f"storage benchmark accepted {total_bytes} bytes, expected {expected_bytes}"
+        )
 
     result = build_result(
         workload_type="synthetic-storage-write",
