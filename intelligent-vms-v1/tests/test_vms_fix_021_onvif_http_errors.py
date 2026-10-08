@@ -850,6 +850,26 @@ def test_discovery_runtime_error_is_generic_502(monkeypatch):
     _run(scenario)
 
 
+def test_discovery_value_error_is_generic_502(monkeypatch):
+    """A discovery ValueError uses the generic 502 and does not copy its text."""
+    _allow_site(monkeypatch)
+
+    def exploded(*_args, **_kwargs):
+        raise ValueError(LEAK)
+
+    monkeypatch.setattr(onvif_router, "discover", exploded)
+
+    async def scenario():
+        async with _api(monkeypatch) as client:
+            response = await client.post(
+                "/api/v1/onvif/discover",
+                json={"tenant_id": "tenant-a", "site_id": "site-a"},
+            )
+        _assert_error(response, 502, "ONVIF_ERROR", "ONVIF operation failed")
+
+    _run(scenario)
+
+
 def test_discovery_oserror_stays_503(monkeypatch):
     """WS-Discovery socket failure stays 503 and does not copy the OSError text."""
     _allow_site(monkeypatch)

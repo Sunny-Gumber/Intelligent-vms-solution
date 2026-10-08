@@ -496,6 +496,8 @@ async def discover_devices(
             503,
             {"code": "DISCOVERY_UNAVAILABLE", "message": "WS-Discovery socket is unavailable on this host/network"},
         ) from exc
+    except Exception as exc:
+        raise _http_error(exc) from exc
 
 
 @router.post("/probe", response_model=OnvifProbeRead)

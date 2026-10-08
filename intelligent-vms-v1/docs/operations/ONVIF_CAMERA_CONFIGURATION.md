@@ -46,11 +46,14 @@ operation timeout share one public message:
 | Blocked target (`TargetNotAllowed`) | 400 | `TARGET_NOT_ALLOWED` | ONVIF target is not allowed |
 | Bounded `OnvifError` | the error's status | the error's code | the error's fixed message |
 
-WS-Discovery `OSError` is separate. `POST /discover` and `POST /onboard/serial`
-return HTTP 503 `DISCOVERY_UNAVAILABLE`, "WS-Discovery socket is unavailable on
-this host/network". The `OSError` text is not copied. A `TimeoutError` from
-serial identification is skipped for that candidate. The search deadline itself
-is the router 504 below.
+WS-Discovery `OSError` is separate, and `TimeoutError` is an `OSError`.
+`POST /discover` and `POST /onboard/serial` return HTTP 503
+`DISCOVERY_UNAVAILABLE`, "WS-Discovery socket is unavailable on this
+host/network". The exception text is not copied. Any other exception the
+wrapper re-raises from `POST /discover`, including `ValueError` and
+`OnvifError`, uses the public mapping in the table above. A `TimeoutError` or
+`ValueError` from serial identification is skipped for that candidate. The
+search deadline itself is the router 504 below.
 
 Router-owned errors are raised before the device call, or after a call that
 already returned. They keep the detail in this table. They do not contain
