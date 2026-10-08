@@ -18,6 +18,7 @@ const SCENARIOS = new Set([
   "deferred-sdp-sign-out",
   "deferred-answer-sign-out",
   "deferred-post-auth-expiry",
+  "authenticated-post-stays-live",
 ]);
 
 const harness = {
@@ -375,7 +376,7 @@ function route(method, href, scenario) {
   if (method === "OPTIONS" && isWhep(href)) return new Response("", { status: 200 });
   if (method === "POST" && isWhep(href)) {
     harness.whepPostCount += 1;
-    if (scenario === "deferred-post-sign-out" || scenario === "deferred-post-auth-expiry") {
+    if (scenario === "deferred-post-sign-out" || scenario === "deferred-post-auth-expiry" || scenario === "authenticated-post-stays-live") {
       harness.reachedHold = true;
       return new Promise((resolve) => {
         harness.releaseHold = resolve;
@@ -631,11 +632,11 @@ async function runScenario(scenario, htmlPath) {
   if (scenario.endsWith("auth-expiry")) {
     harness.failNextHealth = true;
     await context.__vms.refreshHealth();
-  } else {
+  } else if (scenario !== "authenticated-post-stays-live") {
     await context.__vms.signOut();
   }
 
-  if (scenario.startsWith("deferred-post")) harness.releaseHold(whepResponse(false));
+  if (scenario.startsWith("deferred-post") || scenario === "authenticated-post-stays-live") harness.releaseHold(whepResponse(false));
   else if (scenario.startsWith("deferred-sdp")) harness.releaseHold(SDP_ANSWER);
   else harness.releaseHold();
 

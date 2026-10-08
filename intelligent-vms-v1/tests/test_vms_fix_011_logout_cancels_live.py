@@ -113,6 +113,31 @@ def test_deferred_remote_description_after_sign_out_does_not_register_the_sessio
     assert_late_response_cancelled(result, remote_description_applied=True)
 
 
+def test_whep_post_that_completes_while_authenticated_stays_live():
+    """A WHEP POST that finishes while the operator is signed in stays live."""
+    result = run_scenario("authenticated-post-stays-live")
+    assert_page_reached_inflight_whep(result)
+    assert {
+        "authenticated": result["authenticated"],
+        "auth_required": result["auth_required"],
+        "auth_panel_display": result["auth_panel_display"],
+        "live_session_count": result["live_session_count"],
+        "tile_state": result["tile_state"],
+        "media_deletes": result["media_deletes"],
+        "peer_closed": result["peer_closed"],
+        "remote_description_applied": result["remote_description_applied"],
+    } == {
+        "authenticated": True,
+        "auth_required": False,
+        "auth_panel_display": "none",
+        "live_session_count": 1,
+        "tile_state": "LIVE",
+        "media_deletes": [],
+        "peer_closed": False,
+        "remote_description_applied": True,
+    }
+
+
 def test_deferred_whep_post_after_auth_expiry_does_not_leave_a_live_session():
     """Auth expiry (HTTP 401) must cancel an in-flight WHEP POST the same way."""
     result = run_scenario("deferred-post-auth-expiry")
