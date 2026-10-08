@@ -12,6 +12,20 @@ import win32serviceutil
 
 
 SERVICES = ("IntelligentVMSControl", "IntelligentVMSMedia")
+# Win32 ERROR_SERVICE_DOES_NOT_EXIST. Message text is not trusted: only this
+# code means the service is absent. Access denied, query failure, and timeout
+# leave the service state unknown and must abort destructive maintenance.
+ERROR_SERVICE_DOES_NOT_EXIST = 1060
+_SERVICE_CONTROL_TIMEOUT_SECONDS = 30
+_SERVICE_REMOVAL_POLL_SECONDS = 0.25
+
+
+class ServiceMaintenanceError(RuntimeError):
+    """Raised when Windows SCM cannot prove a VMS service is stopped or removed.
+
+    Restore, purge, upgrade, and uninstall must abort on this error. A missing
+    service is not this error: Win32 error 1060 is a tolerated absence.
+    """
 
 
 def _service_exe() -> str:
@@ -47,22 +61,78 @@ def install(postgres_service: str) -> None:
     )
 
 
-def remove() -> None:
-    """Remove VMS services only; persistent product data remains untouched."""
-    for name in reversed(SERVICES):
+def _winerror(exc: BaseException) -> int | None:
+    code = getattr(exc, "winerror", None)
+    if type(code) is int:
+        return code
+    args = getattr(exc, "args", ())
+    if args and type(args[0]) is int:
+        return args[0]
+    return None
+
+
+def _is_missing_service(exc: BaseException) -> bool:
+    return _winerror(exc) == ERROR_SERVICE_DOES_NOT_EXIST
+
+
+def _stop_service(name: str) -> None:
+    try:
+        current = win32serviceutil.QueryServiceStatus(name)[1]
+    except Exception as exc:
+        if _is_missing_service(exc):
+            return
+        raise ServiceMaintenanceError(f"service query failed: {name}") from exc
+    if current == win32service.SERVICE_STOPPED:
+        return
+    try:
+        win32serviceutil.StopService(name)
+    except Exception as exc:
+        if _is_missing_service(exc):
+            return
+        raise ServiceMaintenanceError(f"service stop failed: {name}") from exc
+    try:
+        win32serviceutil.WaitForServiceStatus(name, win32service.SERVICE_STOPPED, _SERVICE_CONTROL_TIMEOUT_SECONDS)
+    except Exception as exc:
+        if _is_missing_service(exc):
+            return
+        raise ServiceMaintenanceError(f"service stop timed out: {name}") from exc
+    try:
+        observed = win32serviceutil.QueryServiceStatus(name)[1]
+    except Exception as exc:
+        if _is_missing_service(exc):
+            return
+        raise ServiceMaintenanceError(f"service query failed after stop: {name}") from exc
+    if observed != win32service.SERVICE_STOPPED:
+        raise ServiceMaintenanceError(f"service still running after stop: {name}")
+
+
+def _remove_service(name: str) -> None:
+    try:
+        win32serviceutil.RemoveService(name)
+    except Exception as exc:
+        if _is_missing_service(exc):
+            return
+        raise ServiceMaintenanceError(f"service removal failed: {name}") from exc
+    deadline = time.monotonic() + _SERVICE_CONTROL_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
         try:
-            win32serviceutil.RemoveService(name)
-        except Exception:
-            continue
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            try:
-                win32serviceutil.QueryServiceStatus(name)
-            except Exception:
-                break
-            time.sleep(0.25)
-        else:
-            raise RuntimeError(f"service removal did not complete: {name}")
+            win32serviceutil.QueryServiceStatus(name)
+        except Exception as exc:
+            if _is_missing_service(exc):
+                return
+            raise ServiceMaintenanceError(f"service query failed during removal: {name}") from exc
+        time.sleep(_SERVICE_REMOVAL_POLL_SECONDS)
+    raise ServiceMaintenanceError(f"service removal did not complete: {name}")
+
+
+def remove() -> None:
+    """Remove VMS services only; persistent product data remains untouched.
+
+    A missing service is ignored. Access denied, query failure, and timeout raise
+    ServiceMaintenanceError so uninstall cannot continue while a service remains.
+    """
+    for name in reversed(SERVICES):
+        _remove_service(name)
 
 
 def start() -> None:
@@ -78,15 +148,14 @@ def start() -> None:
 
 
 def stop() -> None:
-    """Stop media then control service and wait for each to stop."""
+    """Stop media then control and wait until each is stopped.
+
+    A missing service is ignored. Access denied, query failure, and timeout raise
+    ServiceMaintenanceError so restore, purge, upgrade, and uninstall cannot
+    continue while a service is still running.
+    """
     for name in reversed(SERVICES):
-        try:
-            current = win32serviceutil.QueryServiceStatus(name)[1]
-            if current != win32service.SERVICE_STOPPED:
-                win32serviceutil.StopService(name)
-                win32serviceutil.WaitForServiceStatus(name, win32service.SERVICE_STOPPED, 30)
-        except Exception:
-            pass
+        _stop_service(name)
 
 
 def status() -> dict[str, int]:
