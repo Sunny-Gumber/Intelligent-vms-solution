@@ -565,6 +565,8 @@ def test_create_osd_checks_options_before_write(monkeypatch):
         """
         <Envelope><OSDOptions>
           <Type>Text</Type>
+          <Type>Plain</Type>
+          <PositionOption>UpperLeft</PositionOption>
           <MaximumNumberOfOSDs Total="4"/>
         </OSDOptions></Envelope>
         """
@@ -654,7 +656,7 @@ def test_privacy_mask_update_validates_options_and_reads_back(monkeypatch):
                 """
                 <Envelope><Options>
                   <MaxPoints>8</MaxPoints><RectangleOnly>false</RectangleOnly>
-                  <Type>Color</Type><Type>Blurred</Type>
+                  <Types>Color</Types><Types>Blurred</Types>
                 </Options></Envelope>
                 """
             )
