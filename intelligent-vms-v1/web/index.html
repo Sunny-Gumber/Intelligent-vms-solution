@@ -161,7 +161,7 @@ async function apiFetch(url,opts={}){
  }
  return fetch(url,{...opts,headers,credentials:'same-origin'});
 }
-// One generation for sign-in, sign-out, page hide, and auth loss. Login bumps before its POST, so a sign-out still awaiting teardown cannot write the signed-out banner or DELETE /auth/session afterward.
+// One generation for sign-in, sign-out, page hide, and auth loss. Login bumps before its POST, so a sign-out still awaiting teardown cannot write the signed-out banner or DELETE /auth/session afterward. A fetch that resumes after a newer generation does not write UI or auth state.
 function bumpLifecycle(){authEpoch+=1;if(authLogoutAbort){const pending=authLogoutAbort;authLogoutAbort=null;try{pending.abort()}catch{}}return authEpoch}
 function authAllowsLive(epoch){return authenticated&&epoch===authEpoch}
 function setAuthenticated(value,info=null){
@@ -175,13 +175,17 @@ function setAuthenticated(value,info=null){
  identity.textContent=authenticated&&info?String(info.tenant_id||'')+' · '+(info.roles||[]).join(', '):'';
  if(!authenticated){cameraCache=[];closePlayback(false);stopLiveSessions();renderLiveGrid()}
 }
+function staleLifecycle(){const err=new Error('stale');err.staleLifecycle=true;return err}
 async function jsonFetch(url,opts={}){
  const epoch=authEpoch;
  const r=await apiFetch(url,opts);
- if(r.status===401){if(epoch===authEpoch)setAuthenticated(false);throw new Error('Authentication required')}
- if(!r.ok) throw new Error(await r.text());
+ if(epoch!==authEpoch)throw staleLifecycle();
+ if(r.status===401){setAuthenticated(false);const err=new Error('Authentication required');err.authEnded=true;throw err}
+ if(!r.ok){const detail=await r.text();if(epoch!==authEpoch)throw staleLifecycle();throw new Error(detail)}
  if(r.status===204)return null;
- return r.json();
+ const body=await r.json();
+ if(epoch!==authEpoch)throw staleLifecycle();
+ return body;
 }
 async function initializeSession(){
  const epoch=bumpLifecycle(),message=document.getElementById('authMessage');
@@ -193,7 +197,7 @@ async function initializeSession(){
   await refreshAll();
   if(!authAllowsLive(epoch))return;
  }catch(e){
-  if(epoch!==authEpoch&&authenticated)return;
+  if(epoch!==authEpoch&&!(e&&e.authEnded))return;
   if(epoch===authEpoch)setAuthenticated(false);
   message.textContent=String(e.message||'Authentication required');
   document.getElementById('system').textContent='login required';
@@ -287,16 +291,23 @@ async function saveCamera(event){
   const url=replace?`${API}/cameras/${encodeURIComponent(cameraId)}/replace`:`${API}/cameras`;
   await jsonFetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
   if(!authAllowsLive(epoch))return;
-  message.textContent=replace?'Camera source replaced.':'Camera added. Select it in an active live tile.';await refreshCameras();
- }catch{message.textContent='Camera source request failed. Check target policy, protocol and certificate trust.'}
+  await refreshCameras();
+  if(epoch!==authEpoch)return;
+  message.textContent=replace?'Camera source replaced.':'Camera added. Select it in an active live tile.';
+ }catch{if(epoch!==authEpoch)return;message.textContent='Camera source request failed. Check target policy, protocol and certificate trust.'}
  finally{password.value=''}
 }
 async function refreshCapabilities(){
+ const epoch=authEpoch;
  try{
-  deploymentCapabilities=await jsonFetch(`${API}/system/capabilities`);
+  const caps=await jsonFetch(`${API}/system/capabilities`);
+  if(epoch!==authEpoch)return;
+  deploymentCapabilities=caps;
  }catch{
+  if(epoch!==authEpoch)return;
   deploymentCapabilities={deployment_profile:'enterprise-distributed',event_history:true,alarm_processing:true,ai_ui:true,distributed_placement:false};
  }
+ if(epoch!==authEpoch)return;
  document.getElementById('events').style.display=deploymentCapabilities.event_history?'block':'none';
  document.getElementById('alarms').style.display=deploymentCapabilities.alarm_processing?'block':'none';
  document.getElementById('aiSummary').style.display=deploymentCapabilities.ai_ui?'flex':'none';
@@ -360,39 +371,39 @@ function renderRecordingControls(message=''){
  renderManualState();
 }
 async function refreshRecordingControls(){
- const cameraId=activeCameraId(),generation=++recordingPolicyGeneration;
+ const epoch=authEpoch,cameraId=activeCameraId(),generation=++recordingPolicyGeneration;
  activeRecordingPolicy=null;activeRecordingPolicyLoaded=false;recordingPolicyBusy=false;renderRecordingControls();
- if(!cameraId)return;
+ if(!cameraId||epoch!==authEpoch)return;
  try{
   const policy=await recordingPolicy(cameraId);
-  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  if(epoch!==authEpoch||generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
   activeRecordingPolicy=policy;activeRecordingPolicyLoaded=true;renderRecordingControls();
  }catch(e){
-  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  if(epoch!==authEpoch||generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
   renderRecordingControls('Recording policy unavailable: '+recordingError(e));
  }
 }
 async function saveRecordingPolicy(enable){
- const cameraId=activeCameraId();
- if(!cameraId||recordingPolicyBusy||!activeRecordingPolicyLoaded)return;
+ const epoch=authEpoch,cameraId=activeCameraId();
+ if(!cameraId||recordingPolicyBusy||!activeRecordingPolicyLoaded||epoch!==authEpoch)return;
  const retentionDays=retentionDaysInput();
  if(retentionDays===null){renderRecordingControls('Retention must be a whole number from 1 to 3650 days.');return}
  const generation=++recordingPolicyGeneration;recordingPolicyBusy=true;renderRecordingControls('Saving recording policy…');
  let finalMessage='';
  try{
   const current=await recordingPolicy(cameraId);
-  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  if(epoch!==authEpoch||generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
   if(current&&current.mode!=='continuous'&&current.mode!=='disabled')throw new Error('existing recording mode is outside field-test controls');
   activeRecordingPolicy=current;activeRecordingPolicyLoaded=true;
   const saved=await jsonFetch(`${API}/recordings/cameras/${encodeURIComponent(cameraId)}/policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(recordingPolicyPayload(current,enable,retentionDays))});
-  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  if(epoch!==authEpoch||generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
   activeRecordingPolicy=saved;activeRecordingPolicyLoaded=true;
   finalMessage=(saved.enabled?'Continuous MAIN recording enabled':'Continuous recording disabled')+` · retention ${saved.retention_days} days`;
  }catch(e){
-  if(generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
+  if(epoch!==authEpoch||generation!==recordingPolicyGeneration||activeCameraId()!==cameraId)return;
   finalMessage='Recording policy save failed: '+recordingError(e);
  }finally{
-  if(generation===recordingPolicyGeneration&&activeCameraId()===cameraId){recordingPolicyBusy=false;renderRecordingControls(finalMessage)}
+  if(epoch===authEpoch&&generation===recordingPolicyGeneration&&activeCameraId()===cameraId){recordingPolicyBusy=false;renderRecordingControls(finalMessage)}
  }
 }
 async function saveRecordingRetention(){
@@ -526,15 +537,24 @@ function renderManualState(){
  document.getElementById('manualDownload').disabled=!last;
  document.getElementById('manualStatus').textContent=session?`Recording MAIN interval for ${cameraId} since ${new Date(session.started_at).toLocaleString()}`:(all.length?`${all.length} manual recording session(s) active on other camera(s)`:'No active manual recording');
 }
-async function refreshManualRecordings(){try{[manualSessions,recentManualSessions]=await Promise.all([jsonFetch(`${API}/manual-recordings/active`),jsonFetch(`${API}/manual-recordings/recent?limit=20`)])}catch{manualSessions=[];recentManualSessions=[]}renderManualState()}
+async function refreshManualRecordings(){
+ const epoch=authEpoch;
+ try{
+  const loaded=await Promise.all([jsonFetch(`${API}/manual-recordings/active`),jsonFetch(`${API}/manual-recordings/recent?limit=20`)]);
+  if(epoch!==authEpoch)return;
+  [manualSessions,recentManualSessions]=loaded;
+ }catch{if(epoch!==authEpoch)return;manualSessions=[];recentManualSessions=[]}
+ if(epoch!==authEpoch)return;
+ renderManualState();
+}
 function downloadLastManual(){const cameraId=liveWorkspace.assignments[liveWorkspace.activeTile],row=recentManualSessions.find(s=>s.state==='STOPPED'&&s.camera_id===cameraId&&s.download_ready);if(!row)return;const a=document.createElement('a');a.href=`${API}/manual-recordings/${encodeURIComponent(row.id)}/export`;a.rel='noopener';a.click()}
 async function startManualRecording(){
- const cameraId=liveWorkspace.assignments[liveWorkspace.activeTile];if(!cameraId)return;
- try{const row=await jsonFetch(`${API}/manual-recordings/cameras/${encodeURIComponent(cameraId)}/start`,{method:'POST'});manualSessions=manualSessions.filter(x=>x.id!==row.id);manualSessions.push(row);renderManualState()}catch(e){document.getElementById('manualStatus').textContent=String(e.message||'manual recording start failed')}
+ const epoch=authEpoch,cameraId=liveWorkspace.assignments[liveWorkspace.activeTile];if(!cameraId||epoch!==authEpoch)return;
+ try{const row=await jsonFetch(`${API}/manual-recordings/cameras/${encodeURIComponent(cameraId)}/start`,{method:'POST'});if(epoch!==authEpoch)return;manualSessions=manualSessions.filter(x=>x.id!==row.id);manualSessions.push(row);renderManualState()}catch(e){if(epoch!==authEpoch)return;document.getElementById('manualStatus').textContent=String(e.message||'manual recording start failed')}
 }
 async function stopManualRecording(){
- const cameraId=liveWorkspace.assignments[liveWorkspace.activeTile],row=activeManualForCamera(cameraId);if(!row)return;const id=row.id;
- try{const stopped=await jsonFetch(`${API}/manual-recordings/${encodeURIComponent(id)}/stop`,{method:'POST'});manualSessions=manualSessions.filter(x=>x.id!==id);recentManualSessions=[stopped,...recentManualSessions.filter(x=>x.id!==id)].slice(0,20);renderManualState();const a=document.createElement('a');a.href=`${API}/manual-recordings/${encodeURIComponent(stopped.id)}/export`;a.rel='noopener';a.click()}catch(e){document.getElementById('manualStatus').textContent=String(e.message||'manual recording stop failed')}
+ const epoch=authEpoch,cameraId=liveWorkspace.assignments[liveWorkspace.activeTile],row=activeManualForCamera(cameraId);if(!row||epoch!==authEpoch)return;const id=row.id;
+ try{const stopped=await jsonFetch(`${API}/manual-recordings/${encodeURIComponent(id)}/stop`,{method:'POST'});if(epoch!==authEpoch)return;manualSessions=manualSessions.filter(x=>x.id!==id);recentManualSessions=[stopped,...recentManualSessions.filter(x=>x.id!==id)].slice(0,20);renderManualState();const a=document.createElement('a');a.href=`${API}/manual-recordings/${encodeURIComponent(stopped.id)}/export`;a.rel='noopener';a.click()}catch(e){if(epoch!==authEpoch)return;document.getElementById('manualStatus').textContent=String(e.message||'manual recording stop failed')}
 }
 async function assignCamera(tileIndex,cameraId){
  const epoch=authEpoch;if(!authAllowsLive(epoch))return;
@@ -573,14 +593,15 @@ async function refreshCameras(){
   if(playbackState.cameraId&&!authorizedIds.has(playbackState.cameraId))closePlayback(false);
   if(!authAllowsLive(epoch))return;
   liveWorkspace.assignments.forEach((id,i)=>{if(id&&!liveSessions.has(i)&&authAllowsLive(epoch))startTile(i,id,liveWorkspace.roles[i])});
- }catch{document.getElementById('content').innerHTML='<div class="empty">Control API unavailable or authorization required.</div>'}
+ }catch{if(epoch!==authEpoch)return;document.getElementById('content').innerHTML='<div class="empty">Control API unavailable or authorization required.</div>'}
 }
 async function refreshEvents(cameraId=''){
- const root=document.getElementById('eventList');
- if(!deploymentCapabilities.event_history){root.innerHTML='<div class="empty">Event history is not part of this deployment profile.</div>';return}
+ const epoch=authEpoch,root=document.getElementById('eventList');
+ if(!deploymentCapabilities.event_history){if(epoch!==authEpoch)return;root.innerHTML='<div class="empty">Event history is not part of this deployment profile.</div>';return}
  try{
   const suffix=cameraId?`&camera_id=${encodeURIComponent(cameraId)}`:'';
   const rows=await jsonFetch(`${API}/events?limit=50${suffix}`);
+  if(epoch!==authEpoch)return;
   if(!rows.length){root.innerHTML='<div class="empty">No events in the selected window.</div>';return}
   root.innerHTML=rows.map(e=>`<div class="event">
    <div class="muted">${new Date(e.timestamp).toLocaleString()}</div>
@@ -588,14 +609,15 @@ async function refreshEvents(cameraId=''){
    <div class="message">${esc(e.object_type||'')} ${e.zone_id?'· zone '+esc(e.zone_id):''}</div>
    <div class="sev-${esc(e.severity)}">${esc(e.severity)}</div>
   </div>`).join('');
- }catch(e){root.innerHTML='<div class="empty">Event search unavailable: '+esc(e.message)+'</div>'}
+ }catch(e){if(epoch!==authEpoch)return;root.innerHTML='<div class="empty">Event search unavailable: '+esc(e.message)+'</div>'}
 }
 function showCameraEvents(id){if(!deploymentCapabilities.event_history)return;refreshEvents(id);document.getElementById('events').scrollIntoView({behavior:'smooth'})}
 async function refreshAlarms(){
- const root=document.getElementById('alarmList');
- if(!deploymentCapabilities.alarm_processing){root.innerHTML='<div class="empty">Alarm processing is not part of this deployment profile.</div>';return}
+ const epoch=authEpoch,root=document.getElementById('alarmList');
+ if(!deploymentCapabilities.alarm_processing){if(epoch!==authEpoch)return;root.innerHTML='<div class="empty">Alarm processing is not part of this deployment profile.</div>';return}
  try{
   const rows=await jsonFetch(`${API}/alarms?state=open&limit=50`);
+  if(epoch!==authEpoch)return;
   if(!rows.length){root.innerHTML='<div class="empty">No open alarms.</div>';return}
   root.innerHTML=rows.map(a=>`<div class="event">
     <div class="muted">${new Date(a.opened_at).toLocaleString()}</div>
@@ -603,18 +625,20 @@ async function refreshAlarms(){
     <div class="message">${esc(a.message)}</div>
     <div><span class="sev-${esc(a.severity)}">${esc(a.severity)}</span> <button onclick="ackAlarm('${a.id}')">Ack</button></div>
    </div>`).join('');
- }catch(e){root.innerHTML='<div class="empty">Alarm service unavailable: '+esc(e.message)+'</div>'}
+ }catch(e){if(epoch!==authEpoch)return;root.innerHTML='<div class="empty">Alarm service unavailable: '+esc(e.message)+'</div>'}
 }
 async function ackAlarm(id){
- try{await jsonFetch(`${API}/alarms/${id}/acknowledge`,{method:'POST'});await refreshAlarms()}
- catch(e){alert('Alarm acknowledgement failed: '+e.message)}
+ const epoch=authEpoch;
+ try{await jsonFetch(`${API}/alarms/${id}/acknowledge`,{method:'POST'});if(epoch!==authEpoch)return;await refreshAlarms()}
+ catch(e){if(epoch!==authEpoch)return;alert('Alarm acknowledgement failed: '+e.message)}
 }
 async function showDiagnostics(id){
- const panel=document.getElementById('diagnostics'),body=document.getElementById('diagBody');
+ const epoch=authEpoch,panel=document.getElementById('diagnostics'),body=document.getElementById('diagBody');
  const c=cameraCache.find(x=>x.id===id);document.getElementById('diagTitle').textContent='Diagnostics · '+(c?c.name:id);
  panel.style.display='block';body.textContent='Loading…';
  try{
   const d=await jsonFetch(`${API}/diagnostics/cameras/${id}`);
+  if(epoch!==authEpoch)return;
   body.innerHTML=`<div>
    path: <b>${esc(d.path_state||'unknown')}</b> ·
    inbound: <b>${d.inbound_mbps==null?'sample again':d.inbound_mbps.toFixed(2)+' Mbps'}</b> ·
@@ -622,28 +646,33 @@ async function showDiagnostics(id){
    RTP errors: <b>${d.rtp_packets_in_error??0}</b> ·
    jitter: <b>${d.rtp_jitter??'n/a'}</b>
   </div>`;
- }catch(e){body.textContent='Diagnostics unavailable: '+e.message}
+ }catch(e){if(epoch!==authEpoch)return;body.textContent='Diagnostics unavailable: '+e.message}
+ if(epoch!==authEpoch)return;
  panel.scrollIntoView({behavior:'smooth'});
 }
 
 async function refreshAIStatus(){
- const root=document.getElementById('aiSummary');
- if(!deploymentCapabilities.ai_ui){root.innerHTML='';return}
+ const epoch=authEpoch,root=document.getElementById('aiSummary');
+ if(!deploymentCapabilities.ai_ui){if(epoch!==authEpoch)return;root.innerHTML='';return}
  try{
   const s=await jsonFetch(`${API}/ai/status`);
+  if(epoch!==authEpoch)return;
   root.innerHTML=`<span class="badge">AI enabled ${s.enabled_policies}</span><span class="badge">inference ${s.inference_policies}</span>`;
- }catch{root.innerHTML='<span class="muted">AI orchestration unavailable.</span>'}
+ }catch{if(epoch!==authEpoch)return;root.innerHTML='<span class="muted">AI orchestration unavailable.</span>'}
 }
 async function openAI(id){
- if(!deploymentCapabilities.ai_ui)return;
+ const epoch=authEpoch;
+ if(!deploymentCapabilities.ai_ui||epoch!==authEpoch)return;
  aiCameraId=id;aiPolicyCache=null;
  const panel=document.getElementById('aiPanel'),c=cameraCache.find(x=>x.id===id);
  document.getElementById('aiTitle').textContent='Camera AI · '+(c?c.name:id);
  panel.style.display='block';document.getElementById('aiMessage').textContent='Loading…';
  try{
   const models=await jsonFetch(`${API}/ai/models?enabled=true&limit=500`);
+  if(epoch!==authEpoch)return;
   document.getElementById('aiModel').innerHTML='<option value="">None</option>'+models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)} · ${esc(m.version)} · ${esc(m.provider_type)}</option>`).join('');
-  try{aiPolicyCache=await jsonFetch(`${API}/ai/cameras/${id}/policy`)}catch{aiPolicyCache={enabled:false,source_mode:'inference',model_id:null,stream_role:'sub',sample_fps:1,min_confidence:.5,analytics:['human','vehicle'],zones:[],provider_config:{}}}
+  try{const policy=await jsonFetch(`${API}/ai/cameras/${id}/policy`);if(epoch!==authEpoch)return;aiPolicyCache=policy}catch{if(epoch!==authEpoch)return;aiPolicyCache={enabled:false,source_mode:'inference',model_id:null,stream_role:'sub',sample_fps:1,min_confidence:.5,analytics:['human','vehicle'],zones:[],provider_config:{}}}
+  if(epoch!==authEpoch)return;
   const p=aiPolicyCache;
   document.getElementById('aiEnabled').checked=!!p.enabled;
   document.getElementById('aiSource').value=p.source_mode||'camera_metadata';
@@ -653,12 +682,14 @@ async function openAI(id){
   document.getElementById('aiConfidence').value=p.min_confidence??.5;
   document.getElementById('aiAnalytics').value=(p.analytics||[]).join(',');
   document.getElementById('aiMessage').textContent='Zones/lines remain preserved when saving from this compact panel; use the API for geometry editing.';
- }catch(e){document.getElementById('aiMessage').textContent='AI policy unavailable: '+e.message}
+ }catch(e){if(epoch!==authEpoch)return;document.getElementById('aiMessage').textContent='AI policy unavailable: '+e.message}
+ if(epoch!==authEpoch)return;
  panel.scrollIntoView({behavior:'smooth'});
 }
 function closeAI(){document.getElementById('aiPanel').style.display='none';aiCameraId=null}
 async function saveAI(){
- if(!aiCameraId)return;
+ const epoch=authEpoch;
+ if(!aiCameraId||epoch!==authEpoch)return;
  const analytics=document.getElementById('aiAnalytics').value.split(',').map(x=>x.trim()).filter(Boolean);
  const payload={
   enabled:document.getElementById('aiEnabled').checked,
@@ -672,10 +703,12 @@ async function saveAI(){
   provider_config:(aiPolicyCache&&aiPolicyCache.provider_config)||{}
  };
  try{
-  aiPolicyCache=await jsonFetch(`${API}/ai/cameras/${aiCameraId}/policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const saved=await jsonFetch(`${API}/ai/cameras/${aiCameraId}/policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(epoch!==authEpoch)return;
+  aiPolicyCache=saved;
   document.getElementById('aiMessage').textContent='AI policy saved.';
   await refreshAIStatus();
- }catch(e){document.getElementById('aiMessage').textContent='AI policy save failed: '+e.message}
+ }catch(e){if(epoch!==authEpoch)return;document.getElementById('aiMessage').textContent='AI policy save failed: '+e.message}
 }
 function localDateValue(date){
  const y=date.getFullYear(),m=String(date.getMonth()+1).padStart(2,'0'),d=String(date.getDate()).padStart(2,'0');
@@ -710,7 +743,8 @@ function openPlaybackForTile(tileIndex){
  const cameraId=liveWorkspace.assignments[tileIndex];if(cameraId)openPlayback(cameraId);
 }
 async function openPlayback(id){
- if(id!==activeCameraId())return;
+ const epoch=authEpoch;
+ if(id!==activeCameraId()||epoch!==authEpoch)return;
  const camera=cameraCache.find(x=>x.id===id);if(!camera)return;
  closePlayback(false);
  playbackState.cameraId=id;
@@ -720,10 +754,11 @@ async function openPlayback(id){
  document.getElementById('pbtitle').textContent='Playback · '+camera.name;
  document.getElementById('playback').classList.add('visible');
  await loadPlaybackTimeline();
- if(playbackState.cameraId===id)document.getElementById('playback').scrollIntoView({behavior:'smooth'});
+ if(epoch!==authEpoch||playbackState.cameraId!==id)return;
+ document.getElementById('playback').scrollIntoView({behavior:'smooth'});
 }
 async function loadPlaybackTimeline(){
- const cameraId=playbackState.cameraId;
+ const epoch=authEpoch,cameraId=playbackState.cameraId;
  if(!cameraId||cameraId!==activeCameraId())return;
  const dateValue=document.getElementById('pbDate').value,timeValue=document.getElementById('pbTime').value;
  const window=localDayWindow(dateValue),requested=localDateTime(dateValue,timeValue);
@@ -737,7 +772,7 @@ async function loadPlaybackTimeline(){
  document.getElementById('pbwindow').textContent=window.start.toLocaleString()+' → '+window.end.toLocaleString();
  try{
   const spans=await jsonFetch(`${API}/recordings/cameras/${encodeURIComponent(cameraId)}/timeline?start=${encodeURIComponent(window.start.toISOString())}&end=${encodeURIComponent(window.end.toISOString())}`);
-  if(generation!==playbackState.generation||cameraId!==playbackState.cameraId||cameraId!==activeCameraId())return;
+  if(epoch!==authEpoch||generation!==playbackState.generation||cameraId!==playbackState.cameraId||cameraId!==activeCameraId())return;
   playbackState.windowStart=window.start;playbackState.windowEnd=window.end;
   playbackState.spans=(Array.isArray(spans)?spans:[]).filter(s=>{
    const a=new Date(s.start),b=new Date(s.end);
@@ -748,7 +783,7 @@ async function loadPlaybackTimeline(){
   if(containing)selectPlaybackSpan(cameraId,containing,requested);
   else if(playbackState.spans.length)document.getElementById('pbmsg').textContent='No recording at the selected time. Choose one of the available spans.';
  }catch(error){
-  if(generation!==playbackState.generation||cameraId!==playbackState.cameraId)return;
+  if(epoch!==authEpoch||generation!==playbackState.generation||cameraId!==playbackState.cameraId)return;
   document.getElementById('timeline').innerHTML='';
   document.getElementById('pbmsg').textContent='Playback timeline unavailable: '+playbackError(error);
  }
@@ -794,13 +829,13 @@ function selectPlaybackSpan(id,s,requestedTime){
  document.getElementById('pbmsg').textContent='Recorded span selected. Play, seek with the player controls, or choose a clip interval inside this span.';
 }
 function playSelectedTime(){
- const selection=playbackSelection;
+ const epoch=authEpoch,selection=playbackSelection;
  if(!selection||selection.cameraId!==playbackState.cameraId||selection.cameraId!==activeCameraId())return;
  const generation=++playbackState.playGeneration,player=document.getElementById('player');
  resetPlaybackPlayer();
  player.src=`${API}/recordings/cameras/${encodeURIComponent(selection.cameraId)}/play?start=${encodeURIComponent(selection.start)}&duration=${encodeURIComponent(selection.duration)}&format=mp4`;
  player.load();document.getElementById('pbPause').disabled=false;
- player.play().catch(error=>{if(generation===playbackState.playGeneration)document.getElementById('pbmsg').textContent='Playback could not start: '+playbackError(error)});
+ player.play().catch(error=>{if(epoch===authEpoch&&generation===playbackState.playGeneration)document.getElementById('pbmsg').textContent='Playback could not start: '+playbackError(error)});
 }
 function pausePlayback(){
  const player=document.getElementById('player');player.pause();updatePlaybackClock();

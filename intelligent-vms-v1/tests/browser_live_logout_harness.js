@@ -30,6 +30,10 @@ const SCENARIOS = new Set([
   "sign-out-overlaps-login",
   "pagehide-during-layout",
   "stale-health-401-after-login",
+  "stale-cameras-401-after-login",
+  "stale-cameras-success-after-login",
+  "stale-panels-after-login",
+  "stale-policy-after-pagehide",
 ]);
 
 const harness = {
@@ -54,6 +58,9 @@ const harness = {
   holdLayoutDelete: false,
   holdHealth: false,
   healthStatus: 200,
+  cameraHoldMode: "",
+  holdKeys: {},
+  holdResults: {},
   createdSessions: [],
   pageListeners: {},
 };
@@ -401,9 +408,19 @@ function isWhep(href) {
 }
 
 function sessionLocation(scenario) {
-  if (scenario === "layout-shrink-logout-rejected" || scenario === "relogin-cameras-held-logout-rejected" || scenario === "auth-epoch-held-steps" || scenario === "sign-out-overlaps-login" || scenario === "pagehide-during-layout" || scenario === "stale-health-401-after-login") {
-    return `https://media.example/whep/sessions/s-${harness.whepPostCount}`;
-  }
+  const numbered = new Set([
+    "layout-shrink-logout-rejected",
+    "relogin-cameras-held-logout-rejected",
+    "auth-epoch-held-steps",
+    "sign-out-overlaps-login",
+    "pagehide-during-layout",
+    "stale-health-401-after-login",
+    "stale-cameras-401-after-login",
+    "stale-cameras-success-after-login",
+    "stale-panels-after-login",
+    "stale-policy-after-pagehide",
+  ]);
+  if (numbered.has(scenario)) return `https://media.example/whep/sessions/s-${harness.whepPostCount}`;
   return SESSION_URL;
 }
 
@@ -424,6 +441,19 @@ function holdUntilRelease(build) {
 function releaseHolds() {
   const pending = harness.holds.splice(0);
   for (const release of pending) release();
+}
+
+function consumeHold(key, fallback) {
+  if (!harness.holdKeys[key]) return fallback();
+  delete harness.holdKeys[key];
+  return holdUntilRelease(() => {
+    const spec = harness.holdResults[key];
+    if (!spec) return fallback();
+    if (Object.prototype.hasOwnProperty.call(spec, "status")) {
+      return new Response(spec.text == null ? "" : String(spec.text), { status: spec.status });
+    }
+    return jsonResponse(spec.json);
+  });
 }
 
 function route(method, href, scenario) {
@@ -484,13 +514,13 @@ function route(method, href, scenario) {
     return new Response(null, { status: 204 });
   }
   if (pathname === "/api/v1/system/capabilities") {
-    return jsonResponse({
+    return consumeHold("capabilities", () => jsonResponse({
       deployment_profile: "enterprise-distributed",
       event_history: true,
       alarm_processing: true,
       ai_ui: true,
       distributed_placement: false,
-    });
+    }));
   }
   if (pathname === "/api/v1/system/health") {
     if (harness.holdHealth) {
@@ -522,17 +552,55 @@ function route(method, href, scenario) {
   if (pathname === "/api/v1/cameras" && method === "GET") {
     if (harness.holdCameras) {
       harness.holdCameras = false;
-      return holdUntilRelease(() => jsonResponse(cameraList()));
+      return holdUntilRelease(() => {
+        if (harness.cameraHoldMode === "401") return new Response("expired", { status: 401 });
+        if (harness.cameraHoldMode === "stale") {
+          return jsonResponse([{
+            id: "cam-1",
+            name: "Stale Yard",
+            site_id: "site-01",
+            tenant_id: "tenant-a",
+            available_live_roles: ["main"],
+          }]);
+        }
+        return jsonResponse(cameraList());
+      });
     }
     return jsonResponse(cameraList());
   }
-  if (pathname === "/api/v1/events") return jsonResponse([]);
-  if (pathname === "/api/v1/alarms") return jsonResponse([]);
-  if (pathname === "/api/v1/ai/status") return jsonResponse({ enabled_policies: 0, inference_policies: 0 });
-  if (pathname === "/api/v1/manual-recordings/active") return jsonResponse([]);
+  if (pathname === "/api/v1/events") return consumeHold("events", () => jsonResponse([]));
+  if (pathname === "/api/v1/alarms" && method === "GET") return consumeHold("alarms", () => jsonResponse([]));
+  if (method === "POST" && pathname.startsWith("/api/v1/alarms/") && pathname.endsWith("/acknowledge")) {
+    return consumeHold("ack", () => new Response(null, { status: 204 }));
+  }
+  if (pathname === "/api/v1/ai/status") {
+    return consumeHold("ai", () => jsonResponse({ enabled_policies: 0, inference_policies: 0 }));
+  }
+  if (pathname === "/api/v1/ai/models") return consumeHold("ai-models", () => jsonResponse([]));
+  if (pathname.startsWith("/api/v1/ai/cameras/") && pathname.endsWith("/policy") && method === "GET") {
+    return jsonResponse({ enabled: false, source_mode: "inference", model_id: null, stream_role: "sub", sample_fps: 1, min_confidence: 0.5, analytics: [], zones: [], provider_config: {} });
+  }
+  if (pathname.startsWith("/api/v1/diagnostics/cameras/")) {
+    return consumeHold("diagnostics", () => jsonResponse({
+      path_state: "ready",
+      inbound_mbps: 1,
+      rtp_packets_lost: 0,
+      rtp_packets_in_error: 0,
+      rtp_jitter: 1,
+    }));
+  }
+  if (pathname === "/api/v1/manual-recordings/active") return consumeHold("manual", () => jsonResponse([]));
+  if (method === "POST" && pathname.includes("/manual-recordings/cameras/") && pathname.endsWith("/start")) {
+    return consumeHold("manual-start", () => jsonResponse({
+      id: "m-new",
+      camera_id: "cam-1",
+      state: "ACTIVE",
+      started_at: "2026-10-08T00:00:00.000Z",
+    }));
+  }
   if (pathname === "/api/v1/manual-recordings/recent") return jsonResponse([]);
-  if (pathname.startsWith("/api/v1/recordings/cameras/") && pathname.endsWith("/policy")) {
-    return new Response("not found", { status: 404 });
+  if (pathname.startsWith("/api/v1/recordings/cameras/") && pathname.endsWith("/policy") && method === "GET") {
+    return consumeHold("policy", () => new Response("not found", { status: 404 }));
   }
   if (method === "POST" && pathname.includes("/live/cameras/") && pathname.endsWith("/access")) {
     harness.accessRole = new URL(href, "http://vms.local").searchParams.get("stream_role");
@@ -711,7 +779,7 @@ async function runScenario(scenario, htmlPath) {
     fetch: pageFetch(scenario),
   });
 
-  const source = `${script}\nglobalThis.__vms = {\n  signOut,\n  assignCamera,\n  setLayout,\n  refreshCameras,\n  refreshHealth,\n  retryTile,\n  loginWithToken,\n  inspect() {\n    return {\n      authenticated,\n      liveSessionCount: liveSessions.size,\n    };\n  },\n};\n`;
+  const source = `${script}\nglobalThis.__vms = {\n  signOut,\n  assignCamera,\n  setLayout,\n  refreshCameras,\n  refreshHealth,\n  refreshEvents,\n  refreshAlarms,\n  refreshAIStatus,\n  refreshCapabilities,\n  refreshManualRecordings,\n  refreshRecordingControls,\n  showDiagnostics,\n  openAI,\n  ackAlarm,\n  startManualRecording,\n  retryTile,\n  loginWithToken,\n  inspect() {\n    return {\n      authenticated,\n      liveSessionCount: liveSessions.size,\n    };\n  },\n};\n`;
   vm.runInContext(source, context, { filename: htmlPath });
   await waitFor(
     () => harness.inflight === 0 && context.__vms.inspect().authenticated === true,
@@ -744,6 +812,18 @@ async function runScenario(scenario, htmlPath) {
   }
   if (scenario === "stale-health-401-after-login") {
     return runStaleHealth401(context, document, htmlPath, script.length);
+  }
+  if (scenario === "stale-cameras-401-after-login") {
+    return runStaleCameras401(context, document, htmlPath, script.length);
+  }
+  if (scenario === "stale-cameras-success-after-login") {
+    return runStaleCamerasSuccess(context, document, htmlPath, script.length);
+  }
+  if (scenario === "stale-panels-after-login") {
+    return runStalePanels(context, document, htmlPath, script.length);
+  }
+  if (scenario === "stale-policy-after-pagehide") {
+    return runStalePolicyAfterPagehide(context, document, htmlPath, script.length);
   }
 
   const assigned = context.__vms.assignCamera(0, "cam-1");
@@ -801,6 +881,18 @@ function observe(scenario, context, document, htmlPath, scriptBytes) {
     tile_states: tileStates(document),
     whep_sessions: harness.createdSessions.slice(),
     auth_message: (document.getElementById("authMessage") || {}).textContent || "",
+    content_text: (document.getElementById("content") || {}).textContent || "",
+    event_text: (document.getElementById("eventList") || {}).textContent || "",
+    alarm_text: (document.getElementById("alarmList") || {}).textContent || "",
+    ai_text: (document.getElementById("aiSummary") || {}).textContent || "",
+    ai_message: (document.getElementById("aiMessage") || {}).textContent || "",
+    diag_text: (document.getElementById("diagBody") || {}).textContent || "",
+    manual_status: (document.getElementById("manualStatus") || {}).textContent || "",
+    recording_status: (document.getElementById("recordingStatus") || {}).textContent || "",
+    events_display: (document.getElementById("events") || { style: {} }).style.display || "",
+    alarms_display: (document.getElementById("alarms") || { style: {} }).style.display || "",
+    ai_display: (document.getElementById("aiSummary") || { style: {} }).style.display || "",
+    alerts: harness.alerts.slice(),
     auth_requests: harness.requests
       .filter((item) => item.url.includes("/api/v1/auth/session"))
       .map((item) => `${item.method} ${item.url}`),
@@ -912,6 +1004,121 @@ async function runPagehideDuringLayout(context, document, htmlPath, scriptBytes)
     media_deletes: during.media_deletes,
   };
   return finalState;
+}
+
+async function reloginLive(context, document) {
+  document.getElementById("authToken").value = "field-token";
+  await context.__vms.loginWithToken({ preventDefault() {} });
+  await waitFor(
+    () => context.__vms.inspect().authenticated === true && context.__vms.inspect().liveSessionCount === 1,
+    "relogin live",
+  );
+}
+
+async function runStaleCameras401(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 1);
+  harness.holdCameras = true;
+  harness.holdTarget = 1;
+  harness.holds = [];
+  harness.reachedHold = false;
+  const refresh = context.__vms.refreshCameras();
+  await waitFor(() => harness.reachedHold, "camera list hold");
+  await context.__vms.signOut();
+  await reloginLive(context, document);
+  harness.cameraHoldMode = "401";
+  releaseHolds();
+  await refresh;
+  await settleSignedOut(context);
+  return observe("stale-cameras-401-after-login", context, document, htmlPath, scriptBytes);
+}
+
+async function runStaleCamerasSuccess(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 1);
+  harness.holdCameras = true;
+  harness.holdTarget = 1;
+  harness.holds = [];
+  harness.reachedHold = false;
+  const refresh = context.__vms.refreshCameras();
+  await waitFor(() => harness.reachedHold, "camera list hold");
+  await context.__vms.signOut();
+  await reloginLive(context, document);
+  harness.cameraHoldMode = "stale";
+  releaseHolds();
+  await refresh;
+  await context.__vms.setLayout(4);
+  await settleSignedOut(context);
+  return observe("stale-cameras-success-after-login", context, document, htmlPath, scriptBytes);
+}
+
+async function runStalePanels(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 1);
+  await waitFor(() => harness.inflight === 0, "idle before stale panels");
+  const keys = ["events", "alarms", "ai", "capabilities", "manual", "diagnostics", "policy", "ack", "ai-models", "manual-start"];
+  harness.holdKeys = Object.fromEntries(keys.map((key) => [key, true]));
+  harness.holdResults = {};
+  harness.holdTarget = keys.length;
+  harness.holds = [];
+  harness.reachedHold = false;
+  const pending = [
+    context.__vms.refreshEvents(),
+    context.__vms.refreshAlarms(),
+    context.__vms.refreshAIStatus(),
+    context.__vms.refreshCapabilities(),
+    context.__vms.refreshManualRecordings(),
+    context.__vms.showDiagnostics("cam-1"),
+    context.__vms.refreshRecordingControls(),
+    context.__vms.ackAlarm("alarm-1"),
+    context.__vms.openAI("cam-1"),
+    context.__vms.startManualRecording(),
+  ];
+  await waitFor(() => harness.holds.length >= keys.length, "stale panel holds");
+  await context.__vms.signOut();
+  await reloginLive(context, document);
+  harness.holdResults = {
+    events: { json: [{ timestamp: "2026-10-08T00:00:00Z", event_type: "STALE_EVENT", object_type: "person", zone_id: "", severity: "low" }] },
+    alarms: { json: [{ id: "alarm-stale", opened_at: "2026-10-08T00:00:00Z", event_type: "motion", message: "STALE_ALARM", severity: "low" }] },
+    ai: { json: { enabled_policies: 77, inference_policies: 88 } },
+    capabilities: { json: { deployment_profile: "stale", event_history: false, alarm_processing: false, ai_ui: false, distributed_placement: false } },
+    manual: { json: [{ id: "m-stale", camera_id: "cam-1", state: "ACTIVE", started_at: "2026-10-08T00:00:00.000Z" }] },
+    diagnostics: { json: { path_state: "STALE_DIAG", inbound_mbps: 1, rtp_packets_lost: 0, rtp_packets_in_error: 0, rtp_jitter: 1 } },
+    policy: { status: 500, text: "stale policy" },
+    ack: { status: 401, text: "expired" },
+    "ai-models": { status: 401, text: "expired" },
+    "manual-start": { status: 401, text: "expired" },
+  };
+  releaseHolds();
+  await Promise.all(pending);
+  await settleSignedOut(context);
+  return observe("stale-panels-after-login", context, document, htmlPath, scriptBytes);
+}
+
+async function runStalePolicyAfterPagehide(context, document, htmlPath, scriptBytes) {
+  await establishLiveTiles(context, 1);
+  await waitFor(() => harness.inflight === 0, "idle before policy hold");
+  harness.holdKeys = { policy: true };
+  harness.holdResults = {};
+  harness.holdTarget = 1;
+  harness.holds = [];
+  harness.reachedHold = false;
+  const pending = context.__vms.refreshRecordingControls();
+  await waitFor(() => harness.holds.length >= 1, "recording policy hold");
+  dispatchPageHide();
+  harness.holdResults = {
+    policy: {
+      json: {
+        enabled: true,
+        mode: "continuous",
+        retention_days: 9,
+        part_duration_ms: 1000,
+        segment_duration_seconds: 900,
+        max_part_size_mb: 50,
+      },
+    },
+  };
+  releaseHolds();
+  await pending;
+  await settleSignedOut(context);
+  return observe("stale-policy-after-pagehide", context, document, htmlPath, scriptBytes);
 }
 
 async function runStaleHealth401(context, document, htmlPath, scriptBytes) {

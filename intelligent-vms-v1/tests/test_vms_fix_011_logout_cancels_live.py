@@ -311,6 +311,81 @@ def test_stale_health_401_does_not_sign_out_a_newer_login():
     assert result["unknown_requests"] == []
 
 
+def test_stale_cameras_401_does_not_wipe_the_new_live_grid():
+    """A camera-list 401 from the previous login must not replace the new live grid."""
+    result = run_scenario("stale-cameras-401-after-login")
+    assert result["authenticated"] is True
+    assert result["auth_message"] == "Authenticated."
+    assert result["auth_required"] is False
+    assert result["live_session_count"] == 1
+    assert result["open_peer_count"] == 1
+    assert result["whep_post_count"] == 2
+    assert str(result["tile_state"]).startswith("LIVE")
+    assert result["tile_states"]
+    assert all(not str(state).startswith("FAILED") for state in result["tile_states"])
+    assert "Control API unavailable" not in result["content_text"]
+    assert "Gate" in result["content_text"]
+    assert result["media_deletes"] == [{"url": "https://media.example/whep/sessions/s-1", "authorization": GRANT}]
+    assert "https://media.example/whep/sessions/s-2" not in {item["url"] for item in result["media_deletes"]}
+    assert_no_auth_delete_after_login(result)
+    assert result["unknown_requests"] == []
+
+
+def test_stale_cameras_success_does_not_overwrite_the_new_grid():
+    """A camera list from the previous login must not rename the new login's grid."""
+    result = run_scenario("stale-cameras-success-after-login")
+    assert result["authenticated"] is True
+    assert result["auth_message"] == "Authenticated."
+    assert result["live_session_count"] == 1
+    assert result["open_peer_count"] == 1
+    assert str(result["tile_state"]).startswith("LIVE")
+    assert "Gate" in result["content_text"]
+    assert "Stale Yard" not in result["content_text"]
+    assert "Control API unavailable" not in result["content_text"]
+    assert len(result["tile_states"]) == 4
+    assert "https://media.example/whep/sessions/s-2" not in {item["url"] for item in result["media_deletes"]}
+    assert result["unknown_requests"] == []
+
+
+def test_stale_panel_fetches_do_not_overwrite_the_new_login():
+    """Events, alarms, health panels, and similar stale fetches must not rewrite the new login."""
+    result = run_scenario("stale-panels-after-login")
+    assert result["authenticated"] is True
+    assert result["auth_message"] == "Authenticated."
+    assert result["live_session_count"] == 1
+    assert result["open_peer_count"] == 1
+    assert str(result["tile_state"]).startswith("LIVE")
+    assert "STALE_EVENT" not in result["event_text"]
+    assert "No events in the selected window." in result["event_text"]
+    assert "STALE_ALARM" not in result["alarm_text"]
+    assert "No open alarms." in result["alarm_text"]
+    assert "77" not in result["ai_text"]
+    assert "AI enabled 0" in result["ai_text"]
+    assert result["events_display"] == "block"
+    assert result["alarms_display"] == "block"
+    assert result["ai_display"] == "flex"
+    assert result["ai_message"] == "Loading…"
+    assert result["diag_text"] == "Loading…"
+    assert "STALE_DIAG" not in result["diag_text"]
+    assert result["manual_status"] == "No active manual recording"
+    assert result["recording_status"] == "Continuous recording not configured · default retention 7 days · source MAIN"
+    assert result["alerts"] == []
+    assert "Control API unavailable" not in result["content_text"]
+    assert result["unknown_requests"] == []
+
+
+def test_stale_recording_policy_after_pagehide_does_not_apply():
+    """A recording policy response that resumes after pagehide must not change the controls."""
+    result = run_scenario("stale-policy-after-pagehide")
+    assert result["authenticated"] is True
+    assert "Continuous MAIN enabled" not in result["recording_status"]
+    assert "9 days" not in result["recording_status"]
+    assert result["live_session_count"] == 0
+    assert result["open_peer_count"] == 0
+    assert all(not str(state).startswith("LIVE") for state in result["tile_states"])
+    assert result["unknown_requests"] == []
+
+
 def test_deferred_whep_post_after_auth_expiry_does_not_leave_a_live_session():
     """Auth expiry (HTTP 401) must cancel an in-flight WHEP POST the same way."""
     result = run_scenario("deferred-post-auth-expiry")
