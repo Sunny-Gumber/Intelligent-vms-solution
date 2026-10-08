@@ -421,7 +421,8 @@ def test_first_attempt_cancelled_error_fails_run(monkeypatch: pytest.MonkeyPatch
     _run_bounded(_expect_failure(_args(concurrency=2, attempts=4), asyncio.CancelledError, calls))
 
 
-def _cli_script(body: str) -> str:
+def _cli_script(body: str, *, csv: bool = False) -> str:
+    csv_args = ", '--output-csv', sys.argv[3]" if csv else ""
     return (
         "import sys\n"
         "sys.path.insert(0, sys.argv[1])\n"
@@ -435,15 +436,16 @@ def _cli_script(body: str) -> str:
         f"{body}\n"
         "sys.argv = ['phase8_reconnect_benchmark', '--host', '127.0.0.1', '--port', '9',\n"
         "            '--attempts', '4', '--concurrency', '1', '--warmup-attempts', '0',\n"
-        "            '--timeout', '0.2', '--sample-interval', '30', '--output-json', sys.argv[2]]\n"
+        "            '--timeout', '0.2', '--sample-interval', '30', '--output-json', sys.argv[2]"
+        f"{csv_args}]\n"
         "bench.main()\n"
     )
 
 
-def _run_cli(script: str, output: Path) -> subprocess.CompletedProcess[str]:
+def _run_cli(script: str, output: Path, *extra: Path) -> subprocess.CompletedProcess[str]:
     """Run the benchmark CLI in a child process with a hard timeout."""
     return subprocess.run(
-        [sys.executable, "-c", script, str(TOOLS), str(output)],
+        [sys.executable, "-c", script, str(TOOLS), str(output), *[str(item) for item in extra]],
         check=False,
         capture_output=True,
         text=True,
@@ -451,8 +453,16 @@ def _run_cli(script: str, output: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _assert_cli_failed_without_evidence(completed: subprocess.CompletedProcess[str], output: Path) -> None:
+    """A failed CLI run exits non-zero and does not leave JSON evidence behind."""
+    assert completed.returncode != 0
+    assert not output.exists()
+    assert not Path(f"{output}.partial").exists()
+    assert "ok=" not in completed.stdout
+
+
 def test_cli_cancelled_error_exits_nonzero_without_writing_json(tmp_path: Path) -> None:
-    """A CancelledError from attempt must not exit 0 or replace evidence JSON."""
+    """A CancelledError from attempt must not exit 0 or leave JSON evidence."""
     output = tmp_path / "reconnect.json"
     output.write_text("ORIGINAL_JSON", encoding="utf-8")
     script = _cli_script(
@@ -461,9 +471,7 @@ def test_cli_cancelled_error_exits_nonzero_without_writing_json(tmp_path: Path) 
         "bench.attempt = boom\n"
     )
     completed = _run_cli(script, output)
-    assert completed.returncode != 0
-    assert output.read_text(encoding="utf-8") == "ORIGINAL_JSON"
-    assert "ok=0 failed=0" not in completed.stdout
+    _assert_cli_failed_without_evidence(completed, output)
 
 
 def test_system_exit_zero_from_attempt_is_not_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -498,8 +506,7 @@ def test_system_exit_zero_from_attempt_is_not_success(monkeypatch: pytest.Monkey
         "bench.attempt = attempt\n"
     )
     completed = _run_cli(script, output)
-    assert completed.returncode != 0
-    assert output.read_text(encoding="utf-8") == "ORIGINAL_JSON"
+    _assert_cli_failed_without_evidence(completed, output)
 
 
 def test_sampler_exception_cancels_inflight_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -577,3 +584,377 @@ def test_external_run_cancellation_propagates(monkeypatch: pytest.MonkeyPatch) -
         assert _pending_tasks(before) == []
 
     _run_bounded(body())
+
+
+_HEALTHY_SAMPLE: dict[str, object] = {
+    "monotonic": 0.0,
+    "cpu_pct": 1.0,
+    "cpu_freq_mhz": None,
+    "cpu_freq_max_mhz": None,
+    "max_temperature_c": None,
+    "temperatures": [],
+    "ram_used_bytes": 1024,
+    "ram_pct": 1.0,
+    "net_rx_mbps": 0.0,
+    "net_tx_mbps": 0.0,
+    "disk_read_mbps": 0.0,
+    "disk_write_mbps": 0.0,
+    "gpu": [],
+}
+
+_HEALTHY_ATTEMPT = (
+    "async def ok_attempt(*_args, **_kwargs):\n"
+    "    return True, 0.0\n"
+    "bench.attempt = ok_attempt\n"
+)
+
+
+@pytest.mark.parametrize("exit_code", [0, None, False])
+def test_qa_030_101_sampler_success_system_exit_cancels_inflight_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+    exit_code: object,
+) -> None:
+    """SystemExit(0), SystemExit(), and SystemExit(False) from the sampler fail the run."""
+    calls = _count_results(monkeypatch)
+    entered = {"n": 0}
+    cancelled = {"n": 0}
+
+    def sample(self: object) -> dict[str, object]:
+        if entered["n"] >= 2:
+            raise SystemExit(exit_code)
+        return dict(_HEALTHY_SAMPLE)
+
+    async def parked_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        entered["n"] += 1
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled["n"] += 1
+            raise
+        return True, 0.01
+
+    monkeypatch.setattr(reconnect_bench.SystemSampler, "sample", sample)
+    monkeypatch.setattr(reconnect_bench, "attempt", parked_attempt)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        with pytest.raises(RuntimeError, match="sampler raised SystemExit\\(0\\)"):
+            await asyncio.wait_for(
+                reconnect_bench.run(_args(concurrency=2, attempts=2, sample_interval=0.1)),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        assert calls["n"] == 0
+        assert cancelled["n"] == 2
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())
+
+
+def test_qa_030_101_sampler_cancelled_error_keeps_its_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CancelledError raised by the sampler is the sampler's failure, not an empty cancel."""
+    calls = _count_results(monkeypatch)
+
+    def sample(self: object) -> dict[str, object]:
+        raise asyncio.CancelledError("sampler cancelled itself")
+
+    async def parked_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        await asyncio.Event().wait()
+        return True, 0.01
+
+    monkeypatch.setattr(reconnect_bench.SystemSampler, "sample", sample)
+    monkeypatch.setattr(reconnect_bench, "attempt", parked_attempt)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        with pytest.raises(asyncio.CancelledError, match="sampler cancelled itself"):
+            await asyncio.wait_for(
+                reconnect_bench.run(_args(concurrency=1, attempts=1)),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        assert calls["n"] == 0
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())
+
+
+def test_qa_030_101_sampler_keyboard_interrupt_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """KeyboardInterrupt from the sampler stays a cancellation and publishes nothing."""
+    calls = _count_results(monkeypatch)
+
+    def sample(self: object) -> dict[str, object]:
+        raise KeyboardInterrupt("sampler interrupt")
+
+    async def parked_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        await asyncio.Event().wait()
+        return True, 0.01
+
+    monkeypatch.setattr(reconnect_bench.SystemSampler, "sample", sample)
+    monkeypatch.setattr(reconnect_bench, "attempt", parked_attempt)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        with pytest.raises(KeyboardInterrupt, match="sampler interrupt"):
+            await asyncio.wait_for(
+                reconnect_bench.run(_args(concurrency=1, attempts=1)),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        assert calls["n"] == 0
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())
+
+
+@pytest.mark.parametrize(
+    ("raised", "label"),
+    [
+        ("SystemExit(0)", "zero"),
+        ("SystemExit()", "bare"),
+        ("SystemExit(False)", "false"),
+        ("SystemExit(1)", "one"),
+        ('SystemExit("benchmark bug")', "message"),
+    ],
+)
+def test_qa_030_101_cli_sampler_system_exit_removes_stale_json(tmp_path: Path, raised: str, label: str) -> None:
+    """Any SystemExit from the sampler exits non-zero and deletes stale JSON evidence."""
+    del label
+    output = tmp_path / "reconnect.json"
+    csv_path = tmp_path / "reconnect.csv"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    csv_path.write_text("ORIGINAL_CSV", encoding="utf-8")
+    script = _cli_script(
+        "def sample(self):\n"
+        f"    raise {raised}\n"
+        "bench.SystemSampler.sample = sample\n"
+        "async def parked(*_args, **_kwargs):\n"
+        "    import asyncio\n"
+        "    await asyncio.Event().wait()\n"
+        "bench.attempt = parked\n",
+        csv=True,
+    )
+    completed = _run_cli(script, output, csv_path)
+    _assert_cli_failed_without_evidence(completed, output)
+    assert csv_path.read_text(encoding="utf-8") == "ORIGINAL_CSV"
+    if raised in {"SystemExit(0)", "SystemExit()", "SystemExit(False)"}:
+        assert "sampler raised SystemExit(0)" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "class BoomSampler:\n"
+        "    def __init__(self):\n"
+        "        raise SystemExit(0)\n"
+        "bench.SystemSampler = BoomSampler\n",
+        "def boom_clock():\n"
+        "    raise SystemExit(0)\n"
+        "bench.utc_iso = boom_clock\n"
+        + _HEALTHY_ATTEMPT,
+        "import asyncio as aio\n"
+        "class BadQueue(aio.Queue):\n"
+        "    async def put(self, item):\n"
+        "        raise SystemExit(0)\n"
+        "bench.asyncio.Queue = BadQueue\n"
+        + _HEALTHY_ATTEMPT,
+    ],
+    ids=["sampler-init", "utc-iso", "enqueue"],
+)
+def test_qa_030_101_cli_setup_system_exit_zero_removes_stale_json(tmp_path: Path, body: str) -> None:
+    """SystemExit(0) while setting up the driver exits non-zero and drops stale JSON."""
+    output = tmp_path / "reconnect.json"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    completed = _run_cli(_cli_script(body), output)
+    _assert_cli_failed_without_evidence(completed, output)
+    assert "setup raised SystemExit(0)" in completed.stderr
+
+
+def test_qa_030_101_cli_teardown_system_exit_zero_removes_stale_json(tmp_path: Path) -> None:
+    """SystemExit(0) from drive teardown exits non-zero and drops stale JSON."""
+    output = tmp_path / "reconnect.json"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    script = _cli_script(
+        "def boom_drain(_queue):\n"
+        "    raise SystemExit(0)\n"
+        "bench._drain_queue = boom_drain\n"
+        + _HEALTHY_ATTEMPT
+    )
+    completed = _run_cli(script, output)
+    _assert_cli_failed_without_evidence(completed, output)
+    assert "teardown raised SystemExit(0)" in completed.stderr
+
+
+def test_qa_030_101_cli_build_result_system_exit_zero_removes_stale_json(tmp_path: Path) -> None:
+    """SystemExit(0) from build_result exits non-zero and drops stale JSON."""
+    output = tmp_path / "reconnect.json"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    script = _cli_script(
+        "def boom_build(**_kwargs):\n"
+        "    raise SystemExit(0)\n"
+        "bench.build_result = boom_build\n"
+        + _HEALTHY_ATTEMPT
+    )
+    completed = _run_cli(script, output)
+    _assert_cli_failed_without_evidence(completed, output)
+    assert "result raised SystemExit(0)" in completed.stderr
+
+
+def test_qa_030_101_cli_write_result_system_exit_zero_removes_stale_json(tmp_path: Path) -> None:
+    """SystemExit(0) from write_result exits non-zero and drops stale JSON."""
+    output = tmp_path / "reconnect.json"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    script = _cli_script(
+        "def boom_write(*_args, **_kwargs):\n"
+        "    raise SystemExit(0)\n"
+        "bench.write_result = boom_write\n"
+        + _HEALTHY_ATTEMPT
+    )
+    completed = _run_cli(script, output)
+    _assert_cli_failed_without_evidence(completed, output)
+    assert "publish raised SystemExit(0)" in completed.stderr
+
+
+def test_qa_030_101_clean_cli_publishes_json_then_failed_run_removes_it(tmp_path: Path) -> None:
+    """A later failed run must not leave the previous run's JSON in --output-json."""
+    output = tmp_path / "reconnect.json"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    healthy = _run_cli(_cli_script(_HEALTHY_ATTEMPT), output)
+    assert healthy.returncode == 0
+    assert output.exists()
+    published = output.read_text(encoding="utf-8")
+    assert "phase8-benchmark-v1" in published
+    assert not Path(f"{output}.partial").exists()
+    assert "ok=4 failed=0" in healthy.stdout
+
+    failed = _run_cli(
+        _cli_script(
+            "def sample(self):\n"
+            "    raise SystemExit(0)\n"
+            "bench.SystemSampler.sample = sample\n"
+            "async def parked(*_args, **_kwargs):\n"
+            "    import asyncio\n"
+            "    await asyncio.Event().wait()\n"
+            "bench.attempt = parked\n"
+        ),
+        output,
+    )
+    _assert_cli_failed_without_evidence(failed, output)
+
+
+def test_qa_030_101_sampler_init_system_exit_fails_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SystemExit(0) from SystemSampler() must not return a result or leak tasks."""
+    calls = _count_results(monkeypatch)
+
+    class BoomSampler:
+        def __init__(self) -> None:
+            raise SystemExit(0)
+
+    monkeypatch.setattr(reconnect_bench, "SystemSampler", BoomSampler)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        with pytest.raises(RuntimeError, match="setup raised SystemExit\\(0\\)"):
+            await asyncio.wait_for(
+                reconnect_bench.run(_args(concurrency=1, attempts=1)),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        assert calls["n"] == 0
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())
+
+
+def test_qa_030_101_clock_system_exit_fails_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SystemExit(0) from utc_iso() must not return a result or leak tasks."""
+    _patch_sampler(monkeypatch)
+    calls = _count_results(monkeypatch)
+
+    def boom_clock() -> str:
+        raise SystemExit(0)
+
+    monkeypatch.setattr(reconnect_bench, "utc_iso", boom_clock)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        with pytest.raises(RuntimeError, match="setup raised SystemExit\\(0\\)"):
+            await asyncio.wait_for(
+                reconnect_bench.run(_args(concurrency=1, attempts=1)),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        assert calls["n"] == 0
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())
+
+
+def test_qa_030_101_teardown_system_exit_fails_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SystemExit(0) from queue drain must not publish a result."""
+    _patch_sampler(monkeypatch)
+    calls = _count_results(monkeypatch)
+
+    async def healthy_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        return True, 0.0
+
+    def boom_drain(_queue: object) -> None:
+        raise SystemExit(0)
+
+    monkeypatch.setattr(reconnect_bench, "attempt", healthy_attempt)
+    monkeypatch.setattr(reconnect_bench, "_drain_queue", boom_drain)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        with pytest.raises(RuntimeError, match="teardown raised SystemExit\\(0\\)"):
+            await asyncio.wait_for(
+                reconnect_bench.run(_args(concurrency=1, attempts=1)),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        assert calls["n"] == 0
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())
+
+
+def test_qa_030_101_build_result_system_exit_fails_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SystemExit(0) from build_result must not look like a finished run."""
+    _patch_sampler(monkeypatch)
+
+    async def healthy_attempt(*_args: object, **_kwargs: object) -> tuple[bool, float]:
+        return True, 0.0
+
+    def boom_build(**_kwargs: object) -> dict:
+        raise SystemExit(0)
+
+    monkeypatch.setattr(reconnect_bench, "attempt", healthy_attempt)
+    monkeypatch.setattr(reconnect_bench, "build_result", boom_build)
+
+    async def body() -> None:
+        before = set(asyncio.all_tasks())
+        with pytest.raises(RuntimeError, match="result raised SystemExit\\(0\\)"):
+            await asyncio.wait_for(
+                reconnect_bench.run(_args(concurrency=1, attempts=1)),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        assert _pending_tasks(before) == []
+
+    _run_bounded(body())
+
+
+def test_qa_030_101_cli_help_exits_zero_without_touching_evidence(tmp_path: Path) -> None:
+    """argparse --help stays a successful exit and does not remove evidence files."""
+    output = tmp_path / "reconnect.json"
+    output.write_text("ORIGINAL_JSON", encoding="utf-8")
+    script = (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import phase8_reconnect_benchmark as bench\n"
+        "sys.argv = ['phase8_reconnect_benchmark', '--help']\n"
+        "bench.main()\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(TOOLS)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=HARD_TIMEOUT_SECONDS,
+    )
+    assert completed.returncode == 0
+    assert "output-json" in completed.stdout
+    assert output.read_text(encoding="utf-8") == "ORIGINAL_JSON"
