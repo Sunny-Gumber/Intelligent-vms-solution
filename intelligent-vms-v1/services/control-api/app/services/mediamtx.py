@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import shlex
 import re
 from urllib.parse import quote, urlsplit
@@ -6,6 +7,14 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from app.core.config import settings
+
+log = logging.getLogger(__name__)
+
+# Pinned MediaMTX v1.21.1: internal/api/paginate.go and api/openapi.yaml.
+# An empty page query defaults to 0. An empty itemsPerPage query defaults to 100.
+# itemCount is the total before pagination. pageCount is the number of pages.
+MEDIAMTX_LIST_DEFAULT_PAGE = 0
+MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE = 100
 
 
 class MediaMTXError(RuntimeError):
@@ -193,32 +202,136 @@ class MediaMTXClient:
                     raise MediaMTXError(f"Media node delete failed: {response.status_code}")
 
     async def list_paths(self) -> dict:
-        """Return runtime MediaMTX path state.
+        """Return runtime MediaMTX path state across every upstream page.
 
         Returns:
-            MediaMTX runtime path-list response as a dictionary.
+            Dictionary with merged ``items``, upstream ``itemCount`` and
+            ``pageCount``, and ``truncated``. ``truncated`` is true when the
+            configured bound stopped the walk before the catalog was complete.
+            A truncated result is not the full path set.
 
         Raises:
-            httpx.HTTPError: If the path-list request fails.
+            httpx.HTTPError: If a path-list request fails.
+            MediaMTXError: If a page body is not a JSON object.
         """
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{self.base_url}/v3/paths/list")
-            response.raise_for_status()
-            return response.json()
+        return await self._list_paged("/v3/paths/list")
 
     async def list_config_paths(self) -> dict:
-        """Return configured MediaMTX paths.
+        """Return configured MediaMTX paths across every upstream page.
 
         Returns:
-            MediaMTX path-configuration response as a dictionary.
+            Dictionary with merged ``items``, upstream ``itemCount`` and
+            ``pageCount``, and ``truncated``. ``truncated`` is true when the
+            configured bound stopped the walk before the catalog was complete.
+            A truncated result is not the full configured set.
 
         Raises:
-            httpx.HTTPError: If the configuration-list request fails.
+            httpx.HTTPError: If a configuration-list request fails.
+            MediaMTXError: If a page body is not a JSON object.
         """
+        return await self._list_paged("/v3/config/paths/list")
+
+    async def _list_paged(self, relative_path: str) -> dict:
+        """Follow MediaMTX list pages until the catalog ends or the bound is hit.
+
+        Args:
+            relative_path: API path such as ``/v3/paths/list``.
+
+        Returns:
+            Merged list payload. ``truncated`` is true when ``mediamtx_list_max_items``
+            stopped enumeration while upstream ``itemCount`` or ``pageCount`` still
+            reported further paths.
+
+        Raises:
+            httpx.HTTPError: If a page request fails.
+            MediaMTXError: If a page body is not a JSON object.
+        """
+        bound = int(settings.mediamtx_list_max_items)
+        items_per_page = MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
+        max_pages = max(1, (bound + items_per_page - 1) // items_per_page)
+        collected: list = []
+        truncated = False
+        item_count: int | None = None
+        page_count: int | None = None
+
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{self.base_url}/v3/config/paths/list")
-            response.raise_for_status()
-            return response.json()
+            for page in range(MEDIAMTX_LIST_DEFAULT_PAGE, MEDIAMTX_LIST_DEFAULT_PAGE + max_pages):
+                if len(collected) >= bound:
+                    truncated = True
+                    break
+                response = await client.get(
+                    f"{self.base_url}{relative_path}",
+                    params={"page": page, "itemsPerPage": items_per_page},
+                )
+                response.raise_for_status()
+                body = response.json()
+                if not isinstance(body, dict):
+                    raise MediaMTXError("MediaMTX list response was not an object")
+                page_items = body.get("items", [])
+                if not isinstance(page_items, list):
+                    raise MediaMTXError("MediaMTX list items was not a list")
+                parsed_item_count = _optional_count(body.get("itemCount"))
+                parsed_page_count = _optional_count(body.get("pageCount"))
+                if parsed_item_count is not None:
+                    item_count = parsed_item_count
+                if parsed_page_count is not None:
+                    page_count = parsed_page_count
+
+                room = bound - len(collected)
+                if len(page_items) > room:
+                    collected.extend(page_items[:room])
+                    truncated = True
+                    break
+                collected.extend(page_items)
+
+                reached_item_count = item_count is not None and len(collected) >= item_count
+                reached_page_count = page_count is not None and (page + 1) >= page_count
+                short_page = len(page_items) < items_per_page
+                if reached_item_count or reached_page_count or short_page:
+                    if item_count is not None and len(collected) < item_count:
+                        truncated = True
+                    break
+            else:
+                if item_count is None or len(collected) < item_count:
+                    if page_count is None or max_pages < page_count:
+                        truncated = True
+
+        if truncated:
+            log.warning(
+                "mediamtx_list_truncated path=%s collected=%d item_count=%s page_count=%s bound=%d",
+                relative_path,
+                len(collected),
+                "unknown" if item_count is None else item_count,
+                "unknown" if page_count is None else page_count,
+                bound,
+            )
+        reported_item_count = item_count if item_count is not None else len(collected)
+        if page_count is not None:
+            reported_page_count = page_count
+        elif collected:
+            reported_page_count = 1
+        else:
+            reported_page_count = 0
+        return {
+            "itemCount": reported_item_count,
+            "pageCount": reported_page_count,
+            "items": collected,
+            "truncated": truncated,
+        }
+
+
+def _optional_count(value: object) -> int | None:
+    """Return a non-negative MediaMTX total, ignoring missing or non-integer values.
+
+    Args:
+        value: Raw ``itemCount`` or ``pageCount`` field.
+
+    Returns:
+        The count when it is a non-negative integer, otherwise None.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 mediamtx = MediaMTXClient()

@@ -246,6 +246,53 @@ async def reconcile_batch(
     return changed, failed
 
 
+def _config_inventory(configured: object) -> tuple[set[str], dict[str, int | None]] | None:
+    """Return configured names only when the MediaMTX listing is complete.
+
+    Args:
+        configured: Payload from ``list_config_paths``.
+
+    Returns:
+        Present path names and their ``maxReaders`` values. None when the
+        listing is truncated or shorter than upstream ``itemCount``. Callers
+        must not add or delete paths from a None inventory: paths past the
+        bound would look absent and be reapplied on every run.
+
+    """
+    if isinstance(configured, dict) and configured.get("truncated") is True:
+        return None
+    configured_items = configured.get("items", []) if isinstance(configured, dict) else []
+    if not isinstance(configured_items, list):
+        configured_items = []
+    if isinstance(configured, dict):
+        item_count = configured.get("itemCount")
+        if (
+            isinstance(item_count, int)
+            and not isinstance(item_count, bool)
+            and len(configured_items) < item_count
+        ):
+            return None
+    present = {
+        item.get("name")
+        for item in configured_items
+        if isinstance(item, dict) and item.get("name")
+    }
+    reader_limits = {
+        item["name"]: item.get("maxReaders")
+        for item in configured_items
+        if isinstance(item, dict) and item.get("name")
+    }
+    return present, reader_limits
+
+
+def _incomplete_list_fields(configured: object) -> tuple[int, object]:
+    if not isinstance(configured, dict):
+        return 0, None
+    items = configured.get("items", [])
+    collected = len(items) if isinstance(items, list) else 0
+    return collected, configured.get("itemCount")
+
+
 async def _legacy_reconcile(
     cameras: list[CameraEntity],
     policies: dict[str, RecordingPolicyEntity],
@@ -256,19 +303,16 @@ async def _legacy_reconcile(
     last_processed = None
     try:
         configured = await mediamtx.list_config_paths()
-        configured_items = (
-            configured.get("items", []) if isinstance(configured, dict) else []
-        )
-        present = {
-            item.get("name")
-            for item in configured_items
-            if isinstance(item, dict) and item.get("name")
-        }
-        reader_limits = {
-            item["name"]: item.get("maxReaders")
-            for item in configured_items
-            if isinstance(item, dict) and item.get("name")
-        }
+        inventory = _config_inventory(configured)
+        if inventory is None:
+            collected, item_count = _incomplete_list_fields(configured)
+            log.error(
+                "legacy_media_reconcile_list_truncated collected=%s item_count=%s",
+                collected,
+                item_count,
+            )
+            return 0, 1, None
+        present, reader_limits = inventory
     except Exception:
         log.exception("legacy_media_reconcile_list_failed")
         return 0, 1, None
@@ -381,19 +425,19 @@ async def _distributed_reconcile(
         try:
             client = await node_clients.media(node)
             configured = await client.list_config_paths()
-            configured_items = (
-                configured.get("items", []) if isinstance(configured, dict) else []
-            )
-            present = {
-                item.get("name")
-                for item in configured_items
-                if isinstance(item, dict) and item.get("name")
-            }
-            reader_limits = {
-                item["name"]: item.get("maxReaders")
-                for item in configured_items
-                if isinstance(item, dict) and item.get("name")
-            }
+            inventory = _config_inventory(configured)
+            if inventory is None:
+                present_by_node[node_id] = None
+                failed += 1
+                collected, item_count = _incomplete_list_fields(configured)
+                log.error(
+                    "reconcile_node_list_truncated node_id=%s collected=%s item_count=%s",
+                    node_id,
+                    collected,
+                    item_count,
+                )
+                return None, None, None
+            present, reader_limits = inventory
             clients[node_id] = client
             present_by_node[node_id] = present
             reader_limits_by_node[node_id] = reader_limits

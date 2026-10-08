@@ -24,6 +24,11 @@ Role = Literal["media", "recording", "ai"]
 ALLOWED_ROLES = {"media", "recording", "ai"}
 LOG = logging.getLogger("node_agent")
 MIN_BACKOFF_SLEEP_SECONDS = 0.001
+# Pinned MediaMTX v1.21.1 paginate.go / openapi: page defaults to 0,
+# itemsPerPage defaults to 100. Duplicated here because the node image
+# copies only this file and effective_authority.py.
+_MEDIAMTX_LIST_DEFAULT_PAGE = 0
+_MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE = 100
 
 
 def _load_effective_authority():
@@ -132,6 +137,15 @@ class NodeAgentSettings(BaseSettings):
     recording_mount_path: str = Field(default="/recordings", validation_alias="RECORDING_MOUNT_PATH")
     network_interface: str | None = Field(default=None, validation_alias="NETWORK_INTERFACE")
     mediamtx_api_url: str | None = Field(default=None, validation_alias="MEDIAMTX_API_URL")
+    # VMS-FIX-013. Kept separate from fence settings. MediaMTX v1.21.1 lists
+    # 100 paths per page. The probe stops here and does not publish a partial
+    # count as placement load.
+    mediamtx_list_max_items: int = Field(
+        default=10000,
+        ge=1,
+        le=1_000_000,
+        validation_alias="MEDIAMTX_LIST_MAX_ITEMS",
+    )
     heartbeat_spool_url: str | None = Field(default=None, validation_alias="HEARTBEAT_SPOOL_URL")
     node_fencing_enabled: bool = Field(default=False, validation_alias="NODE_FENCING_ENABLED")
     fence_poll_interval_seconds: float = Field(default=5.0, validation_alias="FENCE_POLL_INTERVAL_SECONDS")
@@ -262,6 +276,88 @@ class NodeAgentSettings(BaseSettings):
         if not Path(self.fence_state_path).is_absolute():
             raise ValueError("FENCE_STATE_PATH must be absolute")
         return self
+
+
+def _optional_mediamtx_count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _count_runtime_paths(items: list) -> tuple[int, int]:
+    live_sources = 0
+    recording_paths = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if name.endswith("-record"):
+            recording_paths += 1
+            continue
+        if item.get("source"):
+            live_sources += 1
+    return live_sources, recording_paths
+
+
+async def _collect_mediamtx_pages(fetch_page, *, bound: int) -> tuple[list, bool, int | None, int | None]:
+    """Read MediaMTX /v3/paths/list pages until the catalog or the bound ends.
+
+    Args:
+        fetch_page: Coroutine function ``(page, items_per_page) -> response``.
+        bound: Maximum items to keep. Further pages are not requested.
+
+    Returns:
+        Collected items, truncation flag, upstream itemCount, and pageCount.
+        Truncation means the returned items are not the full catalog.
+
+    Raises:
+        Exception: Transport and HTTP status failures from ``fetch_page`` propagate.
+    """
+    items_per_page = _MEDIAMTX_LIST_DEFAULT_ITEMS_PER_PAGE
+    max_pages = max(1, (bound + items_per_page - 1) // items_per_page)
+    collected: list = []
+    truncated = False
+    item_count: int | None = None
+    page_count: int | None = None
+    for page in range(_MEDIAMTX_LIST_DEFAULT_PAGE, _MEDIAMTX_LIST_DEFAULT_PAGE + max_pages):
+        if len(collected) >= bound:
+            truncated = True
+            break
+        response = await fetch_page(page, items_per_page)
+        response.raise_for_status()
+        body = response.json()
+        if isinstance(body, dict):
+            page_items = body.get("items", body.get("paths", []))
+            parsed_item_count = _optional_mediamtx_count(body.get("itemCount"))
+            parsed_page_count = _optional_mediamtx_count(body.get("pageCount"))
+        else:
+            page_items = []
+            parsed_item_count = None
+            parsed_page_count = None
+        if not isinstance(page_items, list):
+            page_items = []
+        if parsed_item_count is not None:
+            item_count = parsed_item_count
+        if parsed_page_count is not None:
+            page_count = parsed_page_count
+        room = bound - len(collected)
+        if len(page_items) > room:
+            collected.extend(page_items[:room])
+            truncated = True
+            break
+        collected.extend(page_items)
+        reached_item_count = item_count is not None and len(collected) >= item_count
+        reached_page_count = page_count is not None and (page + 1) >= page_count
+        short_page = len(page_items) < items_per_page
+        if reached_item_count or reached_page_count or short_page:
+            if item_count is not None and len(collected) < item_count:
+                truncated = True
+            break
+    else:
+        if item_count is None or len(collected) < item_count:
+            if page_count is None or max_pages < page_count:
+                truncated = True
+    return collected, truncated, item_count, page_count
 
 
 class NodeAgent:
@@ -776,32 +872,17 @@ class NodeAgent:
         assert self.settings.mediamtx_api_url
         url = f"{self.settings.mediamtx_api_url}/v3/paths/list"
         try:
-            resp = await self._client.get(url, timeout=self.settings.heartbeat_timeout_seconds)
-            resp.raise_for_status()
-            body = resp.json()
-            if isinstance(body, dict):
-                items = body.get("items", body.get("paths", []))
-            else:
-                items = []
-            if not isinstance(items, list):
-                items = []
-            live_sources = 0
-            recording_paths = 0
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name") or "")
-                if name.endswith("-record"):
-                    recording_paths += 1
-                    continue
-                if item.get("source"):
-                    live_sources += 1
-            return {
-                "mediamtx_reachable": 1.0,
-                "mediamtx_configured_paths": float(len(items)),
-                "mediamtx_live_sources": float(live_sources),
-                "mediamtx_recording_paths": float(recording_paths),
-            }
+            async def fetch_page(page: int, items_per_page: int):
+                return await self._client.get(
+                    url,
+                    params={"page": page, "itemsPerPage": items_per_page},
+                    timeout=self.settings.heartbeat_timeout_seconds,
+                )
+
+            items, truncated, item_count, page_count = await _collect_mediamtx_pages(
+                fetch_page,
+                bound=self.settings.mediamtx_list_max_items,
+            )
         except Exception as exc:
             LOG.warning("mediamtx_probe_failed reason=%s", exc.__class__.__name__)
             return {
@@ -810,6 +891,28 @@ class NodeAgent:
                 "mediamtx_live_sources": 0.0,
                 "mediamtx_recording_paths": 0.0,
             }
+        if truncated:
+            # A partial count would understate load and let placement overfill
+            # the node. Omit the counts so missing load stays ineligible.
+            LOG.warning(
+                "mediamtx_list_truncated collected=%d item_count=%s page_count=%s bound=%d",
+                len(items),
+                "unknown" if item_count is None else item_count,
+                "unknown" if page_count is None else page_count,
+                self.settings.mediamtx_list_max_items,
+            )
+            return {
+                "mediamtx_reachable": 1.0,
+                "mediamtx_list_truncated": 1.0,
+            }
+        live_sources, recording_paths = _count_runtime_paths(items)
+        return {
+            "mediamtx_reachable": 1.0,
+            "mediamtx_list_truncated": 0.0,
+            "mediamtx_configured_paths": float(len(items)),
+            "mediamtx_live_sources": float(live_sources),
+            "mediamtx_recording_paths": float(recording_paths),
+        }
 
     async def build_heartbeat_payload(self) -> dict:
         """Collect bounded host/media load and authority state for one heartbeat.
@@ -824,11 +927,13 @@ class NodeAgent:
         mediamtx = await self._probe_mediamtx()
         load = dict(host)
         load.update(mediamtx)
+        list_truncated = bool(mediamtx.get("mediamtx_list_truncated"))
         if "media" in self.settings.node_roles:
             load["ingress_mbps"] = _safe_number(load.get("net_rx_bps", 0.0) / 1_000_000.0)
             load["egress_mbps"] = _safe_number(load.get("net_tx_bps", 0.0) / 1_000_000.0)
-            load["active_sources"] = _safe_number(load.get("mediamtx_live_sources", 0.0))
-        if "recording" in self.settings.node_roles:
+            if not list_truncated:
+                load["active_sources"] = _safe_number(load.get("mediamtx_live_sources", 0.0))
+        if "recording" in self.settings.node_roles and not list_truncated:
             load["active_recordings"] = _safe_number(load.get("mediamtx_recording_paths", 0.0))
             # record_mbps is intentionally omitted until a trustworthy per-recording
             # byte-rate source is wired in. Placement treats missing configured
