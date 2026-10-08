@@ -2,12 +2,124 @@
 <html><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><style>html,body,video{margin:0;width:100%;height:100%;background:#000}video{object-fit:contain}</style></head>
 <body><video id="video" autoplay playsinline muted></video><script>
 'use strict';
-let pc=null,sessionUrl=null,accessToken=null,generation=0;
+let generation=0,current=null;
 const send=state=>chrome.webview.postMessage({state});
 function safeMediaBase(raw){const u=new URL(raw);if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.search||u.hash)throw new Error('unsafe media endpoint');return u}
-async function waitIce(peer){if(peer.iceGatheringState==='complete')return;await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{peer.removeEventListener('icegatheringstatechange',change);reject(new Error('ICE timeout'))},5000);const change=()=>{if(peer.iceGatheringState==='complete'){clearTimeout(timer);peer.removeEventListener('icegatheringstatechange',change);resolve()}};peer.addEventListener('icegatheringstatechange',change)})}
-async function stop(expected){if(expected!==undefined&&expected!==generation)return;generation++;const oldPc=pc,oldUrl=sessionUrl,oldToken=accessToken;pc=null;sessionUrl=null;accessToken=null;document.getElementById('video').srcObject=null;if(oldPc){try{oldPc.ontrack=null;oldPc.onconnectionstatechange=null;oldPc.close()}catch{}}if(oldUrl&&oldToken){try{await fetch(oldUrl,{method:'DELETE',headers:{Authorization:'Bearer '+oldToken},keepalive:true})}catch{}}send('IDLE')}
-async function start(message){await stop();const mine=++generation;send('CONNECTING');try{const base=safeMediaBase(message.webrtcUrl);accessToken=String(message.accessToken||'');if(!accessToken)throw new Error('missing media grant');const whep=new URL(base.toString().replace(/\/$/,'')+'/whep');pc=new RTCPeerConnection();pc.addTransceiver('video',{direction:'recvonly'});pc.ontrack=e=>{if(mine===generation&&e.streams&&e.streams[0])document.getElementById('video').srcObject=e.streams[0]};pc.onconnectionstatechange=()=>{if(mine!==generation)return;if(pc.connectionState==='connected')send('LIVE');if(['failed','disconnected','closed'].includes(pc.connectionState)){send('FAILED');stop(mine)}};const offer=await pc.createOffer();await pc.setLocalDescription(offer);await waitIce(pc);if(mine!==generation)return;await fetch(whep,{method:'OPTIONS',headers:{Authorization:'Bearer '+accessToken}});const response=await fetch(whep,{method:'POST',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/sdp'},body:pc.localDescription.sdp});if(response.status!==201)throw new Error('WHEP rejected');const location=response.headers.get('Location');if(location){const candidate=new URL(location,whep);if(candidate.origin!==whep.origin)throw new Error('cross-origin session');sessionUrl=candidate.toString()}const answer=await response.text();if(mine!==generation)return;await pc.setRemoteDescription({type:'answer',sdp:answer})}catch{if(mine===generation){send('FAILED');await stop(mine)}}}
-chrome.webview.addEventListener('message',e=>{const m=e.data||{};if(m.action==='start')start(m);else if(m.action==='stop')stop()});
-window.addEventListener('pagehide',()=>stop());
+function isStale(attempt){return !attempt||attempt.superseded||attempt.mine!==generation||current!==attempt}
+function closePeer(attempt){
+  const peer=attempt&&attempt.pc;
+  if(!peer||attempt.peerClosed)return;
+  attempt.peerClosed=true;
+  try{peer.ontrack=null;peer.onconnectionstatechange=null;peer.close()}catch{}
+}
+async function deleteSession(sessionUrl,accessToken){
+  if(!sessionUrl||!accessToken)return;
+  try{
+    const response=await fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+accessToken},keepalive:true});
+    if(!response.ok)throw new Error('session delete failed');
+  }catch{chrome.webview.postMessage({event:'session-delete-failed'})}
+}
+async function deleteOwned(attempt,sessionUrl){
+  if(!attempt||attempt.deleted)return;
+  const url=sessionUrl||attempt.sessionUrl;
+  const accessToken=attempt.accessToken;
+  if(!url||!accessToken)return;
+  attempt.deleted=true;
+  attempt.sessionUrl=url;
+  await deleteSession(url,accessToken);
+}
+async function waitIce(peer,signal){
+  if(signal.aborted)throw new DOMException('The operation was aborted.','AbortError');
+  if(peer.iceGatheringState==='complete')return;
+  await new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{cleanup();reject(new Error('ICE timeout'))},5000);
+    const change=()=>{if(peer.iceGatheringState==='complete'){cleanup();resolve()}};
+    const abort=()=>{cleanup();reject(new DOMException('The operation was aborted.','AbortError'))};
+    function cleanup(){clearTimeout(timer);peer.removeEventListener('icegatheringstatechange',change);signal.removeEventListener('abort',abort)}
+    peer.addEventListener('icegatheringstatechange',change);
+    signal.addEventListener('abort',abort);
+  });
+}
+async function stop(expected){
+  if(expected!==undefined&&expected!==generation)return;
+  generation++;
+  const attempt=current;
+  current=null;
+  document.getElementById('video').srcObject=null;
+  if(attempt){
+    attempt.superseded=true;
+    try{attempt.controller.abort()}catch{}
+    closePeer(attempt);
+    await deleteOwned(attempt);
+  }
+  if(current===null)send('IDLE');
+}
+async function start(message){
+  await stop();
+  if(current!==null)return;
+  const mine=++generation;
+  const controller=new AbortController();
+  const accessToken=String(message.accessToken||'');
+  const attempt={mine,controller,pc:null,sessionUrl:null,accessToken,superseded:false,deleted:false,peerClosed:false};
+  current=attempt;
+  send('CONNECTING');
+  try{
+    const base=safeMediaBase(message.webrtcUrl);
+    if(!accessToken)throw new Error('missing media grant');
+    const whep=new URL(base.toString().replace(/\/$/,'')+'/whep');
+    const peer=attempt.pc=new RTCPeerConnection();
+    peer.addTransceiver('video',{direction:'recvonly'});
+    peer.ontrack=e=>{if(isStale(attempt))return;if(e.streams&&e.streams[0])document.getElementById('video').srcObject=e.streams[0]};
+    peer.onconnectionstatechange=()=>{
+      if(isStale(attempt))return;
+      if(peer.connectionState==='connected')send('LIVE');
+      if(['failed','disconnected','closed'].includes(peer.connectionState)){send('FAILED');stop(mine).catch(()=>chrome.webview.postMessage({event:'session-lifecycle-error'}))}
+    };
+    const offer=await peer.createOffer();
+    if(isStale(attempt))return;
+    await peer.setLocalDescription(offer);
+    await waitIce(peer,controller.signal);
+    if(isStale(attempt))return;
+    await fetch(whep,{method:'OPTIONS',headers:{Authorization:'Bearer '+accessToken},signal:controller.signal});
+    if(isStale(attempt))return;
+    // POST is not aborted: Stop leaves a late 201 to DELETE this attempt's original session and token.
+    const response=await fetch(whep,{method:'POST',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/sdp'},body:peer.localDescription.sdp});
+    if(response.status!==201)throw new Error('WHEP rejected');
+    const location=response.headers.get('Location');
+    let sessionUrl=null;
+    if(location){
+      const candidate=new URL(location,whep);
+      if(candidate.origin!==whep.origin)throw new Error('cross-origin session');
+      sessionUrl=candidate.toString();
+    }
+    if(isStale(attempt)){
+      closePeer(attempt);
+      await deleteOwned(attempt,sessionUrl);
+      return;
+    }
+    attempt.sessionUrl=sessionUrl;
+    const answer=await response.text();
+    if(isStale(attempt)){
+      closePeer(attempt);
+      await deleteOwned(attempt);
+      return;
+    }
+    await peer.setRemoteDescription({type:'answer',sdp:answer});
+    if(isStale(attempt)){
+      closePeer(attempt);
+      await deleteOwned(attempt);
+    }
+  }catch{
+    if(isStale(attempt)){
+      closePeer(attempt);
+      await deleteOwned(attempt);
+      return;
+    }
+    send('FAILED');
+    await stop(mine);
+  }
+}
+function track(work){if(work&&typeof work.catch==='function')work.catch(()=>chrome.webview.postMessage({event:'session-lifecycle-error'}))}
+chrome.webview.addEventListener('message',e=>{const m=e.data||{};if(m.action==='start')track(start(m));else if(m.action==='stop')track(stop())});
+window.addEventListener('pagehide',()=>track(stop()));
 </script></body></html>
