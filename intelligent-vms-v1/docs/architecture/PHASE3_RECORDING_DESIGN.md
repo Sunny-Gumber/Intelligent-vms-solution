@@ -78,6 +78,42 @@ Two sources serve different purposes:
 
 Phase 3 playback API uses the node-authoritative list for actual playable spans. The segment index provides gap analysis, capacity/history and later cross-node search.
 
+## Historical covering lookup
+
+Distributed playback resolves one completed segment before it chooses a recorder.
+`segment_for_start` asks ClickHouse for rows that contain the requested instant
+and only then applies `LIMIT`. The half-open interval matches the recording
+fence: `segment_start <= t < segment_end`. The start instant is inside. The end
+instant, and one microsecond later, is outside.
+
+A completed segment can be at most one day, the same maximum the recording hook
+accepts. The indexed range is `t - 1 day <= segment_start <= t`, which the
+`recording_segments` primary key already serves:
+
+```text
+ORDER BY (tenant_id, site_id, camera_id, segment_start, segment_id)
+```
+
+No extra index migration is required. The table remains `DateTime64(3)`; widening
+that key to microseconds would be a column-type change and is not part of this
+lookup fix. The query expression still uses microsecond precision, and Python
+re-checks the returned timestamps at microsecond resolution.
+
+When a placement move leaves two completed segments over the same instant, the
+winner is the greatest `segment_start`, then the greatest `segment_id`. The
+camera's current node is not a tie-break. An instant that only the previous
+owner recorded returns that owner's node. An instant in a gap returns no
+segment. Playback then asks the current recorder and streams only if that
+recorder proves coverage. It does not substitute the current node for a
+historical owner.
+
+Timeline and export use `segments()`. That query also applies the overlap
+predicate before `LIMIT`, then walks oldest first by `(segment_start, segment_id)`.
+Callers page with `after_segment_start` and `after_segment_id`. The HTTP timeline
+and export routes take one page, capped by `recording_query_max_segments`, and
+do not expose the cursor. That cap is not the malformed-row partial flag. Export
+still rejects a range the returned page does not cover continuously.
+
 ## Secure playback
 
 Client:
