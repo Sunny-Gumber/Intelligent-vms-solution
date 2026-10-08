@@ -138,7 +138,7 @@ code{color:#9cdcfe}@media(max-width:720px){.event{grid-template-columns:1fr 1fr}
 const API='/api/v1';
 let authenticated=false;
 let deploymentCapabilities={deployment_profile:'enterprise-distributed',event_history:true,alarm_processing:true,ai_ui:true,distributed_placement:false};
-let cameraCache=[];let healthMap={};let aiCameraId=null;let aiPolicyCache=null;let liveSessions=new Map();let snapshotBusy=new Set();
+let cameraCache=[];let healthMap={};let aiCameraId=null;let aiPolicyCache=null;let liveSessions=new Map();let pendingLive=new Map();let snapshotBusy=new Set();let releasedWhepUrls=new Set();
 let liveWorkspace={tileCount:4,activeTile:0,assignments:[null,null,null,null],roles:[null,null,null,null],generations:[0,0,0,0]};
 const PLAYBACK_MAX_SECONDS=14400;
 const DEFAULT_CLIP_SECONDS=60;
@@ -201,9 +201,9 @@ async function loginWithToken(event){
  }catch(e){input.value='';setAuthenticated(false);message.textContent='Login failed: '+String(e.message||'invalid token')}
 }
 async function signOut(){
- try{await apiFetch(`${API}/auth/session`,{method:'DELETE'})}catch{}
  await stopLiveSessions();closePlayback(false);closeCameraSetup();setAuthenticated(false);
  document.getElementById('authMessage').textContent='Signed out. Paste a valid VMS access token to continue.';
+ try{await apiFetch(`${API}/auth/session`,{method:'DELETE'})}catch{}
 }
 function openCameraSetup(){
  document.getElementById('cameraSetup').style.display='block';document.getElementById('cameraSetupMessage').textContent='';
@@ -364,14 +364,19 @@ async function saveRecordingRetention(){
  if(policy&&policy.mode!=='continuous'&&policy.mode!=='disabled'){renderRecordingControls('Existing recording mode is outside field-test controls.');return}
  await saveRecordingPolicy(!!(policy&&policy.enabled&&policy.mode==='continuous'));
 }
-async function cleanupTile(tileIndex){
- liveWorkspace.generations[tileIndex]=(liveWorkspace.generations[tileIndex]||0)+1;
- const session=liveSessions.get(tileIndex);liveSessions.delete(tileIndex);
+function rememberWhepDelete(sessionUrl){if(!sessionUrl||releasedWhepUrls.has(sessionUrl))return false;releasedWhepUrls.add(sessionUrl);return true}
+async function detachTile(tileIndex){
+ const session=liveSessions.get(tileIndex)||pendingLive.get(tileIndex);
+ liveSessions.delete(tileIndex);pendingLive.delete(tileIndex);
  if(!session)return;
  try{session.pc.ontrack=null;session.pc.onconnectionstatechange=null}catch{}
  try{session.pc.close()}catch{}
  const video=document.getElementById('tile-video-'+tileIndex);if(video){video.srcObject=null;video.removeAttribute('src')}
- if(session.sessionUrl&&session.token){try{await fetch(session.sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+session.token},keepalive:true})}catch{}}
+ if(session.sessionUrl&&session.token&&rememberWhepDelete(session.sessionUrl)){try{await fetch(session.sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+session.token},keepalive:true})}catch{}}
+}
+async function cleanupTile(tileIndex){
+ liveWorkspace.generations[tileIndex]=(liveWorkspace.generations[tileIndex]||0)+1;
+ await detachTile(tileIndex);
 }
 async function stopLiveSessions(){const tiles=[...new Set([...liveSessions.keys(),...liveWorkspace.generations.map((_,tileIndex)=>tileIndex)])];await Promise.allSettled(tiles.map(cleanupTile))}
 function waitForIceGathering(pc,timeoutMs=3000){
@@ -387,33 +392,42 @@ function setTileState(tileIndex,state,message=''){
  const retry=document.getElementById('tile-retry-'+tileIndex);if(retry)retry.hidden=state!=='FAILED';
 }
 async function liveAccess(id,role){return jsonFetch(`${API}/live/cameras/${encodeURIComponent(id)}/access?stream_role=${encodeURIComponent(role)}`,{method:'POST'})}
+function abandonLiveStart(tileIndex,pc,sessionUrl,access){
+ const pending=pendingLive.get(tileIndex);if(pending&&pending.pc===pc)pendingLive.delete(tileIndex);
+ if(pc){try{pc.ontrack=null;pc.onconnectionstatechange=null}catch{}try{pc.close()}catch{}}
+ if(sessionUrl&&access&&rememberWhepDelete(sessionUrl))if(sessionUrl)fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true}).catch(()=>{});
+}
 async function startTile(tileIndex,cameraId,role=liveWorkspace.roles[tileIndex]){
- const generation=liveWorkspace.generations[tileIndex]=(liveWorkspace.generations[tileIndex]||0)+1;
- await cleanupTile(tileIndex);
- if(liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role)return;
- const current=liveWorkspace.generations[tileIndex];
- let access,pc=null,sessionUrl=null,mediaStream=null;
+ const current=liveWorkspace.generations[tileIndex]=(liveWorkspace.generations[tileIndex]||0)+1;
+ let access=null,pc=null,sessionUrl=null,mediaStream=null;
+ const stale=()=>current!==liveWorkspace.generations[tileIndex]||liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role;
  try{
-  access=await liveAccess(cameraId,role);if(current!==liveWorkspace.generations[tileIndex]||liveWorkspace.assignments[tileIndex]!==cameraId||liveWorkspace.roles[tileIndex]!==role)return;
+  await detachTile(tileIndex);
+  if(stale())return;
+  access=await liveAccess(cameraId,role);if(stale())return;
   setTileState(tileIndex,'CONNECTING','switching to '+role.toUpperCase());
   const whep=access.webrtc_url.replace(/\/$/,'')+'/whep';
   const options=await fetch(whep,{method:'OPTIONS',headers:{Authorization:'Bearer '+access.access_token}});
   if(!options.ok)throw new Error('ICE discovery rejected ('+options.status+')');
-  if(current!==liveWorkspace.generations[tileIndex])return;
+  if(stale())return;
   pc=new RTCPeerConnection({iceServers:parseIceServers(options.headers.get('Link'))});pc.addTransceiver('video',{direction:'recvonly'});pc.addTransceiver('audio',{direction:'recvonly'});
-  pc.ontrack=e=>{if(current!==liveWorkspace.generations[tileIndex])return;if(e.streams&&e.streams[0]){mediaStream=e.streams[0];const video=document.getElementById('tile-video-'+tileIndex);if(video)video.srcObject=mediaStream}};
+  pendingLive.set(tileIndex,{pc,sessionUrl:null,token:access.access_token,cameraId,role,generation:current,stream:null,state:'CONNECTING'});
+  pc.ontrack=e=>{if(current!==liveWorkspace.generations[tileIndex])return;if(e.streams&&e.streams[0]){mediaStream=e.streams[0];const video=document.getElementById('tile-video-'+tileIndex);if(video)video.srcObject=mediaStream;const pending=pendingLive.get(tileIndex);if(pending)pending.stream=mediaStream}};
   pc.onconnectionstatechange=()=>{if(current!==liveWorkspace.generations[tileIndex])return;if(pc.connectionState==='connected')setTileState(tileIndex,'LIVE');if(['failed','disconnected'].includes(pc.connectionState)){setTileState(tileIndex,'FAILED','connection lost');cleanupTile(tileIndex)}};
-  const offer=await pc.createOffer();await pc.setLocalDescription(offer);await waitForIceGathering(pc);
-  if(current!==liveWorkspace.generations[tileIndex]){pc.close();return}
+  if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
+  const offer=await pc.createOffer();if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
+  await pc.setLocalDescription(offer);if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
+  await waitForIceGathering(pc);if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
   const response=await fetch(whep,{method:'POST',headers:{Authorization:'Bearer '+access.access_token,'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
   if(response.status!==201)throw new Error(response.status===429?'reader limit reached':'session rejected ('+response.status+')');
   const location=response.headers.get('Location');
-  if(location){const candidate=new URL(location,whep),origin=new URL(whep).origin;if(candidate.origin!==origin)throw new Error('cross-origin WHEP session rejected');sessionUrl=candidate.toString()}
-  const answer=await response.text();if(current!==liveWorkspace.generations[tileIndex]){if(sessionUrl)fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true}).catch(()=>{});pc.close();return}
-  await pc.setRemoteDescription({type:'answer',sdp:answer});
-  if(current!==liveWorkspace.generations[tileIndex]){if(sessionUrl)fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true}).catch(()=>{});pc.close();return}
+  if(location){const candidate=new URL(location,whep),origin=new URL(whep).origin;if(candidate.origin!==origin)throw new Error('cross-origin WHEP session rejected');sessionUrl=candidate.toString();const pending=pendingLive.get(tileIndex);if(pending&&pending.pc===pc)pending.sessionUrl=sessionUrl}
+  if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
+  const answer=await response.text();if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
+  await pc.setRemoteDescription({type:'answer',sdp:answer});if(stale()){abandonLiveStart(tileIndex,pc,sessionUrl,access);return}
+  const registered=pendingLive.get(tileIndex);if(!registered||registered.pc===pc)pendingLive.delete(tileIndex);
   liveSessions.set(tileIndex,{pc,sessionUrl,token:access.access_token,cameraId,role,generation:current,stream:mediaStream,state:'LIVE'});setTileState(tileIndex,'LIVE');
- }catch(e){if(pc)pc.close();if(sessionUrl&&access){try{await fetch(sessionUrl,{method:'DELETE',headers:{Authorization:'Bearer '+access.access_token},keepalive:true})}catch{}}if(current===liveWorkspace.generations[tileIndex])setTileState(tileIndex,'FAILED',String(e.message||'live unavailable'))}
+ }catch(e){abandonLiveStart(tileIndex,pc,sessionUrl,access);if(current===liveWorkspace.generations[tileIndex]&&liveWorkspace.assignments[tileIndex]===cameraId&&liveWorkspace.roles[tileIndex]===role)setTileState(tileIndex,'FAILED',String(e.message||'live unavailable'))}
 }
 function snapshotFilename(cameraId,role,capturedAt){
  const safeId=String(cameraId).replace(/[^A-Za-z0-9_-]/g,'_').slice(0,80)||'camera';

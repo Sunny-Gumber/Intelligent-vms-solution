@@ -12,6 +12,7 @@ const fs = require("fs");
 const vm = require("vm");
 
 const SESSION_URL = "https://media.example/whep/sessions/pending-1";
+const RESTARTED_SESSION_URL = "https://media.example/whep/sessions/restarted-2";
 const SDP_ANSWER = "v=0\r\n";
 const SCENARIOS = new Set([
   "deferred-post-sign-out",
@@ -19,6 +20,10 @@ const SCENARIOS = new Set([
   "deferred-answer-sign-out",
   "deferred-post-auth-expiry",
   "authenticated-post-stays-live",
+  "retry-overlap-logout-rejected",
+  "retry-overlap-logout-401",
+  "sign-out-during-sdp-body",
+  "relogin-before-old-post",
 ]);
 
 const harness = {
@@ -34,6 +39,7 @@ const harness = {
   reachedHold: false,
   releaseHold: null,
   failNextHealth: false,
+  logoutMode: null,
   inflight: 0,
 };
 
@@ -322,6 +328,13 @@ function buildDocument(html) {
   return document;
 }
 
+function DomOption(text, value) {
+  const option = createElement("option");
+  option.textContent = text == null ? "" : String(text);
+  if (value !== undefined) option.value = String(value);
+  return option;
+}
+
 function headerValue(headers, name) {
   if (!headers) return "";
   if (typeof headers.get === "function") {
@@ -343,9 +356,9 @@ function jsonResponse(body, status = 200) {
   });
 }
 
-function whepResponse(deferBody) {
+function whepResponse(deferBody, location = SESSION_URL) {
   const headers = new Headers({
-    Location: SESSION_URL,
+    Location: location,
     "Content-Type": "application/sdp",
   });
   const bodyPromise = deferBody
@@ -376,16 +389,28 @@ function route(method, href, scenario) {
   if (method === "OPTIONS" && isWhep(href)) return new Response("", { status: 200 });
   if (method === "POST" && isWhep(href)) {
     harness.whepPostCount += 1;
-    if (scenario === "deferred-post-sign-out" || scenario === "deferred-post-auth-expiry" || scenario === "authenticated-post-stays-live") {
+    const holdFirstPost = scenario === "deferred-post-sign-out"
+      || scenario === "deferred-post-auth-expiry"
+      || scenario === "authenticated-post-stays-live"
+      || (scenario === "relogin-before-old-post" && harness.whepPostCount === 1);
+    if (holdFirstPost) {
       harness.reachedHold = true;
       return new Promise((resolve) => {
-        harness.releaseHold = resolve;
+        harness.releaseHold = () => resolve(whepResponse(false, SESSION_URL));
       });
     }
-    if (scenario === "deferred-sdp-sign-out") return whepResponse(true);
+    if (scenario === "relogin-before-old-post") return whepResponse(false, RESTARTED_SESSION_URL);
+    if (scenario === "deferred-sdp-sign-out" || scenario === "sign-out-during-sdp-body") return whepResponse(true);
     return whepResponse(false);
   }
   if (method === "DELETE" && href.startsWith("https://media.example/")) {
+    const holdCleanupDelete = scenario.startsWith("retry-overlap-") && harness.mediaDeletes.length === 1;
+    if (holdCleanupDelete) {
+      harness.reachedHold = true;
+      return new Promise((resolve) => {
+        harness.releaseHold = () => resolve(new Response(null, { status: 200 }));
+      });
+    }
     return new Response(null, { status: 200 });
   }
   if (pathname === "/api/v1/auth/session" && method === "GET") {
@@ -395,7 +420,16 @@ function route(method, href, scenario) {
       browser_session_enabled: true,
     });
   }
+  if (pathname === "/api/v1/auth/session" && method === "POST") {
+    return jsonResponse({
+      tenant_id: "tenant-a",
+      roles: ["operator"],
+      browser_session_enabled: true,
+    });
+  }
   if (pathname === "/api/v1/auth/session" && method === "DELETE") {
+    if (harness.logoutMode === "reject") throw new Error("logout failed");
+    if (harness.logoutMode === "401") return new Response("unauthorized", { status: 401 });
     return new Response(null, { status: 204 });
   }
   if (pathname === "/api/v1/system/capabilities") {
@@ -606,24 +640,29 @@ async function runScenario(scenario, htmlPath) {
       removeEventListener() {},
     },
     RTCPeerConnection: installPeerConnection(scenario),
-    Option(text, value) {
-      const option = createElement("option");
-      option.textContent = text == null ? "" : String(text);
-      if (value !== undefined) option.value = String(value);
-      return option;
-    },
+    Option: DomOption,
     alert(message) {
       harness.alerts.push(String(message));
     },
     fetch: pageFetch(scenario),
   });
 
-  const source = `${script}\nglobalThis.__vms = {\n  signOut,\n  assignCamera,\n  refreshHealth,\n  inspect() {\n    return {\n      authenticated,\n      liveSessionCount: liveSessions.size,\n    };\n  },\n};\n`;
+  const source = `${script}\nglobalThis.__vms = {\n  signOut,\n  assignCamera,\n  refreshHealth,\n  retryTile,\n  loginWithToken,\n  inspect() {\n    return {\n      authenticated,\n      liveSessionCount: liveSessions.size,\n    };\n  },\n};\n`;
   vm.runInContext(source, context, { filename: htmlPath });
   await waitFor(
     () => harness.inflight === 0 && context.__vms.inspect().authenticated === true,
     "authenticated idle",
   );
+
+  if (scenario.startsWith("retry-overlap-")) {
+    return runRetryOverlap(scenario, context, document, htmlPath, script.length);
+  }
+  if (scenario === "sign-out-during-sdp-body") {
+    return runSignOutDuringSdpBody(context, document, htmlPath, script.length);
+  }
+  if (scenario === "relogin-before-old-post") {
+    return runReloginBeforeOldPost(context, document, htmlPath, script.length);
+  }
 
   const assigned = context.__vms.assignCamera(0, "cam-1");
   await assigned;
@@ -649,6 +688,10 @@ async function runScenario(scenario, htmlPath) {
     setImmediate(resolve);
   });
 
+  return observe(scenario, context, document, htmlPath, script.length);
+}
+
+function observe(scenario, context, document, htmlPath, scriptBytes) {
   const inspected = context.__vms.inspect();
   const tile = document.getElementById("tile-state-0");
   const panel = document.getElementById("authPanel");
@@ -656,7 +699,7 @@ async function runScenario(scenario, htmlPath) {
   return {
     scenario,
     page_path: htmlPath,
-    script_bytes: script.length,
+    script_bytes: scriptBytes,
     authenticated: inspected.authenticated,
     auth_required: document.body.classList.contains("auth-required"),
     auth_panel_display: panel ? panel.style.display : null,
@@ -669,10 +712,79 @@ async function runScenario(scenario, htmlPath) {
       authorization: item.authorization,
     })),
     peer_count: harness.peers.length,
+    open_peer_count: harness.peers.filter((item) => !item.closed).length,
     peer_closed: Boolean(peer && peer.closed),
     remote_description_applied: Boolean(peer && peer.remoteDescriptionApplied),
     unknown_requests: harness.unknown,
   };
+}
+
+async function settleOverlap(context) {
+  let idleTurns = 0;
+  await waitFor(() => {
+    if (context.__vms.inspect().liveSessionCount > 0) return true;
+    if (harness.inflight === 0 && harness.whepPostCount === 1) idleTurns += 1;
+    else idleTurns = 0;
+    return idleTurns >= 5;
+  }, "retry overlap settlement");
+}
+
+async function runRetryOverlap(scenario, context, document, htmlPath, scriptBytes) {
+  await context.__vms.assignCamera(0, "cam-1");
+  await waitFor(() => context.__vms.inspect().liveSessionCount === 1, "first live tile");
+  context.__vms.retryTile(0);
+  await waitFor(() => harness.reachedHold, "cleanup DELETE hold");
+  harness.logoutMode = scenario.endsWith("401") ? "401" : "reject";
+  await context.__vms.signOut();
+  harness.releaseHold();
+  await settleOverlap(context);
+  return observe(scenario, context, document, htmlPath, scriptBytes);
+}
+
+async function runSignOutDuringSdpBody(context, document, htmlPath, scriptBytes) {
+  await context.__vms.assignCamera(0, "cam-1");
+  await waitFor(() => harness.reachedHold, "SDP body hold");
+  await context.__vms.signOut();
+  const during = observe("sign-out-during-sdp-body", context, document, htmlPath, scriptBytes);
+  harness.releaseHold(SDP_ANSWER);
+  await waitFor(() => {
+    const state = context.__vms.inspect();
+    const peer = harness.peers[0];
+    return state.liveSessionCount > 0 || harness.mediaDeletes.length > 0 || Boolean(peer && peer.closed);
+  }, "SDP body settlement");
+  await new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+  const finalState = observe("sign-out-during-sdp-body", context, document, htmlPath, scriptBytes);
+  finalState.during_sign_out = {
+    authenticated: during.authenticated,
+    live_session_count: during.live_session_count,
+    tile_state: during.tile_state,
+    media_deletes: during.media_deletes,
+    peer_closed: during.peer_closed,
+    open_peer_count: during.open_peer_count,
+  };
+  return finalState;
+}
+
+async function runReloginBeforeOldPost(context, document, htmlPath, scriptBytes) {
+  await context.__vms.assignCamera(0, "cam-1");
+  await waitFor(() => harness.reachedHold, "old WHEP POST hold");
+  await context.__vms.signOut();
+  document.getElementById("authToken").value = "field-token";
+  await context.__vms.loginWithToken({ preventDefault() {} });
+  for (let turn = 0; turn < 30; turn += 1) {
+    if (harness.whepPostCount >= 2 && context.__vms.inspect().liveSessionCount === 1) break;
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+  harness.releaseHold();
+  await waitFor(() => harness.mediaDeletes.some((item) => item.url === SESSION_URL), "old session DELETE");
+  await new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+  return observe("relogin-before-old-post", context, document, htmlPath, scriptBytes);
 }
 
 async function main() {
