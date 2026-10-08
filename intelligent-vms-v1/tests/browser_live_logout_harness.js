@@ -1,0 +1,694 @@
+/**
+ * Execute the real web/index.html script against an in-memory DOM.
+ *
+ * This is a behavior harness: it does not assert on source text. The page
+ * script runs unchanged, then a small inspector reads the live closures.
+ * Node has no DOM, so the harness supplies only the document surface the
+ * page touches. No third-party browser dependency is required.
+ */
+"use strict";
+
+const fs = require("fs");
+const vm = require("vm");
+
+const SESSION_URL = "https://media.example/whep/sessions/pending-1";
+const SDP_ANSWER = "v=0\r\n";
+const SCENARIOS = new Set([
+  "deferred-post-sign-out",
+  "deferred-sdp-sign-out",
+  "deferred-answer-sign-out",
+  "deferred-post-auth-expiry",
+]);
+
+const harness = {
+  requests: [],
+  unknown: [],
+  mediaDeletes: [],
+  peers: [],
+  alerts: [],
+  rejections: [],
+  intervals: [],
+  accessRole: null,
+  whepPostCount: 0,
+  reachedHold: false,
+  releaseHold: null,
+  failNextHealth: false,
+  inflight: 0,
+};
+
+function decodeEntities(text) {
+  return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (all, entity) => {
+    const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+    if (Object.prototype.hasOwnProperty.call(named, entity)) return named[entity];
+    if (entity[0] !== "#") return all;
+    const code = entity[1] === "x" || entity[1] === "X"
+      ? parseInt(entity.slice(2), 16)
+      : parseInt(entity.slice(1), 10);
+    return Number.isFinite(code) ? String.fromCodePoint(code) : all;
+  });
+}
+
+function parseStyle(value) {
+  const style = {};
+  for (const part of String(value).split(";")) {
+    const splitAt = part.indexOf(":");
+    if (splitAt === -1) continue;
+    const key = part.slice(0, splitAt).trim().replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+    if (key) style[key] = part.slice(splitAt + 1).trim();
+  }
+  return style;
+}
+
+function createClassList(element) {
+  const read = () => String(element.className || "").split(/\s+/).filter(Boolean);
+  const write = (names) => {
+    element.className = names.join(" ");
+  };
+  return {
+    add(...names) {
+      const present = new Set(read());
+      for (const name of names) present.add(name);
+      write([...present]);
+    },
+    remove(...names) {
+      const drop = new Set(names);
+      write(read().filter((name) => !drop.has(name)));
+    },
+    toggle(name, force) {
+      const present = new Set(read());
+      const enabled = force === undefined ? !present.has(name) : Boolean(force);
+      if (enabled) present.add(name);
+      else present.delete(name);
+      write([...present]);
+      return enabled;
+    },
+    contains(name) {
+      return read().includes(name);
+    },
+  };
+}
+
+class DomElement {
+  constructor(tag) {
+    this.nodeType = 1;
+    this.tagName = String(tag || "div").toUpperCase();
+    this.children = [];
+    this.parent = null;
+    this.id = "";
+    this.className = "";
+    this.classList = createClassList(this);
+    this.style = {};
+    this.attrs = {};
+    this.hidden = false;
+    this.disabled = false;
+    this.checked = false;
+    this._value = "";
+    this._text = null;
+    this.srcObject = null;
+    this.readyState = 0;
+    this.videoWidth = 0;
+    this.videoHeight = 0;
+    this.rel = "";
+    this.href = "";
+    this.download = "";
+  }
+
+  get value() {
+    return this._value;
+  }
+
+  set value(next) {
+    this._value = next == null ? "" : String(next);
+  }
+
+  get textContent() {
+    if (this.children.length) {
+      return this.children.map((child) => child.textContent || "").join("");
+    }
+    return this._text == null ? "" : this._text;
+  }
+
+  set textContent(next) {
+    this._text = next == null ? "" : String(next);
+    this.children = [];
+  }
+
+  set innerHTML(html) {
+    const children = parseFragment(String(html));
+    this.children = [];
+    for (const child of children) {
+      child.parent = this;
+      this.children.push(child);
+    }
+    this._text = null;
+  }
+
+  replaceChildren(...nodes) {
+    this.children = [];
+    for (const node of nodes) {
+      if (node == null) continue;
+      node.parent = this;
+      this.children.push(node);
+    }
+    this._text = null;
+  }
+
+  setAttribute(name, value) {
+    this.attrs[String(name).toLowerCase()] = String(value);
+  }
+
+  getAttribute(name) {
+    const key = String(name).toLowerCase();
+    return Object.prototype.hasOwnProperty.call(this.attrs, key) ? this.attrs[key] : null;
+  }
+
+  removeAttribute(name) {
+    delete this.attrs[String(name).toLowerCase()];
+  }
+
+  addEventListener() {}
+
+  removeEventListener() {}
+
+  click() {}
+
+  pause() {}
+
+  load() {}
+
+  play() {}
+
+  focus() {}
+
+  scrollIntoView() {}
+}
+
+function createElement(tag) {
+  return new DomElement(tag);
+}
+
+function applyAttributes(element, raw) {
+  const pattern = /([^\s=\/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let match = pattern.exec(raw);
+  while (match) {
+    const name = match[1].toLowerCase();
+    const hasValue = match[2] !== undefined || match[3] !== undefined || match[4] !== undefined;
+    const value = decodeEntities(match[2] ?? match[3] ?? match[4] ?? "");
+    if (name === "id") element.id = value;
+    else if (name === "class") element.className = value;
+    else if (name === "style") Object.assign(element.style, parseStyle(value));
+    else if (name === "value") element.value = value;
+    else if (name === "hidden") element.hidden = true;
+    else if (name === "disabled") element.disabled = true;
+    else if (name === "checked") element.checked = true;
+    else if (hasValue) element.attrs[name] = value;
+    else element.attrs[name] = "";
+    match = pattern.exec(raw);
+  }
+}
+
+function parseFragment(html) {
+  const root = createElement("fragment");
+  const stack = [root];
+  const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+  let index = 0;
+  while (index < html.length) {
+    if (html.startsWith("<!--", index)) {
+      const end = html.indexOf("-->", index + 4);
+      index = end === -1 ? html.length : end + 3;
+      continue;
+    }
+    if (html[index] === "<") {
+      if (html[index + 1] === "/") {
+        const end = html.indexOf(">", index);
+        const name = html.slice(index + 2, end === -1 ? html.length : end).trim().toLowerCase();
+        index = end === -1 ? html.length : end + 1;
+        while (stack.length > 1 && stack[stack.length - 1].tagName.toLowerCase() !== name) stack.pop();
+        if (stack.length > 1) stack.pop();
+        continue;
+      }
+      const end = html.indexOf(">", index);
+      let raw = html.slice(index + 1, end === -1 ? html.length : end).trim();
+      index = end === -1 ? html.length : end + 1;
+      let selfClosing = false;
+      if (raw.endsWith("/")) {
+        selfClosing = true;
+        raw = raw.slice(0, -1).trim();
+      }
+      const nameMatch = /^([A-Za-z][\w:-]*)/.exec(raw);
+      if (!nameMatch) continue;
+      const name = nameMatch[1].toLowerCase();
+      const element = createElement(name);
+      applyAttributes(element, raw.slice(nameMatch[1].length));
+      stack[stack.length - 1].children.push(element);
+      element.parent = stack[stack.length - 1];
+      if (!selfClosing && !voidTags.has(name)) stack.push(element);
+      continue;
+    }
+    const next = html.indexOf("<", index);
+    const text = html.slice(index, next === -1 ? html.length : next);
+    index = next === -1 ? html.length : next;
+    if (!text.trim()) continue;
+    const node = createElement("#text");
+    node.nodeType = 3;
+    node.textContent = decodeEntities(text);
+    stack[stack.length - 1].children.push(node);
+  }
+  return root.children;
+}
+
+function walk(element, visit) {
+  if (!element || element.nodeType === 3) return;
+  if (visit(element)) return;
+  for (const child of element.children) walk(child, visit);
+}
+
+function findById(root, id) {
+  let found = null;
+  walk(root, (element) => {
+    if (element.id === id) {
+      found = element;
+      return true;
+    }
+    return false;
+  });
+  return found;
+}
+
+function findTag(root, tagName) {
+  let found = null;
+  walk(root, (element) => {
+    if (element.tagName === tagName) {
+      found = element;
+      return true;
+    }
+    return false;
+  });
+  return found;
+}
+
+function buildDocument(html) {
+  const withoutExecutable = html
+    .replace(/<script>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style>[\s\S]*?<\/style>/gi, "");
+  const top = parseFragment(withoutExecutable);
+  const documentElement = top.find((element) => element.tagName === "HTML") || top[0];
+  const body = findTag(documentElement, "BODY");
+  const document = {
+    documentElement,
+    body,
+    cookie: "",
+    activeElement: null,
+    getElementById(id) {
+      return findById(documentElement, id);
+    },
+    createElement(tag) {
+      return createElement(tag);
+    },
+    querySelectorAll(selector) {
+      if (selector !== "#timeline .span") return [];
+      const timeline = findById(documentElement, "timeline");
+      const matches = [];
+      if (timeline) {
+        walk(timeline, (element) => {
+          if (element.classList.contains("span")) matches.push(element);
+          return false;
+        });
+      }
+      return matches;
+    },
+  };
+  return document;
+}
+
+function headerValue(headers, name) {
+  if (!headers) return "";
+  if (typeof headers.get === "function") {
+    const value = headers.get(name);
+    return value == null ? "" : String(value);
+  }
+  const key = Object.keys(headers).find((item) => item.toLowerCase() === name.toLowerCase());
+  return key ? String(headers[key]) : "";
+}
+
+function pathnameOf(href) {
+  return new URL(href, "http://vms.local").pathname;
+}
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function whepResponse(deferBody) {
+  const headers = new Headers({
+    Location: SESSION_URL,
+    "Content-Type": "application/sdp",
+  });
+  const bodyPromise = deferBody
+    ? new Promise((resolve) => {
+      harness.releaseHold = resolve;
+    })
+    : Promise.resolve(SDP_ANSWER);
+  return {
+    status: 201,
+    ok: true,
+    headers,
+    text() {
+      if (deferBody) harness.reachedHold = true;
+      return bodyPromise.then((value) => String(value));
+    },
+    json() {
+      return this.text().then((text) => JSON.parse(text));
+    },
+  };
+}
+
+function isWhep(href) {
+  return pathnameOf(href).endsWith("/whep");
+}
+
+function route(method, href, scenario) {
+  const pathname = pathnameOf(href);
+  if (method === "OPTIONS" && isWhep(href)) return new Response("", { status: 200 });
+  if (method === "POST" && isWhep(href)) {
+    harness.whepPostCount += 1;
+    if (scenario === "deferred-post-sign-out" || scenario === "deferred-post-auth-expiry") {
+      harness.reachedHold = true;
+      return new Promise((resolve) => {
+        harness.releaseHold = resolve;
+      });
+    }
+    if (scenario === "deferred-sdp-sign-out") return whepResponse(true);
+    return whepResponse(false);
+  }
+  if (method === "DELETE" && href.startsWith("https://media.example/")) {
+    return new Response(null, { status: 200 });
+  }
+  if (pathname === "/api/v1/auth/session" && method === "GET") {
+    return jsonResponse({
+      tenant_id: "tenant-a",
+      roles: ["operator"],
+      browser_session_enabled: true,
+    });
+  }
+  if (pathname === "/api/v1/auth/session" && method === "DELETE") {
+    return new Response(null, { status: 204 });
+  }
+  if (pathname === "/api/v1/system/capabilities") {
+    return jsonResponse({
+      deployment_profile: "enterprise-distributed",
+      event_history: true,
+      alarm_processing: true,
+      ai_ui: true,
+      distributed_placement: false,
+    });
+  }
+  if (pathname === "/api/v1/system/health") {
+    if (harness.failNextHealth) {
+      harness.failNextHealth = false;
+      return new Response("expired", { status: 401 });
+    }
+    return jsonResponse({ status: "ok", media_node: "media-local-01" });
+  }
+  if (pathname === "/api/v1/health/summary") {
+    return jsonResponse({
+      online: 1,
+      degraded: 0,
+      offline: 0,
+      unknown: 0,
+      monitor_last_scanned: 1,
+      monitor_last_changed: 1,
+      monitor_media_errors: 0,
+    });
+  }
+  if (pathname === "/api/v1/health/cameras") return jsonResponse([]);
+  if (pathname === "/api/v1/cameras" && method === "GET") {
+    return jsonResponse([{
+      id: "cam-1",
+      name: "Gate",
+      site_id: "site-01",
+      tenant_id: "tenant-a",
+      available_live_roles: ["main"],
+    }]);
+  }
+  if (pathname === "/api/v1/events") return jsonResponse([]);
+  if (pathname === "/api/v1/alarms") return jsonResponse([]);
+  if (pathname === "/api/v1/ai/status") return jsonResponse({ enabled_policies: 0, inference_policies: 0 });
+  if (pathname === "/api/v1/manual-recordings/active") return jsonResponse([]);
+  if (pathname === "/api/v1/manual-recordings/recent") return jsonResponse([]);
+  if (pathname.startsWith("/api/v1/recordings/cameras/") && pathname.endsWith("/policy")) {
+    return new Response("not found", { status: 404 });
+  }
+  if (method === "POST" && pathname.includes("/live/cameras/") && pathname.endsWith("/access")) {
+    harness.accessRole = new URL(href, "http://vms.local").searchParams.get("stream_role");
+    return jsonResponse({
+      access_token: "live-grant-token",
+      webrtc_url: "https://media.example/live/cam",
+    });
+  }
+  harness.unknown.push(`${method} ${href}`);
+  return new Response("not found", { status: 404 });
+}
+
+function installPeerConnection(scenario) {
+  class FakePeerConnection {
+    constructor() {
+      this.iceGatheringState = "complete";
+      this.connectionState = "new";
+      this.localDescription = null;
+      this.remoteDescription = null;
+      this.ontrack = null;
+      this.onconnectionstatechange = null;
+      this.closed = false;
+      this.remoteDescriptionApplied = false;
+      this._listeners = {};
+      harness.peers.push(this);
+    }
+
+    addTransceiver() {}
+
+    addEventListener(type, listener) {
+      const listeners = this._listeners[type] || [];
+      listeners.push(listener);
+      this._listeners[type] = listeners;
+    }
+
+    removeEventListener(type, listener) {
+      this._listeners[type] = (this._listeners[type] || []).filter((item) => item !== listener);
+    }
+
+    createOffer() {
+      return Promise.resolve({ type: "offer", sdp: "v=0\r\n" });
+    }
+
+    setLocalDescription(description) {
+      this.localDescription = description;
+      return Promise.resolve();
+    }
+
+    setRemoteDescription(description) {
+      const apply = () => {
+        this.remoteDescription = description;
+        this.remoteDescriptionApplied = true;
+      };
+      if (scenario === "deferred-answer-sign-out") {
+        harness.reachedHold = true;
+        return new Promise((resolve) => {
+          harness.releaseHold = () => {
+            apply();
+            resolve();
+          };
+        });
+      }
+      apply();
+      return Promise.resolve();
+    }
+
+    close() {
+      this.closed = true;
+      this.connectionState = "closed";
+    }
+  }
+  return FakePeerConnection;
+}
+
+function pageFetch(scenario) {
+  return async function fetch(url, opts = {}) {
+    harness.inflight += 1;
+    const method = String(opts.method || "GET").toUpperCase();
+    const href = String(url);
+    const authorization = headerValue(opts.headers, "authorization");
+    harness.requests.push({ method, url: href, authorization });
+    if (method === "DELETE" && href.startsWith("https://media.example/")) {
+      harness.mediaDeletes.push({ url: href, authorization });
+    }
+    try {
+      return await route(method, href, scenario);
+    } finally {
+      harness.inflight -= 1;
+    }
+  };
+}
+
+async function waitFor(predicate, label) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+  const detail = {
+    label,
+    inflight: harness.inflight,
+    reachedHold: harness.reachedHold,
+    whepPostCount: harness.whepPostCount,
+    unknown: harness.unknown,
+    requests: harness.requests.map((item) => `${item.method} ${item.url}`),
+    rejections: harness.rejections,
+    peers: harness.peers.length,
+  };
+  throw new Error(`timed out waiting for ${label}: ${JSON.stringify(detail)}`);
+}
+
+function extractScript(html) {
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  if (scripts.length !== 1) {
+    throw new Error(`expected one inline script in web/index.html, found ${scripts.length}`);
+  }
+  return scripts[0][1];
+}
+
+async function runScenario(scenario, htmlPath) {
+  if (!SCENARIOS.has(scenario)) throw new Error(`unknown scenario ${scenario}`);
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const script = extractScript(html);
+  const document = buildDocument(html);
+  const requiredIds = [
+    "authPanel", "authMessage", "signOut", "identity", "system", "content", "camExisting",
+    "events", "alarms", "aiSummary", "healthSummary", "recordingRetention", "recordingEnable",
+    "recordingDisable", "recordingSaveRetention", "recordingStatus", "manualStart", "manualStop",
+    "manualDownload", "manualStatus", "player", "pbPlay", "pbPause", "pbexport", "pbClipStart",
+    "pbClipEnd", "timeline", "playback", "cameraSetup", "camPassword",
+  ];
+  const missing = requiredIds.filter((id) => !document.getElementById(id));
+  if (!document.body || missing.length) {
+    throw new Error(`DOM parse missed ids: ${missing.join(",")}`);
+  }
+
+  const context = vm.createContext({
+    console: {
+      log: (...args) => console.error("[page]", ...args),
+      error: (...args) => console.error("[page]", ...args),
+      warn: (...args) => console.error("[page]", ...args),
+      info() {},
+      debug() {},
+    },
+    URL,
+    URLSearchParams,
+    Headers,
+    Response,
+    Request,
+    setTimeout,
+    clearTimeout,
+    setInterval: (fn, delay) => {
+      harness.intervals.push(delay);
+      return harness.intervals.length;
+    },
+    clearInterval() {},
+    queueMicrotask,
+    document,
+    window: {
+      addEventListener() {},
+      removeEventListener() {},
+    },
+    RTCPeerConnection: installPeerConnection(scenario),
+    Option(text, value) {
+      const option = createElement("option");
+      option.textContent = text == null ? "" : String(text);
+      if (value !== undefined) option.value = String(value);
+      return option;
+    },
+    alert(message) {
+      harness.alerts.push(String(message));
+    },
+    fetch: pageFetch(scenario),
+  });
+
+  const source = `${script}\nglobalThis.__vms = {\n  signOut,\n  assignCamera,\n  refreshHealth,\n  inspect() {\n    return {\n      authenticated,\n      liveSessionCount: liveSessions.size,\n    };\n  },\n};\n`;
+  vm.runInContext(source, context, { filename: htmlPath });
+  await waitFor(
+    () => harness.inflight === 0 && context.__vms.inspect().authenticated === true,
+    "authenticated idle",
+  );
+
+  const assigned = context.__vms.assignCamera(0, "cam-1");
+  await assigned;
+  await waitFor(() => harness.reachedHold, "in-flight WHEP hold");
+
+  if (scenario.endsWith("auth-expiry")) {
+    harness.failNextHealth = true;
+    await context.__vms.refreshHealth();
+  } else {
+    await context.__vms.signOut();
+  }
+
+  if (scenario.startsWith("deferred-post")) harness.releaseHold(whepResponse(false));
+  else if (scenario.startsWith("deferred-sdp")) harness.releaseHold(SDP_ANSWER);
+  else harness.releaseHold();
+
+  await waitFor(() => {
+    const state = context.__vms.inspect();
+    const peer = harness.peers[0];
+    return state.liveSessionCount > 0 || harness.mediaDeletes.length > 0 || Boolean(peer && peer.closed);
+  }, "late WHEP settlement");
+  await new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+
+  const inspected = context.__vms.inspect();
+  const tile = document.getElementById("tile-state-0");
+  const panel = document.getElementById("authPanel");
+  const peer = harness.peers[0] || null;
+  return {
+    scenario,
+    page_path: htmlPath,
+    script_bytes: script.length,
+    authenticated: inspected.authenticated,
+    auth_required: document.body.classList.contains("auth-required"),
+    auth_panel_display: panel ? panel.style.display : null,
+    live_session_count: inspected.liveSessionCount,
+    tile_state: tile ? tile.textContent : null,
+    access_role: harness.accessRole,
+    whep_post_count: harness.whepPostCount,
+    media_deletes: harness.mediaDeletes.map((item) => ({
+      url: item.url,
+      authorization: item.authorization,
+    })),
+    peer_count: harness.peers.length,
+    peer_closed: Boolean(peer && peer.closed),
+    remote_description_applied: Boolean(peer && peer.remoteDescriptionApplied),
+    unknown_requests: harness.unknown,
+  };
+}
+
+async function main() {
+  const scenario = process.argv[2];
+  const htmlPath = process.argv[3];
+  if (!scenario || !htmlPath) {
+    throw new Error("usage: node browser_live_logout_harness.js <scenario> <web/index.html>");
+  }
+  process.on("unhandledRejection", (error) => {
+    harness.rejections.push(String(error && error.stack ? error.stack : error));
+  });
+  const result = await runScenario(scenario, htmlPath);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+}
+
+main().catch((error) => {
+  const payload = { error: String(error && error.stack ? error.stack : error), rejections: harness.rejections };
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
+  process.exitCode = 1;
+});
