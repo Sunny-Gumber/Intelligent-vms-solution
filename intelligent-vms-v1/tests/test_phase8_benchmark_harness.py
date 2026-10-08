@@ -1,5 +1,9 @@
+import copy
 import json
+import subprocess
 import sys
+
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,8 +13,10 @@ if str(TOOLS) not in sys.path:
 
 import phase8_benchmark_common as common
 import phase8_event_benchmark as event_bench
+import phase8_hardware_matrix as matrix
 import phase8_media_plan as media_plan
 import phase8_recording_benchmark as recording_bench
+import phase8_reproducibility as reproducibility
 import phase8_storage_benchmark as storage_bench
 
 
@@ -144,3 +150,252 @@ def test_recording_directory_snapshot_counts_files_and_bytes(tmp_path):
     files, total = recording_bench.directory_snapshot(tmp_path)
     assert files == 2
     assert total == 300
+
+
+_SENSOR_NULL_MARKERS = (
+    "cpu_freq_max_mhz",
+    "max_temperature_c",
+    "cpu_freq_ratio_min",
+    "speed_mbps",
+)
+
+
+def _null_paths(value, prefix=""):
+    found = []
+    if value is None:
+        found.append(prefix)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            child = f"{prefix}.{key}" if prefix else key
+            found.extend(_null_paths(item, child))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found.extend(_null_paths(item, f"{prefix}[{index}]"))
+    return found
+
+
+def _writer_command(name, tmp_path, output_json):
+    if name == "storage":
+        data = tmp_path / "storage-data"
+        return [
+            "--path",
+            str(data),
+            "--streams",
+            "1",
+            "--mib-per-stream",
+            "1",
+            "--chunk-mib",
+            "0.25",
+            "--sample-interval",
+            "0.2",
+            "--output-json",
+            str(output_json),
+        ]
+    if name == "recording":
+        root = tmp_path / "recording"
+        root.mkdir()
+        return [
+            "--path",
+            str(root),
+            "--duration",
+            "0.2",
+            "--sample-interval",
+            "0.2",
+            "--output-json",
+            str(output_json),
+        ]
+    if name == "reconnect":
+        return [
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "1",
+            "--attempts",
+            "1",
+            "--warmup-attempts",
+            "0",
+            "--concurrency",
+            "1",
+            "--timeout",
+            "0.2",
+            "--sample-interval",
+            "0.2",
+            "--output-json",
+            str(output_json),
+        ]
+    if name == "event":
+        return [
+            "--api",
+            "http://127.0.0.1:9",
+            "--events",
+            "1",
+            "--warmup-events",
+            "0",
+            "--cameras",
+            "1",
+            "--concurrency",
+            "1",
+            "--timeout",
+            "0.2",
+            "--sample-interval",
+            "0.2",
+            "--output-json",
+            str(output_json),
+        ]
+    raise AssertionError(name)
+
+
+def _demand():
+    return {
+        "required_roles": {
+            "event_ingest": "events_per_second",
+            "recording": "recording_mbps",
+            "storage": "storage_write_mbps",
+        },
+        "profiles": [
+            {
+                "name": "driver-nulls",
+                "cameras": 1,
+                "demands": {
+                    "events_per_second": 1,
+                    "recording_mbps": 1,
+                    "storage_write_mbps": 1,
+                },
+            }
+        ],
+    }
+
+
+def _gate_reasons(report):
+    return " ".join(reason for group in report["groups"] for reason in group["reasons"])
+
+
+@pytest.mark.parametrize("writer", ("storage", "recording", "reconnect", "event"))
+def test_phase8_driver_null_sensors_are_measurable(tmp_path, writer):
+    output_json = tmp_path / f"{writer}.json"
+    completed = subprocess.run(
+        [sys.executable, str(TOOLS / f"phase8_{writer}_benchmark.py"), *_writer_command(writer, tmp_path, output_json)],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert output_json.is_file()
+    payload = json.loads(output_json.read_text(encoding="utf-8"))
+    nulls = _null_paths(payload)
+    assert any(marker in path for path in nulls for marker in _SENSOR_NULL_MARKERS)
+    parsed = common.parse_benchmark_record(payload)
+    assert not isinstance(parsed, common.Rejection), getattr(parsed, "reason", "")
+    report = reproducibility.build_report(
+        results=[payload],
+        min_repeats=1,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    assert "not a finite number" not in _gate_reasons(report)
+    if writer == "storage":
+        assert report["summary"]["passed"] == 1
+    output = matrix.build_matrix(
+        results=[payload],
+        demand=_demand(),
+        min_repeats=1,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    assert "not a finite number" not in json.dumps(output)
+    approved = {}
+    for group in report["groups"]:
+        if group["status"] == "PASS":
+            approved.update(group["benchmark_fingerprints"])
+    handed = matrix.build_matrix(
+        results=[payload],
+        demand=_demand(),
+        approved_benchmark_fingerprints=approved,
+        min_repeats=1,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    assert "not a finite number" not in json.dumps(handed)
+    copies = []
+    for index in range(3):
+        item = copy.deepcopy(payload)
+        item["benchmark_id"] = f"{writer}-copy-{index}"
+        item["note"] = f"label-{index}"
+        copies.append(item)
+    assert len({common.content_fingerprint(item) for item in copies}) == 1
+    numbered = copy.deepcopy(copies[0])
+    numbered["resources"]["cpu_freq_ratio_min"] = 0.5
+    assert common.content_fingerprint(numbered) != common.content_fingerprint(copies[0])
+    repeat_report = reproducibility.build_report(
+        results=copies,
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    assert repeat_report["summary"]["passed"] == 0
+    repeat_matrix = matrix.build_matrix(
+        results=copies,
+        demand=_demand(),
+        min_duration_seconds=0,
+        min_warmup_seconds=0,
+    )
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in json.dumps(repeat_matrix)
+    report_path = tmp_path / "reproducibility.json"
+    matrix_path = tmp_path / "hardware-matrix.json"
+    demand_path = tmp_path / "demand.json"
+    demand_path.write_text(json.dumps(_demand()), encoding="utf-8")
+    reproducibility_cli = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_reproducibility.py"),
+            "--results",
+            str(output_json),
+            "--output",
+            str(report_path),
+            "--fail-on-rejected-groups",
+            "--min-repeats",
+            "1",
+            "--min-duration-seconds",
+            "0",
+            "--min-warmup-seconds",
+            "0",
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert report_path.is_file(), reproducibility_cli.stderr
+    assert "Traceback" not in reproducibility_cli.stderr
+    written = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "not a finite number" not in _gate_reasons(written)
+    if writer == "storage":
+        assert reproducibility_cli.returncode == 0
+        assert written["summary"]["passed"] == 1
+    matrix_cli = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_hardware_matrix.py"),
+            "--results",
+            str(output_json),
+            "--demand",
+            str(demand_path),
+            "--reproducibility-report",
+            str(report_path),
+            "--output",
+            str(matrix_path),
+            "--min-repeats",
+            "1",
+            "--min-duration-seconds",
+            "0",
+            "--min-warmup-seconds",
+            "0",
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert matrix_path.is_file(), matrix_cli.stderr
+    assert "Traceback" not in matrix_cli.stderr
+    assert "not a finite number" not in matrix_path.read_text(encoding="utf-8")

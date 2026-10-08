@@ -135,8 +135,10 @@ def canonical_descriptor(value: Any) -> str:
     return text.replace("\u0307", "").replace("\u0131", "i")
 
 
-# Deep enough for real benchmark documents, and far below the depth where
-# json.dumps raises RecursionError. 950 levels still serialize; 2000 does not.
+# Deep enough for real benchmark documents. On CPython 3.12, json.dumps of
+# nested dicts still succeeds at 2000 and 5000 levels and raises RecursionError
+# near 10000. Documents deeper than this limit are rejected and are not copied
+# into a report.
 MAX_STRUCTURE_DEPTH = 32
 
 
@@ -364,7 +366,21 @@ def _checked_number(value: Any, bounds: tuple[float, float], field: str) -> floa
 
 
 def _present_number(container: Any, key: str, kind: str, field: str) -> float | None:
-    if not isinstance(container, dict) or key not in container:
+    """Parse one optional number. JSON null means the sensor was not measured.
+
+    Args:
+        container: Object that may hold the field.
+        key: Field name.
+        kind: Bounds table key.
+        field: Dotted name used when the value is present but not numeric.
+
+    Returns:
+        Parsed float, or None when the field is absent or JSON null.
+
+    Raises:
+        ValueError: If the value is a string, non-finite, or out of range.
+    """
+    if not isinstance(container, dict) or key not in container or container[key] is None:
         return None
     return _checked_number(container[key], _NUMBER_BOUNDS[kind], field)
 
@@ -375,7 +391,7 @@ def _check_summary(block: Any, kind: str, field: str) -> None:
     if not isinstance(block, dict):
         raise ValueError(f"{field} is not a finite number")
     for key in _SUMMARY_KEYS:
-        if key in block:
+        if key in block and block[key] is not None:
             _checked_number(block[key], _NUMBER_BOUNDS[kind], f"{field}.{key}")
 
 
@@ -657,7 +673,10 @@ def content_fingerprint(result: dict[str, Any]) -> str:
     The fingerprint covers durations, throughput and capacity figures, latency
     figures, failure_rate and error counts, resource-usage summaries, and the
     workload type plus WORKLOAD_SHAPING_CONFIG_FIELDS. That same constant is
-    the workload key. Free-text config keys are ignored. Descriptive identity
+    the workload key. Free-text config keys are ignored. JSON null on an
+    optional sensor is omitted, the same as a missing key, so two unavailable
+    readings match. A number in that field is included, so null and a number
+    are different measured content. Descriptive identity
     text such as OS name and version, CPU model, and NIC or GPU inventory names
     is not included.
     That text belongs only to the hardware key. Copies that differ only there
@@ -762,16 +781,10 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
         "duration_seconds": duration,
         "warmup_seconds": warmup,
         "failure_rate": 0.0 if failure is None else failure,
-        "cpu_p95_pct": None if "p95" not in cpu_pct else _checked_number(
-            cpu_pct["p95"], _NUMBER_BOUNDS["percent"], "resources.cpu_pct.p95"
-        ),
-        "ram_p95_pct": None if "p95" not in ram_pct else _checked_number(
-            ram_pct["p95"], _NUMBER_BOUNDS["percent"], "resources.ram_pct.p95"
-        ),
+        "cpu_p95_pct": _present_number(cpu_pct, "p95", "percent", "resources.cpu_pct.p95"),
+        "ram_p95_pct": _present_number(ram_pct, "p95", "percent", "resources.ram_pct.p95"),
         "cpu_freq_ratio_min": ratio,
-        "p95_ms": None if "p95_ms" not in latency else _checked_number(
-            latency["p95_ms"], _NUMBER_BOUNDS["latency_ms"], "result.latency.p95_ms"
-        ),
+        "p95_ms": _present_number(latency, "p95_ms", "latency_ms", "result.latency.p95_ms"),
         "thermal_measured": bool(resources.get("thermal_measured")),
         "thermal_limit_exceeded": bool(resources.get("thermal_limit_exceeded")),
     }
@@ -874,10 +887,12 @@ def parse_benchmark_record(result: dict[str, Any]) -> ValidatedRecord | Rejectio
     """Parse one benchmark record before either independent-repeat gate.
 
     Container types, nesting depth, numeric conversion, bounds, GPU index
-    rules, the hardware key, and the workload key all happen here. A wrong
-    container, a document deeper than MAX_STRUCTURE_DEPTH, and OverflowError,
-    ValueError, TypeError, KeyError, or AttributeError from record content
-    become a Rejection. Gates do not see them.
+    rules, the hardware key, and the workload key all happen here. JSON null
+    on an optional sensor is unavailable, not malformed. Null duration and
+    warmup are still rejected. A wrong container, a document deeper than
+    MAX_STRUCTURE_DEPTH, and OverflowError, ValueError, TypeError, KeyError,
+    or AttributeError from record content become a Rejection. Gates do not
+    see them.
 
     Args:
         result: Candidate benchmark result.
