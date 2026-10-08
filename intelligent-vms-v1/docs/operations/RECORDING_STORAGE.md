@@ -1,5 +1,19 @@
 # Recording storage lifecycle
 
+## Owner decision C3 — playback recordPath
+
+Accepted 2026-10-08. Every default, config template, provisioning path, and example that enables MediaMTX playback includes `%f` (microseconds) in `recordPath`.
+
+Pinned MediaMTX v1.21.1 (`internal/conf/path.go`) rejects a path when playback is enabled unless `recordPath` contains `%path`, `%f`, and either `%s` or `%Y %m %d %H %M %S`. Product playback is enabled. The control-plane default and the Windows field-test generator therefore use:
+
+```text
+/recordings/%path/%Y/%m/%d/%H/%s-%f
+```
+
+`%s` is the 10-digit Unix-second prefix. `%f` is six zero-padded microseconds, the same suffix the Windows installer appends under the selected recording volume. The control API refuses a template that does not satisfy those pinned rules before it provisions a recording path.
+
+Completed-segment hooks keep those microseconds. A non-finite duration, a negative duration, or a duration above the pinned runtime's one-day segment maximum is rejected. A malformed segment name is rejected with an error and is not replaced with the current clock. Recording-health advancement and the recording fence compare that completion timestamp, including at a one-microsecond boundary.
+
 ## Phase 3 hot tier
 
 MediaMTX writes per-recording-path fMP4 segments to the local `/recordings` volume. Retention is path-specific through `recordDeleteAfter`.
