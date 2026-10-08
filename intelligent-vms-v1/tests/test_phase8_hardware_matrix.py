@@ -783,9 +783,10 @@ def test_workload_config_started_at_cannot_qualify_bare_build_matrix():
     copies = _spelled_copies(mutate)
     report = reproducibility.build_report(results=copies)
     assert report["summary"]["passed"] == 0
-    assert report["summary"]["groups"] == 3
-    assert all(group["status"] == "FAIL" for group in report["groups"])
-    assert all(group["repeat_count"] == 1 for group in report["groups"])
+    assert report["summary"]["groups"] == 1
+    assert report["groups"][0]["status"] == "FAIL"
+    assert report["groups"][0]["repeat_count"] == 1
+    assert "duplicate benchmark content fingerprints" in " ".join(report["groups"][0]["reasons"])
     output = matrix.build_matrix(results=copies, demand=demand(1500))
     role = output["profiles"][0]["roles"]["event_ingest"]
     assert role["status"] == "UNQUALIFIED"
@@ -1035,6 +1036,129 @@ def test_huge_integer_measurement_is_controlled_invalid_evidence(tmp_path):
     assert "OverflowError" not in reproducibility_cli.stderr
     assert produced["profiles"][0]["roles"]["event_ingest"]["status"] == "UNQUALIFIED"
     assert produced["qualified_evidence"] == []
+
+
+_CONFIG_LABEL_CASES = (
+    ("notes", ("alpha", "beta", "gamma")),
+    ("label", ("alpha", "beta", "gamma")),
+    ("operator", ("alpha", "beta", "gamma")),
+    ("run_name", ("alpha", "beta", "gamma")),
+    ("startedAt", ("2026-09-26T00:00:00+00:00", "2026-09-26T00:00:01+00:00", "2026-09-26T00:00:02+00:00")),
+    ("unknown_key", ("a", "b", "c")),
+    ("nested-comment", None),
+)
+
+
+@pytest.mark.parametrize("key,values", _CONFIG_LABEL_CASES)
+def test_non_measured_config_labels_cannot_qualify_any_gate(tmp_path, key, values):
+    def mutate(item, index):
+        if key == "nested-comment":
+            item["workload"]["config"] = {"comment": {"text": f"copy-{index}"}}
+        else:
+            item["workload"]["config"] = {key: values[index]}
+
+    _assert_descriptive_text_cannot_qualify(tmp_path, _spelled_copies(mutate))
+
+
+def _assign_path(item, path, value):
+    cursor = item
+    for step in path[:-1]:
+        cursor = cursor[step]
+    cursor[path[-1]] = value
+
+
+_NUMERIC_FUZZ_FIELDS = (
+    ("duration_seconds", ("workload", "duration_seconds")),
+    ("warmup_seconds", ("workload", "warmup_seconds")),
+    ("throughput_ops_s", ("result", "throughput_ops_s")),
+    ("failure_rate", ("result", "failure_rate")),
+    ("operations_ok", ("result", "operations_ok")),
+    ("operations_failed", ("result", "operations_failed")),
+    ("latency_p50_ms", ("result", "latency", "p50_ms")),
+    ("latency_p95_ms", ("result", "latency", "p95_ms")),
+    ("latency_p99_ms", ("result", "latency", "p99_ms")),
+    ("latency_max_ms", ("result", "latency", "max_ms")),
+    ("latency_mean_ms", ("result", "latency", "mean_ms")),
+    ("latency_count", ("result", "latency", "count")),
+    ("bytes_written", ("result", "bytes_written")),
+    ("cpu_p95", ("resources", "cpu_pct", "p95")),
+    ("ram_p95", ("resources", "ram_pct", "p95")),
+    ("samples", ("resources", "samples")),
+    ("cpu_freq_ratio_min", ("resources", "cpu_freq_ratio_min")),
+    ("ram_total_bytes", ("environment", "hardware", "ram_total_bytes")),
+    ("cpu_logical_cores", ("environment", "hardware", "cpu_logical_cores")),
+    ("nic_speed_mbps", ("environment", "hardware", "network_interfaces", 0, "speed_mbps")),
+    ("storage_total_bytes", ("environment", "hardware", "storage_total_bytes")),
+)
+
+_BAD_NUMBERS = (
+    ("huge", 10**400),
+    ("negative", -1),
+    ("nan", float("nan")),
+    ("inf", float("inf")),
+    ("text", "nope"),
+    ("none", None),
+)
+
+
+def _assert_malformed_records_do_not_qualify(tmp_path, copies):
+    try:
+        report = reproducibility.build_report(results=copies)
+    except (OverflowError, ValueError, TypeError, ArithmeticError) as exc:
+        raise AssertionError(f"build_report raised {type(exc).__name__}: {exc}") from exc
+    assert report["summary"]["passed"] == 0
+    assert all(group["status"] == "FAIL" for group in report["groups"])
+    try:
+        output = matrix.build_matrix(results=copies, demand=demand(1500))
+    except (OverflowError, ValueError, TypeError, ArithmeticError) as exc:
+        raise AssertionError(f"build_matrix raised {type(exc).__name__}: {exc}") from exc
+    role = output["profiles"][0]["roles"]["event_ingest"]
+    assert role["status"] == "UNQUALIFIED"
+    assert output["qualified_evidence"] == []
+    assert "nodes_required" not in role
+    _report, approved, handed = _handoff_matrix(copies)
+    assert approved == {}
+    assert handed["qualified_evidence"] == []
+    assert handed["profiles"][0]["roles"]["event_ingest"]["status"] == "UNQUALIFIED"
+    reproducibility_cli, produced = _cli_outputs(tmp_path, copies)
+    assert reproducibility_cli.returncode != 0
+    assert "Traceback" not in reproducibility_cli.stderr
+    assert "Traceback" not in reproducibility_cli.stdout
+    assert produced["qualified_evidence"] == []
+    assert produced["profiles"][0]["roles"]["event_ingest"]["status"] == "UNQUALIFIED"
+
+
+@pytest.mark.parametrize("field_name,path", _NUMERIC_FUZZ_FIELDS)
+@pytest.mark.parametrize("bad_name,bad_value", _BAD_NUMBERS)
+def test_malformed_numeric_field_is_structured_rejection(tmp_path, field_name, path, bad_name, bad_value):
+    del field_name, bad_name
+    copies = _spelled_copies(lambda item, index: _assign_path(item, path, bad_value))
+    _assert_malformed_records_do_not_qualify(tmp_path, copies)
+
+
+def test_duplicate_hardware_gpu_index_is_structured_rejection(tmp_path):
+    def mutate(item, index):
+        del index
+        item["environment"]["hardware"]["gpus"] = [
+            {"index": 0, "name": "GPU", "memory_total_mib": 8192},
+            {"index": 0, "name": "GPU", "memory_total_mib": 8192},
+        ]
+
+    copies = _spelled_copies(mutate)
+    with pytest.raises(ValueError, match="hardware.gpus"):
+        matrix.hardware_key(copies[0])
+    _assert_malformed_records_do_not_qualify(tmp_path, copies)
+
+
+def test_missing_hardware_gpu_index_is_structured_rejection(tmp_path):
+    def mutate(item, index):
+        del index
+        item["environment"]["hardware"]["gpus"] = [{"name": "GPU", "memory_total_mib": 8192}]
+
+    copies = _spelled_copies(mutate)
+    with pytest.raises(ValueError, match="hardware.gpus"):
+        common.content_fingerprint(copies[0])
+    _assert_malformed_records_do_not_qualify(tmp_path, copies)
 
 
 def _cli_outputs(tmp_path, copies, *, fail_on_rejected=True):

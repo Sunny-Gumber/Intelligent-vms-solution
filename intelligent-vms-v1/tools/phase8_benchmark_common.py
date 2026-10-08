@@ -157,26 +157,206 @@ def _put_number(target: dict[str, Any], key: str, value: Any) -> None:
         target[key] = _canonical_number(value)
 
 
-def _timestamp_key(key: str) -> bool:
-    folded = canonical_descriptor(key)
-    return folded.endswith("_at") or folded in {"timestamp", "time"}
+# Workload-shaping fields written by the phase-8 drivers. Free-text labels,
+# notes, operator names, and timestamps are intentionally absent.
+_SHAPING_TEXT_FIELDS = frozenset({"api", "path", "host"})
+_SHAPING_FLAG_FIELDS = frozenset({"fsync_each_chunk"})
+_SHAPING_NUMBER_FIELDS = {
+    "cameras": "count",
+    "events": "count",
+    "concurrency": "count",
+    "timeout_seconds": "duration",
+    "expected_streams": "count",
+    "expected_bitrate_kbps_per_stream": "rate",
+    "duration_requested_seconds": "duration",
+    "streams": "count",
+    "mib_per_stream": "count",
+    "chunk_mib": "count",
+    "attempts": "count",
+    "port": "port",
+}
+WORKLOAD_SHAPING_CONFIG_FIELDS = frozenset(
+    _SHAPING_TEXT_FIELDS.union(_SHAPING_FLAG_FIELDS).union(_SHAPING_NUMBER_FIELDS)
+)
+_NUMBER_BOUNDS = {
+    "duration": (0.0, 1_000_000.0),
+    "unit_interval": (0.0, 1.0),
+    "throughput": (0.0, 1e12),
+    "latency_ms": (0.0, 1e7),
+    "count": (0.0, 1e15),
+    "bytes": (0.0, 1e18),
+    "percent": (0.0, 100.0),
+    "ratio": (0.0, 10.0),
+    "frequency": (0.0, 1e7),
+    "rate": (0.0, 1e9),
+    "cores": (1.0, 4096.0),
+    "ram_bytes": (1.0, 1e18),
+    "storage_bytes": (0.0, 1e21),
+    "mtu": (0.0, 1_000_000.0),
+    "gpu_index": (0.0, 256.0),
+    "gpu_memory": (0.0, 1e8),
+    "temperature": (0.0, 200.0),
+    "port": (0.0, 65535.0),
+    "samples": (0.0, 1e9),
+}
+_RESULT_FIELD_BOUNDS = {
+    "operations_ok": "count",
+    "operations_failed": "count",
+    "failure_rate": "unit_interval",
+    "throughput_ops_s": "throughput",
+    "observed_recording_mbps": "throughput",
+    "aggregate_write_mbps": "throughput",
+    "aggregate_write_MBps": "throughput",
+    "observed_media_mbps": "throughput",
+    "observed_ai_mpix_s": "throughput",
+    "bytes_written": "bytes",
+    "bytes_growth": "bytes",
+    "new_files": "count",
+}
+_LATENCY_FIELD_BOUNDS = {
+    "count": "count",
+    "p50_ms": "latency_ms",
+    "p95_ms": "latency_ms",
+    "p99_ms": "latency_ms",
+    "max_ms": "latency_ms",
+    "mean_ms": "latency_ms",
+}
+_SUMMARY_FIELD_BOUNDS = {
+    "cpu_pct": "percent",
+    "ram_pct": "percent",
+    "cpu_freq_mhz": "frequency",
+    "cpu_freq_max_mhz": "frequency",
+    "max_temperature_c": "temperature",
+    "ram_used_bytes": "bytes",
+    "net_rx_mbps": "rate",
+    "net_tx_mbps": "rate",
+    "disk_read_mbps": "rate",
+    "disk_write_mbps": "rate",
+}
+_GPU_SUMMARY_BOUNDS = {
+    "utilization_pct": "percent",
+    "memory_used_mib": "gpu_memory",
+    "temperature_c": "temperature",
+}
 
 
-def _canonical_config_value(value: Any) -> Any:
-    if isinstance(value, bool) or isinstance(value, (int, float)):
-        return _canonical_number(value)
-    if isinstance(value, str):
-        return canonical_descriptor(value)
-    if isinstance(value, dict):
-        canonical: dict[str, Any] = {}
-        for key, item in value.items():
-            if item is None or _timestamp_key(str(key)):
-                continue
-            canonical[canonical_descriptor(str(key))] = _canonical_config_value(item)
-        return canonical
-    if isinstance(value, list):
-        return [_canonical_config_value(item) for item in value]
-    raise ValueError(_NON_FINITE_MEASUREMENT)
+def _checked_number(value: Any, bounds: tuple[float, float], field: str) -> float:
+    """Convert one numeric field. Bools follow the documented 0/1 mapping.
+
+    Args:
+        value: Raw measurement or hardware number.
+        bounds: Inclusive minimum and maximum.
+        field: Dotted field name used in the rejection reason.
+
+    Returns:
+        Finite float inside bounds. Negative zero is returned as zero.
+
+    Raises:
+        ValueError: If the value is missing, non-numeric, non-finite, out of
+            range, or an integer too large to convert. OverflowError and
+            TypeError are caught here and are not propagated.
+    """
+    if isinstance(value, bool):
+        value = 1 if value else 0
+    if value is None or isinstance(value, str) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} is not a finite number")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError, TypeError) as exc:
+        raise ValueError(f"{field} is not a finite number") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{field} is not a finite number")
+    low, high = bounds
+    if number < low or number > high:
+        raise ValueError(f"{field} is out of range")
+    if number == 0.0:
+        number = 0.0
+    return number
+
+
+def _present_number(container: Any, key: str, kind: str, field: str) -> float | None:
+    if not isinstance(container, dict) or key not in container:
+        return None
+    return _checked_number(container[key], _NUMBER_BOUNDS[kind], field)
+
+
+def _check_summary(block: Any, kind: str, field: str) -> None:
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError(f"{field} is not a finite number")
+    for key in _SUMMARY_KEYS:
+        if key in block:
+            _checked_number(block[key], _NUMBER_BOUNDS[kind], f"{field}.{key}")
+
+
+def workload_config_identity(config: Any) -> dict[str, Any]:
+    """Return the allowlisted shaping config shared by the fingerprint and workload key.
+
+    Unknown keys, notes, labels, operator names, and timestamps of any casing
+    are ignored. Copies that differ only in those keys are the same workload.
+
+    Args:
+        config: Workload config object, or None.
+
+    Returns:
+        Canonical shaping fields. Numbers use the fixed float repr.
+
+    Raises:
+        ValueError: If config is not an object or a shaping field is not a
+            finite in-range number.
+    """
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise ValueError("workload.config is not an object")
+    identity: dict[str, Any] = {}
+    for key in sorted(WORKLOAD_SHAPING_CONFIG_FIELDS):
+        if key not in config or config[key] is None:
+            continue
+        value = config[key]
+        field = f"workload.config.{key}"
+        if key in _SHAPING_TEXT_FIELDS:
+            identity[key] = canonical_descriptor(value)
+            continue
+        if key in _SHAPING_FLAG_FIELDS:
+            _checked_number(value, _NUMBER_BOUNDS["unit_interval"], field)
+        else:
+            _checked_number(value, _NUMBER_BOUNDS[_SHAPING_NUMBER_FIELDS[key]], field)
+        identity[key] = _canonical_number(value)
+    return identity
+
+
+def workload_identity_json(result: dict[str, Any]) -> str:
+    """Serialize workload type and allowlisted shaping config.
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        Canonical JSON used by the workload key and the repeat fingerprint.
+    """
+    workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
+    payload = {
+        "type": canonical_descriptor(str(workload.get("type") or "")),
+        "config": workload_config_identity(workload.get("config") or {}),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def workload_key(result: dict[str, Any]) -> str:
+    """Build the workload identity used by both independent-repeat gates.
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        Twenty-character SHA-256-derived workload identity.
+
+    Raises:
+        ValueError: If an allowlisted shaping field is not a finite number.
+    """
+    return hashlib.sha256(workload_identity_json(result).encode("utf-8")).hexdigest()[:20]
 
 
 def _gpu_index(item: Any, field: str) -> str:
@@ -222,11 +402,9 @@ def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
     workload_identity: dict[str, Any] = {}
     if workload.get("type") is not None:
         workload_identity["type"] = canonical_descriptor(str(workload["type"]))
-    config = workload.get("config")
-    if isinstance(config, dict) and config:
-        canonical_config = _canonical_config_value(config)
-        if canonical_config:
-            workload_identity["config"] = canonical_config
+    config_identity = workload_config_identity(workload.get("config") or {})
+    if config_identity:
+        workload_identity["config"] = config_identity
     if workload_identity:
         content["workload"] = workload_identity
 
@@ -355,13 +533,37 @@ def canonical_hardware_material(result: dict[str, Any]) -> dict[str, Any]:
     return material
 
 
+def hardware_key(result: dict[str, Any]) -> str:
+    """Build the hardware identity used by both independent-repeat gates.
+
+    Descriptive text is canonicalized and NIC and GPU inventories are sorted.
+    Dotted and dotless I are the same key. build_report and build_matrix both
+    call this function.
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        Twenty-character SHA-256-derived hardware identity.
+
+    Raises:
+        ValueError: If a hardware number is not finite or a GPU index is missing
+            or duplicated.
+    """
+    return hashlib.sha256(
+        json.dumps(canonical_hardware_material(result), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:20]
+
+
 def content_fingerprint(result: dict[str, Any]) -> str:
     """Hash allowlisted measurements and workload-config identity.
 
     The fingerprint covers durations, throughput and capacity figures, latency
     figures, failure_rate and error counts, resource-usage summaries, and the
-    workload type plus non-clock config. Descriptive identity text such as OS
-    name and version, CPU model, and NIC or GPU inventory names is not included.
+    workload type plus WORKLOAD_SHAPING_CONFIG_FIELDS. That same constant is
+    the workload key. Free-text config keys are ignored. Descriptive identity
+    text such as OS name and version, CPU model, and NIC or GPU inventory names
+    is not included.
     That text belongs only to the hardware key. Copies that differ only there
     collide and cannot count as independent repeats.
 
@@ -394,6 +596,224 @@ def content_fingerprint(result: dict[str, Any]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(material).hexdigest()
+
+
+def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
+    """Check every allowlisted numeric field and return the values gates read.
+
+    Args:
+        result: Benchmark result dictionary.
+
+    Returns:
+        Parsed duration, warmup, failure rate, resource percentiles and flags.
+
+    Raises:
+        ValueError: If a present numeric field is not a finite in-range number.
+    """
+    workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
+    metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
+    resources = result.get("resources") if isinstance(result.get("resources"), dict) else {}
+    environment = result.get("environment") if isinstance(result.get("environment"), dict) else {}
+    hardware = environment.get("hardware") if isinstance(environment.get("hardware"), dict) else {}
+    duration = _checked_number(
+        workload.get("duration_seconds"),
+        _NUMBER_BOUNDS["duration"],
+        "workload.duration_seconds",
+    )
+    warmup = _checked_number(
+        workload.get("warmup_seconds"),
+        _NUMBER_BOUNDS["duration"],
+        "workload.warmup_seconds",
+    )
+    failure = _present_number(metrics, "failure_rate", "unit_interval", "result.failure_rate")
+    for key, kind in _RESULT_FIELD_BOUNDS.items():
+        if key == "failure_rate":
+            continue
+        _present_number(metrics, key, kind, f"result.{key}")
+    latency = metrics.get("latency") if isinstance(metrics.get("latency"), dict) else {}
+    for key, kind in _LATENCY_FIELD_BOUNDS.items():
+        _present_number(latency, key, kind, f"result.latency.{key}")
+    for key, kind in _SUMMARY_FIELD_BOUNDS.items():
+        _check_summary(resources.get(key), kind, f"resources.{key}")
+    _present_number(resources, "samples", "samples", "resources.samples")
+    ratio = _present_number(resources, "cpu_freq_ratio_min", "ratio", "resources.cpu_freq_ratio_min")
+    for key in ("thermal_measured", "thermal_limit_exceeded", "gpu_measured"):
+        if key in resources:
+            _checked_number(resources[key], _NUMBER_BOUNDS["unit_interval"], f"resources.{key}")
+    for item in resources.get("gpu") or []:
+        if not isinstance(item, dict):
+            raise ValueError("resources.gpu index is required")
+        _checked_number(item.get("index"), _NUMBER_BOUNDS["gpu_index"], "resources.gpu.index")
+        for key, kind in _GPU_SUMMARY_BOUNDS.items():
+            _check_summary(item.get(key), kind, f"resources.gpu.{key}")
+    _present_number(hardware, "cpu_logical_cores", "cores", "hardware.cpu_logical_cores")
+    _present_number(hardware, "ram_total_bytes", "ram_bytes", "hardware.ram_total_bytes")
+    _present_number(hardware, "storage_total_bytes", "storage_bytes", "hardware.storage_total_bytes")
+    for nic in hardware.get("network_interfaces") or []:
+        if not isinstance(nic, dict):
+            continue
+        _present_number(nic, "speed_mbps", "rate", "hardware.network_interfaces.speed_mbps")
+        _present_number(nic, "mtu", "mtu", "hardware.network_interfaces.mtu")
+    for gpu in hardware.get("gpus") or []:
+        if not isinstance(gpu, dict):
+            raise ValueError("hardware.gpus index is required")
+        _checked_number(gpu.get("index"), _NUMBER_BOUNDS["gpu_index"], "hardware.gpus.index")
+        _present_number(gpu, "memory_total_mib", "gpu_memory", "hardware.gpus.memory_total_mib")
+    workload_config_identity(workload.get("config") or {})
+    cpu_pct = resources.get("cpu_pct") if isinstance(resources.get("cpu_pct"), dict) else {}
+    ram_pct = resources.get("ram_pct") if isinstance(resources.get("ram_pct"), dict) else {}
+    return {
+        "duration_seconds": duration,
+        "warmup_seconds": warmup,
+        "failure_rate": 0.0 if failure is None else failure,
+        "cpu_p95_pct": None if "p95" not in cpu_pct else _checked_number(
+            cpu_pct["p95"], _NUMBER_BOUNDS["percent"], "resources.cpu_pct.p95"
+        ),
+        "ram_p95_pct": None if "p95" not in ram_pct else _checked_number(
+            ram_pct["p95"], _NUMBER_BOUNDS["percent"], "resources.ram_pct.p95"
+        ),
+        "cpu_freq_ratio_min": ratio,
+        "p95_ms": None if "p95_ms" not in latency else _checked_number(
+            latency["p95_ms"], _NUMBER_BOUNDS["latency_ms"], "result.latency.p95_ms"
+        ),
+        "thermal_measured": bool(resources.get("thermal_measured")),
+        "thermal_limit_exceeded": bool(resources.get("thermal_limit_exceeded")),
+    }
+
+
+def repeat_verdict(
+    benchmark_ids: list[str],
+    content_fingerprints: list[str],
+    *,
+    min_repeats: int,
+) -> tuple[int, list[str]]:
+    """Count independent repeats from identities and content fingerprints.
+
+    build_report and build_matrix both use this helper. A repeated identity or
+    a repeated content fingerprint cannot satisfy the repeat minimum.
+
+    Args:
+        benchmark_ids: Benchmark identities in submission order.
+        content_fingerprints: Allowlisted content fingerprints in the same order.
+        min_repeats: Minimum number of unique content fingerprints.
+
+    Returns:
+        Unique content-fingerprint count and the rejection reasons.
+    """
+    reasons: list[str] = []
+    duplicate_identities = sorted(
+        value for value in set(benchmark_ids) if benchmark_ids.count(value) > 1
+    )
+    duplicate_content = sorted(
+        value for value in set(content_fingerprints) if content_fingerprints.count(value) > 1
+    )
+    if duplicate_identities:
+        reasons.append(
+            "duplicate benchmark identities are not independent repeats: "
+            + ", ".join(duplicate_identities)
+        )
+    if duplicate_content:
+        reasons.append("duplicate benchmark content fingerprints are not independent repeats")
+    repeat_count = len(set(content_fingerprints))
+    if repeat_count < min_repeats:
+        reasons.append(f"repeat_count {repeat_count} < required {min_repeats}")
+    return repeat_count, reasons
+
+
+@dataclass(frozen=True)
+class Rejection:
+    """A benchmark record that gates report instead of counting as a repeat.
+
+    Attributes:
+        benchmark_id: Source benchmark id when the record had one.
+        reason: Controlled explanation safe to store in a QA report.
+    """
+
+    benchmark_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class ValidatedRecord:
+    """Benchmark record after the single numeric and hardware parse.
+
+    Attributes:
+        source: Original benchmark result.
+        benchmark_id: Source benchmark identifier.
+        content_fingerprint: Allowlisted measurement fingerprint.
+        result_fingerprint: Full-result tamper fingerprint.
+        hardware_key: Canonical hardware and environment identity.
+        workload_key: Allowlisted workload identity.
+        commit_sha: Benchmarked source revision.
+        duration_seconds: Parsed workload duration.
+        warmup_seconds: Parsed warmup.
+        failure_rate: Parsed failure rate, or zero when the field is absent.
+        cpu_p95_pct: Parsed CPU p95 when present.
+        ram_p95_pct: Parsed RAM p95 when present.
+        cpu_freq_ratio_min: Parsed minimum CPU frequency ratio when present.
+        p95_ms: Parsed p95 latency when present.
+        thermal_measured: Whether thermal evidence was recorded.
+        thermal_limit_exceeded: Whether a thermal limit was recorded.
+    """
+
+    source: dict[str, Any]
+    benchmark_id: str
+    content_fingerprint: str
+    result_fingerprint: str
+    hardware_key: str
+    workload_key: str
+    commit_sha: str
+    duration_seconds: float
+    warmup_seconds: float
+    failure_rate: float
+    cpu_p95_pct: float | None
+    ram_p95_pct: float | None
+    cpu_freq_ratio_min: float | None
+    p95_ms: float | None
+    thermal_measured: bool
+    thermal_limit_exceeded: bool
+
+
+def parse_benchmark_record(result: dict[str, Any]) -> ValidatedRecord | Rejection:
+    """Parse one benchmark record before either independent-repeat gate.
+
+    Numeric conversion, bounds, GPU index rules, the hardware key, and the
+    workload key all happen here. OverflowError, ValueError, and TypeError
+    raised by record content become a Rejection. Gates do not see them.
+
+    Args:
+        result: Candidate benchmark result.
+
+    Returns:
+        Validated record, or a structured rejection when the content is malformed.
+    """
+    benchmark_id = ""
+    try:
+        if not isinstance(result, dict):
+            raise ValueError("benchmark result is not an object")
+        benchmark_id = str(result.get("benchmark_id") or "")
+        validate_result(result)
+        parsed = _validate_numeric_fields(result)
+        return ValidatedRecord(
+            source=result,
+            benchmark_id=str(result["benchmark_id"]),
+            content_fingerprint=content_fingerprint(result),
+            result_fingerprint=result_fingerprint(result),
+            hardware_key=hardware_key(result),
+            workload_key=workload_key(result),
+            commit_sha=str(result["environment"]["commit_sha"]),
+            duration_seconds=parsed["duration_seconds"],
+            warmup_seconds=parsed["warmup_seconds"],
+            failure_rate=parsed["failure_rate"],
+            cpu_p95_pct=parsed["cpu_p95_pct"],
+            ram_p95_pct=parsed["ram_p95_pct"],
+            cpu_freq_ratio_min=parsed["cpu_freq_ratio_min"],
+            p95_ms=parsed["p95_ms"],
+            thermal_measured=parsed["thermal_measured"],
+            thermal_limit_exceeded=parsed["thermal_limit_exceeded"],
+        )
+    except (ValueError, OverflowError, TypeError, KeyError, ArithmeticError) as exc:
+        return Rejection(benchmark_id=benchmark_id, reason=str(exc) or exc.__class__.__name__)
 
 
 def utc_iso() -> str:

@@ -10,8 +10,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from phase8_benchmark_common import content_fingerprint, result_fingerprint, validate_result
-from phase8_hardware_matrix import capacity_dimension, hardware_key
+from phase8_benchmark_common import (
+    Rejection,
+    parse_benchmark_record,
+    repeat_verdict,
+    validate_result,
+    workload_identity_json,
+    workload_key as shared_workload_key,
+)
+from phase8_hardware_matrix import capacity_dimension
 
 
 REPORT_VERSION = "phase8-reproducibility-v1"
@@ -39,19 +46,18 @@ def _repeated_values(values: list[str]) -> list[str]:
 
 
 def canonical_workload(result: dict[str, Any]) -> str:
-    """Serialize workload type/config into a deterministic comparison string.
+    """Serialize workload type and allowlisted shaping config.
+
+    The allowlist is WORKLOAD_SHAPING_CONFIG_FIELDS, the same constant the
+    repeat fingerprint uses. Free-text config keys are not part of the identity.
 
     Args:
         result: Validated Phase-8 benchmark result.
 
     Returns:
-        Canonical JSON containing workload type and configuration.
+        Canonical JSON containing workload type and shaping configuration.
     """
-    payload = {
-        "type": result["workload"]["type"],
-        "config": result["workload"].get("config", {}),
-    }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return workload_identity_json(result)
 
 
 def workload_key(result: dict[str, Any]) -> str:
@@ -63,7 +69,7 @@ def workload_key(result: dict[str, Any]) -> str:
     Returns:
         Twenty-character SHA-256-derived workload identity.
     """
-    return hashlib.sha256(canonical_workload(result).encode("utf-8")).hexdigest()[:20]
+    return shared_workload_key(result)
 
 
 
@@ -151,7 +157,7 @@ def load_results(paths: list[str]) -> list[dict[str, Any]]:
 
 
 def review_group(
-    results: list[dict[str, Any]],
+    results: list[Any],
     *,
     min_repeats: int,
     min_duration_seconds: float,
@@ -165,7 +171,7 @@ def review_group(
     """Evaluate one commit/hardware/workload repeat group for reproducibility.
 
     Args:
-        results: Equivalent benchmark repeats.
+        results: Parsed benchmark repeats from parse_benchmark_record.
         min_repeats: Minimum required repeat count.
         min_duration_seconds: Minimum duration for every repeat.
         min_warmup_seconds: Minimum warmup for every repeat.
@@ -189,42 +195,17 @@ def review_group(
     """
     reasons: list[str] = []
     warnings: list[str] = []
-
-    identities = [str(result["benchmark_id"]) for result in results]
-    fingerprints = [result_fingerprint(result) for result in results]
-    measured: list[str] = []
-    for result in results:
-        try:
-            measured.append(content_fingerprint(result))
-        except ValueError as exc:
-            if str(exc) not in reasons:
-                reasons.append(str(exc))
-    duplicate_identities = _repeated_values(identities)
-    duplicate_content = _repeated_values(measured)
-    # Independence is measured content. Relabeling one run cannot raise the count.
-    independent_repeats = len(set(measured))
+    sources = [record.source for record in results]
+    independent_repeats, verdict_reasons = repeat_verdict(
+        [record.benchmark_id for record in results],
+        [record.content_fingerprint for record in results],
+        min_repeats=min_repeats,
+    )
+    reasons.extend(verdict_reasons)
     submitted_count = len(results)
-
-    if duplicate_identities:
-        reasons.append(
-            "duplicate benchmark identities are not independent repeats: "
-            + ", ".join(duplicate_identities)
-        )
-    if duplicate_content:
-        reasons.append(
-            "duplicate benchmark content fingerprints are not independent repeats"
-        )
-    if independent_repeats < min_repeats:
-        reasons.append(
-            f"repeat_count {independent_repeats} < required {min_repeats}"
-        )
-
-    durations = [float(r["workload"].get("duration_seconds") or 0.0) for r in results]
-    warmups = [float(r["workload"].get("warmup_seconds") or 0.0) for r in results]
-    failures = [
-        float(r["result"].get("failure_rate") or 0.0)
-        for r in results
-    ]
+    durations = [record.duration_seconds for record in results]
+    warmups = [record.warmup_seconds for record in results]
+    failures = [record.failure_rate for record in results]
 
     if durations and min(durations) < min_duration_seconds:
         reasons.append(
@@ -240,9 +221,9 @@ def review_group(
         )
 
     bad_percentiles = [
-        str(r.get("benchmark_id"))
-        for r in results
-        if not percentile_order_valid(r)
+        record.benchmark_id
+        for record in results
+        if not percentile_order_valid(record.source)
     ]
     if bad_percentiles:
         reasons.append(
@@ -250,7 +231,7 @@ def review_group(
             + ", ".join(bad_percentiles)
         )
 
-    capacity_rows = [capacity_dimension(r) for r in results]
+    capacity_rows = [capacity_dimension(record.source) for record in results]
     capacity_dimensions = {
         row[1]
         for row in capacity_rows
@@ -266,11 +247,7 @@ def review_group(
         if len(capacity_dimensions) == 1
         else None
     )
-    p95_latencies = [
-        value
-        for r in results
-        if (value := _num(r["result"].get("latency", {}).get("p95_ms"))) is not None
-    ]
+    p95_latencies = [record.p95_ms for record in results if record.p95_ms is not None]
 
     capacity_cv = coefficient_variation(capacity_values)
     p95_latency_cv = coefficient_variation(p95_latencies)
@@ -301,14 +278,9 @@ def review_group(
             f"p95 latency CV {p95_latency_cv:.4f} > allowed {max_p95_latency_cv:.4f}"
         )
 
-    thermal_measured = [
-        bool(r.get("resources", {}).get("thermal_measured"))
-        for r in results
-    ]
+    thermal_measured = [record.thermal_measured for record in results]
     thermal_limit_exceeded = [
-        str(r.get("benchmark_id"))
-        for r in results
-        if bool(r.get("resources", {}).get("thermal_limit_exceeded"))
+        record.benchmark_id for record in results if record.thermal_limit_exceeded
     ]
     if thermal_limit_exceeded:
         reasons.append(
@@ -323,9 +295,9 @@ def review_group(
         warnings.append("thermal sensors were unavailable for all repeats")
 
     freq_ratios = [
-        value
-        for r in results
-        if (value := _num(r.get("resources", {}).get("cpu_freq_ratio_min"))) is not None
+        record.cpu_freq_ratio_min
+        for record in results
+        if record.cpu_freq_ratio_min is not None
     ]
     if freq_ratios and min(freq_ratios) < 0.50:
         warnings.append(
@@ -333,13 +305,12 @@ def review_group(
             "review host power/thermal policy for throttling or DVFS effects"
         )
 
-    commit_sha = str(results[0]["environment"]["commit_sha"]) if results else ""
-    hw_key = hardware_key(results[0]) if results else ""
-    workload_hash = workload_key(results[0]) if results else ""
-    benchmark_ids = identities
+    commit_sha = results[0].commit_sha if results else ""
+    hw_key = results[0].hardware_key if results else ""
+    workload_hash = results[0].workload_key if results else ""
+    benchmark_ids = [record.benchmark_id for record in results]
     benchmark_fingerprints = {
-        identity: fingerprint
-        for identity, fingerprint in zip(identities, fingerprints, strict=True)
+        record.benchmark_id: record.result_fingerprint for record in results
     }
 
     return {
@@ -349,16 +320,16 @@ def review_group(
         "workload_key": workload_hash,
         "workload": (
             {
-                "type": results[0]["workload"]["type"],
-                "config": results[0]["workload"].get("config", {}),
+                "type": sources[0]["workload"]["type"],
+                "config": sources[0]["workload"].get("config", {}),
             }
-            if results
+            if sources
             else {}
         ),
         "repeat_count": independent_repeats,
         "benchmark_ids": benchmark_ids,
         "benchmark_fingerprints": benchmark_fingerprints,
-        "source_files": [r.get("_source_file") for r in results],
+        "source_files": [source.get("_source_file") for source in sources],
         "reasons": reasons,
         "warnings": warnings,
         "metrics": {
@@ -380,6 +351,52 @@ def review_group(
             "thermal_measured_all": bool(thermal_measured and all(thermal_measured)),
             "thermal_limit_exceeded": bool(thermal_limit_exceeded),
             "cpu_freq_ratio_min": min(freq_ratios) if freq_ratios else None,
+        },
+    }
+
+
+def _rejection_group(result: dict[str, Any], rejection: Rejection) -> dict[str, Any]:
+    """Build one failed group for a record the parser rejected.
+
+    Args:
+        result: Original benchmark record, used only for provenance.
+        rejection: Structured parse rejection.
+
+    Returns:
+        FAIL group with repeat_count zero and the parser reason.
+    """
+    workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
+    environment = result.get("environment") if isinstance(result.get("environment"), dict) else {}
+    return {
+        "status": "FAIL",
+        "commit_sha": str(environment.get("commit_sha") or ""),
+        "hardware_key": "",
+        "workload_key": "",
+        "workload": {
+            "type": workload.get("type"),
+            "config": workload.get("config", {}),
+        },
+        "repeat_count": 0,
+        "benchmark_ids": [rejection.benchmark_id],
+        "benchmark_fingerprints": {},
+        "source_files": [result.get("_source_file")],
+        "reasons": [rejection.reason],
+        "warnings": [],
+        "metrics": {
+            "duration_seconds_min": None,
+            "warmup_seconds_min": None,
+            "failure_rate_max": None,
+            "capacity": {
+                "dimension": None,
+                "values": [],
+                "mean": None,
+                "cv": None,
+                "relative_range": None,
+            },
+            "p95_latency_ms": {"values": [], "mean": None, "cv": None},
+            "thermal_measured_all": False,
+            "thermal_limit_exceeded": False,
+            "cpu_freq_ratio_min": None,
         },
     }
 
@@ -413,25 +430,29 @@ def build_report(
         Versioned reproducibility report with policy, summary and reviewed groups.
         Uniqueness of allowlisted measured content is enforced here, not only by
         a later CLI handoff. Duplicate or relabeled evidence fails closed.
+        Malformed numeric or hardware content is a failed group, not an exception.
         Fabricated measurements with distinct values are outside this gate.
 
     Raises:
-        ValueError: If policy or benchmark validation fails.
+        ValueError: If min_repeats is below one. Record content does not raise.
     """
     if min_repeats < 1:
         raise ValueError("min_repeats must be >= 1")
 
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str], list[Any]] = {}
+    rejections: list[tuple[dict[str, Any], Rejection]] = []
     for result in results:
-        validate_result(result)
-        key = (
-            str(result["environment"]["commit_sha"]),
-            hardware_key(result),
-            workload_key(result),
-        )
-        groups.setdefault(key, []).append(result)
+        parsed = parse_benchmark_record(result)
+        if isinstance(parsed, Rejection):
+            rejections.append((result, parsed))
+            continue
+        groups.setdefault(
+            (parsed.commit_sha, parsed.hardware_key, parsed.workload_key),
+            [],
+        ).append(parsed)
 
-    reviewed = [
+    reviewed = [_rejection_group(result, rejection) for result, rejection in rejections]
+    reviewed.extend(
         review_group(
             group,
             min_repeats=min_repeats,
@@ -444,7 +465,7 @@ def build_report(
             require_thermal=require_thermal,
         )
         for _, group in sorted(groups.items())
-    ]
+    )
 
     passed = sum(1 for row in reviewed if row["status"] == "PASS")
     failed = len(reviewed) - passed
