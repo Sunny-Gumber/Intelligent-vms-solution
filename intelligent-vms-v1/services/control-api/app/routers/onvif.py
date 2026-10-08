@@ -124,23 +124,38 @@ async def _cleanup_provisioned_paths(stream_keys: list[str]) -> None:
             )
 
 
-def _http_error(exc: Exception) -> HTTPException:
-    """Translate an ONVIF route failure into a public HTTP error.
-
-    Args:
-        exc: Failure caught by an ONVIF route.
+def _generic_onvif_failure() -> HTTPException:
+    """Return the public fallback for an untrusted device or service failure.
 
     Returns:
-        Public HTTP error for a blocked target, a bounded ONVIF error, or an
-        unexpected device or transport failure.
+        HTTP 502 whose detail is a fixed code and message.
 
     Raises:
-        HTTPException: The original expected HTTP error, unchanged. Callers
-            that use ``raise _http_error(exc)`` therefore keep its status and
-            detail instead of replacing it with HTTP 502.
+        No exception is raised. The detail never copies the caught exception.
+    """
+    return HTTPException(502, {"code": "ONVIF_ERROR", "message": "ONVIF operation failed"})
+
+
+def _http_error(exc: Exception) -> HTTPException:
+    """Translate a device or service failure into a public HTTP error.
+
+    Router validation, including an invalid managed-stream role, is resolved
+    before the device call and does not pass through this helper. An
+    HTTPException raised by device or service code is untrusted: its status
+    and detail are discarded, including when the status is 422, 404, or 409.
+
+    Args:
+        exc: Failure caught around a device or service call.
+
+    Returns:
+        Public HTTP error for a blocked target, a bounded ONVIF error, or a
+        sanitized device or transport failure.
+
+    Raises:
+        No exception is raised. Callers raise the returned value.
     """
     if isinstance(exc, HTTPException):
-        raise exc
+        return _generic_onvif_failure()
     if isinstance(exc, TargetNotAllowed):
         return HTTPException(
             400,
@@ -148,7 +163,7 @@ def _http_error(exc: Exception) -> HTTPException:
         )
     if isinstance(exc, OnvifError):
         return HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
-    return HTTPException(502, {"code": "ONVIF_ERROR", "message": "ONVIF operation failed"})
+    return _generic_onvif_failure()
 
 
 def _resolved_site_id(
@@ -263,6 +278,28 @@ def _managed_profile(
             {"code": "INVALID_STREAM_ROLE", "message": "Role must be main, sub or third"},
         )
     return profile_by_token(capability.profiles_json or [], token_by_role[role])
+
+
+def _client_profile(capability: CameraCapabilityEntity, role: str) -> dict:
+    """Resolve a managed profile before any device or service call.
+
+    Args:
+        capability: Stored ONVIF capability snapshot.
+        role: Managed stream role.
+
+    Returns:
+        Matching stored profile dictionary.
+
+    Raises:
+        HTTPException: Invalid role, raised here, or a mapped stale or
+            unselected profile. Device failures are not handled here.
+    """
+    try:
+        return _managed_profile(capability, role)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _http_error(exc) from exc
 
 
 def _capability_read(capability: CameraCapabilityEntity) -> CameraCapabilityRead:
@@ -1025,8 +1062,8 @@ async def read_encoder_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         state = await get_encoder(
             capability.services_json or [],
             profile,
@@ -1077,8 +1114,8 @@ async def write_encoder_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         state = await set_encoder(
             capability.services_json or [],
             profile,
@@ -1128,8 +1165,8 @@ async def read_imaging_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         source_token = profile.get("video_source_token")
         state = await get_imaging(
             capability.services_json or [],
@@ -1179,8 +1216,8 @@ async def write_imaging_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         source_token = profile.get("video_source_token")
         state = await set_imaging(
             capability.services_json or [],
@@ -1213,8 +1250,8 @@ async def read_orientation_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         state = await get_orientation(
             capability.services_json or [],
             profile,
@@ -1242,8 +1279,8 @@ async def write_orientation_configuration(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         state = await set_orientation(
             capability.services_json or [],
             profile,
@@ -1271,8 +1308,8 @@ async def read_video_source_modes(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         return await get_video_source_modes(
             capability.services_json or [],
             profile.get("video_source_token"),
@@ -1299,8 +1336,8 @@ async def write_video_source_mode(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         return await set_video_source_mode(
             capability.services_json or [],
             profile.get("video_source_token"),
@@ -1327,8 +1364,8 @@ async def read_video_standard(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         return await get_video_standards(
             capability.services_json or [],
             profile.get("video_source_token"),
@@ -1355,8 +1392,8 @@ async def write_video_standard(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         return await set_video_standard(
             capability.services_json or [],
             profile.get("video_source_token"),
@@ -1519,8 +1556,8 @@ async def create_camera_osd(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1555,6 +1592,9 @@ async def write_camera_name_osd(
         session,
         principal,
     )
+    profile = None
+    if not payload.osd_token:
+        profile = _client_profile(capability, role)
     try:
         if payload.osd_token:
             return await update_osd(
@@ -1570,7 +1610,6 @@ async def write_camera_name_osd(
                 camera.tenant_id,
                 camera.site_id,
             )
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1664,8 +1703,8 @@ async def read_privacy_masks(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1699,8 +1738,8 @@ async def create_privacy_mask(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1736,8 +1775,8 @@ async def update_privacy_mask(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(
@@ -1773,8 +1812,8 @@ async def delete_privacy_mask(
         session,
         principal,
     )
+    profile = _client_profile(capability, role)
     try:
-        profile = _managed_profile(capability, role)
         token = profile.get("video_source_configuration_token")
         if not token:
             raise OnvifError(

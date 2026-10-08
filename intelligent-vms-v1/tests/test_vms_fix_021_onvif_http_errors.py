@@ -15,15 +15,17 @@ from fastapi import FastAPI, HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.auth import Principal, get_principal
+from app.core.config import settings
 from app.core.errors import install_error_handlers
 from app.core.security import encrypt_secret
 from app.db.base import Base
 from app.db.session import get_session
 from app.models.entities import CameraCapabilityEntity, CameraEntity
 from app.routers import onvif as onvif_router
+from app.services import onvif_client
+from app.services import onvif_configuration as onvif_config
 from app.services.network_policy import TargetNotAllowed
 from app.services.onvif_client import OnvifError
-from app.services import onvif_client
 
 CAMERA_ID = "cam-fix-021"
 HOST = "192.0.2.20"
@@ -66,7 +68,7 @@ def _camera() -> CameraEntity:
     )
 
 
-def _capability(mode: str) -> CameraCapabilityEntity | None:
+def _capability(mode: str, services: list | None = None) -> CameraCapabilityEntity | None:
     if mode == "absent":
         return None
     profile = {
@@ -90,7 +92,7 @@ def _capability(mode: str) -> CameraCapabilityEntity | None:
         camera_id=CAMERA_ID,
         onvif_xaddr=f"http://{HOST}/onvif/device_service",
         device_info_json={},
-        services_json=[],
+        services_json=list(services or []),
         features_json={},
         profiles_json=[profile],
         main_profile_token=token,
@@ -99,7 +101,7 @@ def _capability(mode: str) -> CameraCapabilityEntity | None:
 
 
 @asynccontextmanager
-async def _api(monkeypatch, mode: str = "ready"):
+async def _api(monkeypatch, mode: str = "ready", services: list | None = None):
     # Patch the ONVIF module's client only. The test transport keeps the real class.
     real_client = httpx.AsyncClient
     monkeypatch.setattr(onvif_client.httpx, "AsyncClient", _BlockedAsyncClient)
@@ -123,7 +125,7 @@ async def _api(monkeypatch, mode: str = "ready"):
             await connection.run_sync(Base.metadata.create_all)
         async with sessions() as session:
             session.add(_camera())
-            capability = _capability(mode)
+            capability = _capability(mode, services)
             if capability is not None:
                 session.add(capability)
             await session.commit()
@@ -484,37 +486,38 @@ def test_onvif_error_status_stays_on_configuration_route(monkeypatch):
 
 
 @pytest.mark.parametrize(("method", "template", "body", "target"), PASSTHROUGH_ROUTES)
-def test_expected_http_exception_passes_through_route_family(monkeypatch, method, template, body, target):
-    """HTTPException raised inside any ONVIF route family is returned unchanged."""
+def test_service_http_exception_is_sanitized(monkeypatch, method, template, body, target):
+    """A service HTTPException is not trusted, even when its status looks like 409."""
 
-    async def expected(*_args, **_kwargs):
-        raise HTTPException(409, {"code": STALE_CODE, "message": STALE_MESSAGE})
+    async def leaked(*_args, **_kwargs):
+        raise HTTPException(409, {"code": STALE_CODE, "message": DEVICE_FAULT})
 
-    monkeypatch.setattr(onvif_router, target, expected)
+    monkeypatch.setattr(onvif_router, target, leaked)
 
     async def scenario():
         async with _api(monkeypatch) as client:
             response = await _send(client, method, template, body, role="main")
-        _assert_error(response, 409, STALE_CODE, STALE_MESSAGE)
+        _assert_error(response, 502, "ONVIF_ERROR", "ONVIF operation failed")
 
     _run(scenario)
 
 
-def test_http_error_reraises_http_exception():
-    """_http_error re-raises HTTPException instead of returning a replacement."""
-    original = HTTPException(422, {"code": ROLE_CODE, "message": ROLE_MESSAGE})
+def test_http_error_sanitizes_device_http_exception():
+    """_http_error drops a device HTTPException instead of returning its detail."""
+    original = HTTPException(502, DEVICE_FAULT)
+    http = onvif_router._http_error(original)
 
-    with pytest.raises(HTTPException) as caught:
-        onvif_router._http_error(original)
+    assert http is not original
+    assert http.status_code == 502
+    assert http.detail == {"code": "ONVIF_ERROR", "message": "ONVIF operation failed"}
+    rendered = str(http.detail)
+    for marker in MARKERS:
+        assert marker not in rendered
 
-    assert caught.value is original
-    assert caught.value.status_code == 422
-    assert caught.value.detail == {"code": ROLE_CODE, "message": ROLE_MESSAGE}
 
-
-def test_route_call_pattern_preserves_http_exception():
-    """raise _http_error(exc) keeps the original HTTPException object."""
-    original = HTTPException(422, {"code": ROLE_CODE, "message": ROLE_MESSAGE})
+def test_route_call_pattern_sanitizes_device_http_exception():
+    """raise _http_error(exc) replaces a device HTTPException with the generic 502."""
+    original = HTTPException(409, {"code": STALE_CODE, "message": DEVICE_FAULT})
 
     with pytest.raises(HTTPException) as caught:
         try:
@@ -522,8 +525,50 @@ def test_route_call_pattern_preserves_http_exception():
         except Exception as exc:
             raise onvif_router._http_error(exc) from exc
 
-    assert caught.value is original
-    assert caught.value.status_code == 422
+    assert caught.value is not original
+    assert caught.value.status_code == 502
+    assert caught.value.detail == {"code": "ONVIF_ERROR", "message": "ONVIF operation failed"}
+    rendered = str(caught.value.detail)
+    for marker in MARKERS:
+        assert marker not in rendered
+
+
+MEDIA_SERVICES = [
+    {
+        "namespace": "http://www.onvif.org/ver10/media/wsdl",
+        "xaddr": f"http://{HOST}/onvif/media",
+    }
+]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        pytest.param(DEVICE_FAULT, id="string-502"),
+        pytest.param({"code": STALE_CODE, "message": DEVICE_FAULT}, id="forged-409"),
+        pytest.param({"code": ROLE_CODE, "message": DEVICE_FAULT}, id="forged-422"),
+    ],
+)
+def test_soap_http_exception_detail_is_sanitized(monkeypatch, detail):
+    """HTTPException raised by the device SOAP call is not returned to the client."""
+    status = 502 if isinstance(detail, str) else (409 if detail["code"] == STALE_CODE else 422)
+    monkeypatch.setattr(
+        settings,
+        "onvif_site_allowed_cidrs_json",
+        '{"tenant-a/site-a": ["192.0.2.0/24"]}',
+    )
+
+    async def leaky_soap(*_args, **_kwargs):
+        raise HTTPException(status, detail)
+
+    monkeypatch.setattr(onvif_config, "_soap", leaky_soap)
+
+    async def scenario():
+        async with _api(monkeypatch, services=MEDIA_SERVICES) as client:
+            response = await client.get(f"/api/v1/onvif/cameras/{CAMERA_ID}/encoder/main")
+        _assert_error(response, 502, "ONVIF_ERROR", "ONVIF operation failed")
+
+    _run(scenario)
 
 
 @pytest.mark.parametrize(

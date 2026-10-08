@@ -13,10 +13,17 @@ credentials are decrypted server-side only for the device request and are never
 returned to API clients.
 
 Public errors are bounded. Camera SOAP fault text, credential-bearing URLs and
-blocked target details are not exposed. Expected HTTP errors pass through
-unchanged, including an invalid managed-stream role (422) and a missing
-capability snapshot or stale profile (404 or 409). Device and transport
-failures stay HTTP 502 with the generic message "ONVIF operation failed".
+blocked target details are not exposed. Expected client errors raised by the
+router pass through unchanged, including an invalid managed-stream role (422)
+and a missing capability snapshot or stale profile (404 or 409). A SOAP fault
+is HTTP 502 `SOAP_FAULT`, "Camera returned an ONVIF SOAP fault". A connect
+timeout is HTTP 504 `NETWORK_UNREACHABLE`, "ONVIF operation timed out". A
+connect error is HTTP 502 `NETWORK_UNREACHABLE`, "ONVIF device could not be
+reached". Invalid device XML is HTTP 502 `DEVICE_SERVICE_INVALID`, "Camera
+returned invalid ONVIF XML". An unexpected device or service exception,
+including an HTTPException raised by that call, is HTTP 502 `ONVIF_ERROR`,
+"ONVIF operation failed", with none of the caught detail. A bounded OnvifError
+keeps its own status and fixed message.
 
 ## Managed stream roles
 
