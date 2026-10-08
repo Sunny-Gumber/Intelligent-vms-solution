@@ -14,9 +14,11 @@ from pathlib import Path
 from phase8_benchmark_common import SystemSampler, build_result, utc_iso, write_result
 
 _LOG = logging.getLogger(__name__)
-# Shared by the threads of one run(). The first stalled or failed stream sets
-# the event; siblings observe it and return. asyncio task cancellation does not
-# join a running to_thread worker, so this event is how a sibling stops.
+# How long a cancelled run waits for writer threads to leave _write_stream.
+# asyncio task cancellation does not stop a running to_thread worker.
+_WORKER_JOIN_SECONDS = 5.0
+# Shared by the threads of one run(). A failed sibling, or cancellation of the
+# run, sets the event. Writers observe it at the next write and return.
 _WRITE_CANCEL: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
     "phase8_storage_write_cancel",
     default=None,
@@ -102,6 +104,91 @@ def _release_stream_files(paths: list[Path], keep_files: bool) -> None:
             path.unlink(missing_ok=True)
         except OSError as exc:
             _LOG.warning("failed to remove storage benchmark file %s: %s", path, exc)
+
+
+def _join_write_workers(
+    workers: list[threading.Thread],
+    lock: threading.Lock,
+    timeout: float,
+) -> None:
+    """Wait until registered writer threads leave the stream writer.
+
+    The calling thread is never joined, so an inline worker cannot deadlock
+    the event-loop thread. Threads that register while this wait is in progress
+    are included until the deadline. A thread that is still alive at the
+    deadline is logged, and cleanup continues.
+
+    Args:
+        workers: Threads registered by ``_tracked_write``, including ones added
+            while this function waits.
+        lock: Guards ``workers``.
+        timeout: Seconds allowed for every registered writer to finish.
+
+    Returns:
+        None.
+
+    Raises:
+        None. A thread that outlives ``timeout`` is logged.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        with lock:
+            pending = [
+                thread
+                for thread in workers
+                if thread is not threading.current_thread() and thread.is_alive()
+            ]
+        if not pending:
+            return
+        if time.monotonic() >= deadline:
+            for thread in pending:
+                _LOG.warning(
+                    "storage benchmark worker %s is still writing after %ss; "
+                    "stream files will still be removed",
+                    thread.name,
+                    timeout,
+                )
+            return
+        for thread in pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(remaining)
+
+
+def _tracked_write(
+    workers: list[threading.Thread],
+    lock: threading.Lock,
+    path: Path,
+    total_bytes: int,
+    chunk_bytes: int,
+    fsync: bool,
+) -> tuple[int, list[float]]:
+    """Register this thread, then write one stream.
+
+    Registration happens before ``_write_stream`` so a cancellation that
+    arrives during the write can join this thread. The cancel event is
+    checked inside ``_write_stream`` before the file is opened.
+
+    Args:
+        workers: Run-scoped list of writer threads.
+        lock: Guards ``workers``.
+        path: Destination file. The parent directory must already exist.
+        total_bytes: Exact number of bytes this stream must accept.
+        chunk_bytes: Maximum payload submitted for one chunk.
+        fsync: When true, fsync the handle after each completed chunk.
+
+    Returns:
+        Bytes actually accepted, and one latency sample per completed chunk.
+
+    Raises:
+        StorageBenchmarkWriteError: A raw write accepted no bytes or returned an
+            unusable count, or another stream already failed.
+        OSError: A write or fsync failed.
+    """
+    with lock:
+        workers.append(threading.current_thread())
+    return _write_stream(path, total_bytes, chunk_bytes, fsync)
 
 
 def _primary_stream_error(outcomes: list[object]) -> BaseException | None:
@@ -229,6 +316,11 @@ async def run(args) -> dict:
             requested size. No result dictionary is returned.
         OSError: A stream write or fsync failed. No result dictionary is returned.
             Sibling streams are joined before their files are removed.
+        asyncio.CancelledError: The run was cancelled, including a keyboard
+            interrupt delivered through ``asyncio.run``. Writer threads are
+            asked to stop and joined within a bound, and stream files are
+            removed, before this exception propagates. It is not converted
+            into a successful result.
     """
     target_dir = Path(args.path)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -257,12 +349,16 @@ async def run(args) -> dict:
     started_at = utc_iso()
     started = time.perf_counter()
     cancel_writes = threading.Event()
+    workers: list[threading.Thread] = []
+    workers_lock = threading.Lock()
     token = _WRITE_CANCEL.set(cancel_writes)
 
     async def run_stream(path: Path):
         try:
             return await asyncio.to_thread(
-                _write_stream,
+                _tracked_write,
+                workers,
+                workers_lock,
                 path,
                 bytes_per_stream,
                 chunk_bytes,
@@ -275,12 +371,22 @@ async def run(args) -> dict:
             raise
 
     try:
-        # return_exceptions waits for every stream, including one that opens
-        # after the first worker has already failed.
-        outcomes = await asyncio.gather(
-            *(run_stream(path) for path in paths),
-            return_exceptions=True,
-        )
+        try:
+            # return_exceptions waits for every stream, including one that opens
+            # after the first worker has already failed. Cancellation of this
+            # task still raises CancelledError here; that path must not await,
+            # because the task is already cancelled.
+            outcomes = await asyncio.gather(
+                *(run_stream(path) for path in paths),
+                return_exceptions=True,
+            )
+        except BaseException:
+            cancel_writes.set()
+            stop.set()
+            _join_write_workers(workers, workers_lock, _WORKER_JOIN_SECONDS)
+            _release_stream_files(paths, args.keep_files)
+            sample_task.cancel()
+            raise
     finally:
         _WRITE_CANCEL.reset(token)
 

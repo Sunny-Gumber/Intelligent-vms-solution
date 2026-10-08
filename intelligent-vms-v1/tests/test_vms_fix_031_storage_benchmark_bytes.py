@@ -11,6 +11,9 @@ from __future__ import annotations
 import asyncio
 import errno
 import logging
+import os
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -36,6 +39,8 @@ SIBLING_OPEN_DELAY_SECONDS = 0.05
 NONUNIFORM_PAYLOAD = bytes((index * 13 + 5) % 251 for index in range(64 * PARTIAL_ACCEPT_BYTES + 3))
 LOOP_TIMEOUT_SECONDS = 2.0
 RUN_TIMEOUT_SECONDS = 20.0
+CANCEL_WRITE_DELAY_SECONDS = 0.02
+CANCEL_TEST_TIMEOUT_SECONDS = 8.0
 STALL_ERROR = "StorageBenchmarkWriteError"
 TOP_LEVEL_KEYS = {
     "schema_version",
@@ -937,3 +942,383 @@ def test_unlink_failure_is_logged_and_other_files_are_removed(monkeypatch, tmp_p
     assert second == []
     assert "failed to remove storage benchmark file" in caplog.text
     assert first[0].name in caplog.text
+
+
+class SlowRawFile:
+    """Real raw file that accepts one byte and then waits."""
+
+    def __init__(self, path, delay_seconds):
+        """Open ``path`` and remember how long each write waits.
+
+        Args:
+            path: Destination file created for this test.
+            delay_seconds: Sleep before the single accepted byte is written.
+
+        Returns:
+            None.
+
+        Raises:
+            OSError: If the file cannot be opened.
+        """
+        self.delay_seconds = delay_seconds
+        self._raw = Path.open(path, "wb", buffering=0)
+        self.closed = False
+
+    def write(self, payload):
+        """Accept one byte after ``delay_seconds``.
+
+        Args:
+            payload: Bytes the benchmark submitted.
+
+        Returns:
+            The count the real raw write accepted, or 0 when ``payload`` is empty.
+
+        Raises:
+            OSError: If the underlying write fails.
+            ValueError: If this handle is already closed.
+        """
+        if self.closed:
+            raise ValueError("write on a closed slow raw file")
+        time.sleep(self.delay_seconds)
+        data = bytes(payload[:1])
+        if not data:
+            return 0
+        return self._raw.write(data)
+
+    def fileno(self):
+        """Return the real descriptor for the destination file.
+
+        Args:
+            None.
+
+        Returns:
+            The operating-system descriptor.
+
+        Raises:
+            ValueError: If this handle is already closed.
+        """
+        if self.closed:
+            raise ValueError("fileno on a closed slow raw file")
+        return self._raw.fileno()
+
+    def __enter__(self):
+        """Enter the context manager.
+
+        Args:
+            None.
+
+        Returns:
+            This handle.
+
+        Raises:
+            None.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        """Close the real file without hiding a write error.
+
+        Args:
+            exc_type: Exception type being propagated, if any.
+            exc: Exception instance being propagated, if any.
+            tb: Traceback being propagated, if any.
+
+        Returns:
+            False so a write failure still fails the caller.
+
+        Raises:
+            OSError: If closing the real file fails.
+        """
+        self.closed = True
+        self._raw.close()
+        return False
+
+
+def install_slow_raw_files(monkeypatch, delay_seconds):
+    """Replace unbuffered benchmark opens with one-byte slow files.
+
+    Other ``Path.open`` calls keep the real opener.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        delay_seconds: Sleep before each accepted byte.
+
+    Returns:
+        Slow files created so far, in open order.
+
+    Raises:
+        OSError: If a delegated real open fails.
+    """
+    handles = []
+    gate = threading.Lock()
+    original_open = Path.open
+
+    def open_raw(self, mode="r", buffering=-1, *args, **kwargs):
+        if mode == "wb" and buffering == 0:
+            handle = SlowRawFile.__new__(SlowRawFile)
+            handle.delay_seconds = delay_seconds
+            handle.closed = False
+            handle._raw = original_open(self, mode, buffering, *args, **kwargs)
+            with gate:
+                handles.append(handle)
+            return handle
+        return original_open(self, mode, buffering, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_raw)
+    return handles
+
+
+def threads_inside_storage_write():
+    """Return names of live threads currently inside the storage writer.
+
+    Args:
+        None.
+
+    Returns:
+        Thread names whose stack contains ``_write_stream`` or ``_accept_payload``.
+
+    Raises:
+        None.
+    """
+    interesting = {"_write_stream", "_accept_payload"}
+    frames = sys._current_frames()
+    names = []
+    for thread in threading.enumerate():
+        if not thread.is_alive():
+            continue
+        frame = frames.get(thread.ident)
+        while frame is not None:
+            if frame.f_code.co_name in interesting:
+                names.append(thread.name)
+                break
+            frame = frame.f_back
+    return names
+
+
+def test_outer_cancel_stops_workers_and_removes_files(monkeypatch, tmp_path):
+    """Cancelling ``run()`` must stop the writers and delete every stream file.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture used to install slow raw files.
+        tmp_path: Real temporary directory for the stream files.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the call hangs, leaves a stream file, leaves a writer
+            thread inside ``_write_stream``, or does not surface ``CancelledError``.
+    """
+    install_slow_raw_files(monkeypatch, CANCEL_WRITE_DELAY_SECONDS)
+    args = benchmark_args(
+        tmp_path,
+        streams=2,
+        total_bytes=STREAM_BYTES,
+        chunk_bytes=STREAM_BYTES,
+        fsync=False,
+    )
+
+    async def cancel_after_first_bytes():
+        task = asyncio.create_task(storage_bench.run(args))
+        deadline = time.monotonic() + CANCEL_TEST_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            files = list(tmp_path.glob("phase8-storage-*.bin"))
+            if len(files) == 2 and min(path.stat().st_size for path in files) >= 1:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            task.cancel()
+            raise AssertionError("stream files did not start before the cancel")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        alive = threads_inside_storage_write()
+        leftover = list(tmp_path.glob("phase8-storage-*.bin"))
+        assert alive == []
+        assert leftover == []
+
+    call_bounded(lambda: asyncio.run(cancel_after_first_bytes()), CANCEL_TEST_TIMEOUT_SECONDS)
+
+
+def test_keyboard_interrupt_during_asyncio_run_removes_files(tmp_path):
+    """SIGINT during ``asyncio.run(run())`` must not leave stream files behind.
+
+    The benchmark runs in a child process so the signal does not hit pytest.
+
+    Args:
+        tmp_path: Real temporary directory for the child and its stream files.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the child hangs, exits successfully, rewrites the
+            sentinel JSON, or leaves a ``phase8-storage-*.bin`` file.
+    """
+    sentinel = tmp_path / "result.json"
+    sentinel.write_text('{"sentinel":"keep"}\n', encoding="utf-8")
+    script = tmp_path / "cancel_child.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import asyncio",
+                "import sys",
+                "import time",
+                "from pathlib import Path",
+                "sys.path.insert(0, sys.argv[1])",
+                "import phase8_storage_benchmark as bench",
+                "work = Path(sys.argv[2])",
+                "delay = float(sys.argv[3])",
+                "original_open = Path.open",
+                "def open_raw(self, mode='r', buffering=-1, *args, **kwargs):",
+                "    if mode == 'wb' and buffering == 0:",
+                "        raw = original_open(self, mode, buffering, *args, **kwargs)",
+                "        class Slow:",
+                "            def write(self, payload):",
+                "                time.sleep(delay)",
+                "                data = bytes(payload[:1])",
+                "                if not data:",
+                "                    return 0",
+                "                return raw.write(data)",
+                "            def fileno(self):",
+                "                return raw.fileno()",
+                "            def __enter__(self):",
+                "                return self",
+                "            def __exit__(self, exc_type, exc, tb):",
+                "                raw.close()",
+                "                return False",
+                "        return Slow()",
+                "    return original_open(self, mode, buffering, *args, **kwargs)",
+                "Path.open = open_raw",
+                "total = 32",
+                "mib = total / (1024 * 1024)",
+                "args = type('A', (), {})()",
+                "args.path = str(work)",
+                "args.streams = 2",
+                "args.mib_per_stream = mib",
+                "args.chunk_mib = mib",
+                "args.fsync = False",
+                "args.keep_files = False",
+                "args.sample_interval = 30.0",
+                "try:",
+                "    asyncio.run(bench.run(args))",
+                "    print('CHILD_OK', flush=True)",
+                "except KeyboardInterrupt:",
+                "    print('CHILD_EXC KeyboardInterrupt', flush=True)",
+                "    raise SystemExit(130)",
+                "except BaseException as exc:",
+                "    print('CHILD_EXC ' + type(exc).__name__, flush=True)",
+                "    raise",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(TOOLS), str(tmp_path), str(CANCEL_WRITE_DELAY_SECONDS)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + CANCEL_TEST_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            files = list(tmp_path.glob("phase8-storage-*.bin"))
+            if len(files) == 2 and min(path.stat().st_size for path in files) >= 1:
+                break
+            if proc.poll() is not None:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("child did not start writing before SIGINT")
+        os.kill(proc.pid, signal.SIGINT)
+        try:
+            stdout, stderr = proc.communicate(timeout=CANCEL_TEST_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate(timeout=CANCEL_TEST_TIMEOUT_SECONDS)
+            raise AssertionError(f"child hung after SIGINT\nstdout={stdout}\nstderr={stderr}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=CANCEL_TEST_TIMEOUT_SECONDS)
+    combined = (stdout or "") + (stderr or "")
+    assert proc.returncode not in (0, None)
+    assert "KeyboardInterrupt" in combined
+    assert "CHILD_OK" not in combined
+    assert sentinel.read_text(encoding="utf-8") == '{"sentinel":"keep"}\n'
+    assert list(tmp_path.glob("phase8-storage-*.bin")) == []
+
+
+def test_cancel_join_bound_is_logged_and_files_are_removed(monkeypatch, tmp_path, caplog):
+    """A writer that ignores the stop event is logged, then its file is removed.
+
+    The join bound is shortened so the case stays inside the hard timeout.
+    The writer sleeps past that bound and does not create the file again.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Real temporary directory for the stream file.
+        caplog: Pytest log capture fixture.
+
+    Returns:
+        None. Assertions fail the test.
+
+    Raises:
+        AssertionError: If the call hangs, skips the warning, leaves a stream
+            file, or does not surface ``CancelledError``.
+    """
+    monkeypatch.setattr(storage_bench, "_WORKER_JOIN_SECONDS", 0.05, raising=False)
+
+    def stuck(path, total_bytes, chunk_bytes, fsync):
+        """Write one file and ignore the cancel event until the sleep ends.
+
+        Args:
+            path: Stream file this worker creates.
+            total_bytes: Unused requested size.
+            chunk_bytes: Unused chunk size.
+            fsync: Unused fsync flag.
+
+        Returns:
+            A zero-byte result the cancelled run must not publish.
+
+        Raises:
+            None.
+        """
+        del total_bytes, chunk_bytes, fsync
+        path.write_bytes(b"stuck")
+        time.sleep(0.4)
+        return (0, [])
+
+    monkeypatch.setattr(storage_bench, "_write_stream", stuck)
+    args = benchmark_args(
+        tmp_path,
+        streams=1,
+        total_bytes=STREAM_BYTES,
+        chunk_bytes=STREAM_BYTES,
+        fsync=False,
+    )
+
+    async def cancel_after_file_appears():
+        task = asyncio.create_task(storage_bench.run(args))
+        deadline = time.monotonic() + CANCEL_TEST_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            files = list(tmp_path.glob("phase8-storage-*.bin"))
+            if files and files[0].stat().st_size >= 1:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            task.cancel()
+            raise AssertionError("stream file did not appear before the cancel")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert list(tmp_path.glob("phase8-storage-*.bin")) == []
+
+    with caplog.at_level(logging.WARNING, logger="phase8_storage_benchmark"):
+        call_bounded(
+            lambda: asyncio.run(cancel_after_file_appears()),
+            CANCEL_TEST_TIMEOUT_SECONDS,
+        )
+    assert "still writing after 0.05s" in caplog.text
+    assert "stream files will still be removed" in caplog.text
