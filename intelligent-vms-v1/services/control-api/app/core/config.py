@@ -2,7 +2,7 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.effective_authority import DEFAULT_FENCE_EXPIRY_GRACE_SECONDS
-from app.core.placement_renewal import assert_placement_renewal_budget
+from app.core.placement_renewal import assert_settings_renewal_budget
 
 
 class Settings(BaseSettings):
@@ -142,37 +142,42 @@ class Settings(BaseSettings):
     placement_offline_autonomy_seconds: int = 0
     placement_batch_size: int = 1000
     placement_max_moves_per_run: int = 200
-    # Lease renewal does not follow the camera-scan page above. The controller
-    # must visit every assignment inside the ceiling before the lease expires:
-    # ceil(max_assignments / renewal_batch) * interval < placement_lease_seconds.
-    # This is a fail-closed budget, not a measured capacity claim. Other fixes
+    # Lease renewal budget (VMS-FIX-014). Independent of the camera-scan batch.
+    # required = pages * (interval + max_run) + missed_lock_cycles * (interval + max_run)
+    #   + fence_poll + clock_skew + safety_margin, and required < lease.
+    # pages = ceil(ceiling / batch). missed_lock_cycles is at least 1.
+    # Fence poll 5s and clock skew 5s match the node-agent defaults; this block
+    # does not change the node. Fence grace is not extra lease life.
+    # The batch equals the ceiling so the reviewed 21000 assignments are one
+    # page. That is a configured write bound, not a measured rate. Other fixes
     # may add settings in this file; keep this block together.
     placement_interval_seconds: float = Field(default=10.0, gt=0)
-    placement_renewal_batch_size: int = Field(default=5000, ge=1)
+    placement_renewal_batch_size: int = Field(default=21000, ge=1)
     placement_renewal_max_assignments: int = Field(default=21000, ge=1)
+    placement_renewal_max_run_seconds: float = Field(default=2.0, ge=0)
+    placement_renewal_missed_lock_cycles: int = Field(default=1, ge=1)
+    placement_renewal_fence_poll_seconds: float = Field(default=5.0, ge=1)
+    placement_renewal_clock_skew_seconds: float = Field(default=5.0, ge=0)
+    placement_renewal_safety_margin_seconds: float = Field(default=5.0, ge=1)
+    placement_renewal_lock_retry_seconds: float = Field(default=0.25, gt=0)
+    placement_renewal_lock_retry_limit: int = Field(default=4, ge=1)
     placement_execution_enabled: bool = False
     placement_local_node_id: str = "media-local-01"
     node_fence_snapshot_max_items: int = 10000
 
     @model_validator(mode="after")
     def reject_unsatisfiable_placement_renewal_budget(self) -> "Settings":
-        """Reject a renewal cadence that cannot visit every configured owner in time.
+        """Reject a renewal cadence that is not strictly inside the lease.
 
         Returns:
-            This settings instance when the renewal cycle is strictly shorter
-            than the lease.
+            This settings instance when the conservative budget holds.
 
         Raises:
-            PlacementRenewalBudgetError: When the configured ceiling, batch and
-                interval cannot refresh every owner before lease expiry. The
-                lease is not reduced to force a fit.
+            PlacementRenewalBudgetError: When pages, missed locks, fence poll,
+                clock skew and the safety margin do not fit before lease expiry.
+                The lease is not reduced and fence grace is not spent to fit.
         """
-        assert_placement_renewal_budget(
-            max_assignments=self.placement_renewal_max_assignments,
-            batch_size=self.placement_renewal_batch_size,
-            interval_seconds=self.placement_interval_seconds,
-            lease_seconds=self.placement_lease_seconds,
-        )
+        assert_settings_renewal_budget(self)
         return self
 
 

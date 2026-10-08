@@ -5,7 +5,7 @@ import os
 from app.core.config import settings
 from app.core.placement_renewal import (
     PlacementRenewalBudgetError,
-    assert_placement_renewal_budget,
+    assert_settings_renewal_budget,
     resolved_placement_interval_seconds,
 )
 from app.services.placement import run_placement_once
@@ -15,48 +15,55 @@ log = logging.getLogger("placement-controller")
 
 
 def validate_placement_renewal_budget() -> None:
-    """Refuse to start when renewal cannot visit every configured owner before the lease expires.
+    """Refuse to start when the conservative renewal budget does not fit the lease.
 
     Returns:
-        None when the configured cycle is strictly shorter than the lease.
+        None when pages, missed locks, fence poll, clock skew and the safety
+        margin are strictly inside the lease.
 
     Raises:
-        PlacementRenewalBudgetError: When the ceiling, batch and interval cannot
-            meet the lease. The lease is not shortened to force a fit.
+        PlacementRenewalBudgetError: When the configured budget cannot refresh
+            every owner before lease expiry. The lease is not shortened.
     """
-    assert_placement_renewal_budget(
-        max_assignments=settings.placement_renewal_max_assignments,
-        batch_size=settings.placement_renewal_batch_size,
-        interval_seconds=settings.placement_interval_seconds,
-        lease_seconds=settings.placement_lease_seconds,
-    )
+    assert_settings_renewal_budget(settings)
 
 
 async def main():
     """Run periodic bounded placement-controller iterations indefinitely.
 
     Startup rejects a renewal budget that cannot refresh every configured
-    owner before the lease expires. A later population that exceeds the same
-    ceiling stops the process instead of continuing a scan that would fence
-    healthy owners.
+    owner before the lease expires. A live population above that ceiling skips
+    renewal for the run and leaves scan and failover running. A missed
+    execution lock is retried inside the run, with a short backoff, before
+    this cycle sleeps out the full interval.
 
     Returns:
         None under normal operation; the coroutine runs until cancelled.
 
     Raises:
-        PlacementRenewalBudgetError: The renewal budget does not hold at startup
-            or a run observes more active assignments than the ceiling.
+        PlacementRenewalBudgetError: The configured renewal budget does not
+            hold at startup or on a run. A population above the ceiling does
+            not raise.
     """
     validate_placement_renewal_budget()
     while True:
         try:
             result = await run_placement_once()
+            if result.get("renewal_budget_exceeded"):
+                log.critical(
+                    "placement_renewal_budget_exceeded scanned=%s moved=%s renewed=%s",
+                    result.get("scanned"),
+                    result.get("moved"),
+                    result.get("renewed"),
+                )
             log.info(
-                "placement_run scanned=%s moved=%s unplaced=%s renewed=%s cursor=%s",
+                "placement_run scanned=%s moved=%s unplaced=%s renewed=%s "
+                "renewal_budget_exceeded=%s cursor=%s",
                 result["scanned"],
                 result["moved"],
                 result["unplaced"],
                 result.get("renewed", 0),
+                result.get("renewal_budget_exceeded", False),
                 result["cursor"],
             )
         except PlacementRenewalBudgetError:

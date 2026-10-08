@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
@@ -11,10 +13,7 @@ from app.core.effective_authority import (
     effective_authority_active,
     effective_authority_deadline,
 )
-from app.core.placement_renewal import (
-    PlacementRenewalBudgetError,
-    assert_placement_renewal_budget,
-)
+from app.core.placement_renewal import assert_settings_renewal_budget
 from app.db.session import SessionLocal
 from app.services.stream_keys import make_role_stream_key
 from app.services.coordination import try_placement_execution_lock
@@ -25,6 +24,8 @@ from app.models.placement import (
     PlacementRevocationEntity,
     SiteRegionEntity,
 )
+
+log = logging.getLogger(__name__)
 
 CURSOR_KEY = "placement_controller_cursor"
 RENEWAL_CURSOR_KEY = "placement_renewal_cursor"
@@ -247,6 +248,65 @@ def _extend_owner_lease(row: PlacementAssignmentEntity, now: datetime) -> bool:
     return True
 
 
+def _role_required(role: str, recording_policy, ai_policy) -> bool:
+    """Return whether the scan still places this role for the camera.
+
+    Media is always required. Recording and AI are required only while their
+    current policy is enabled. A missing or disabled policy is not renewed.
+    """
+    if role == "media":
+        return True
+    if role == "recording":
+        return recording_policy is not None and bool(recording_policy.enabled)
+    if role == "ai":
+        return ai_policy is not None and bool(ai_policy.enabled)
+    return False
+
+
+def _site_region_id(site_regions: dict, camera: CameraEntity) -> str:
+    """Return the camera's current site region, the same value the scan uses."""
+    return site_regions.get(
+        (camera.tenant_id, camera.site_id),
+        settings.placement_default_region,
+    )
+
+
+def _owner_to_keep(
+    nodes: Iterable[NodeSnapshot],
+    existing: PlacementAssignmentEntity | None,
+    role: str,
+    region_id: str,
+    now: datetime,
+) -> NodeSnapshot | None:
+    """Return the current owner when the scan would keep that owner.
+
+    Eligibility uses the camera's current site region, not the region stored
+    on the assignment. A stale recorded region must not block renewal of an
+    owner the scan would keep, and must not extend an owner the scan would move.
+    """
+    if existing is None:
+        return None
+    current = next((node for node in nodes if node.id == existing.node_id), None)
+    if current is not None and node_eligible(current, role, region_id, now):
+        return current
+    return None
+
+
+def _keep_owner(row: PlacementAssignmentEntity, node: NodeSnapshot, recording: dict, now: datetime) -> bool:
+    """Extend the lease of an owner the scan would keep.
+
+    The scan keep path does not rewrite assignment.region_id, so this path
+    does not either. Recording node metadata is updated the same way the scan
+    updates it.
+    """
+    extended = _extend_owner_lease(row, now)
+    if row.role == "recording":
+        policy = recording.get(row.camera_id)
+        if policy is not None:
+            policy.recording_node_id = node.id
+    return extended
+
+
 def _renewal_assignment_query(after: str | None):
     # Enabled cameras only. Disabled cameras are outside the scan and must not
     # keep a lease alive through the independent pass.
@@ -280,12 +340,11 @@ async def _active_assignment_count(session) -> int:
 
 
 async def _renew_eligible_owners(session, nodes: list[NodeSnapshot], now: datetime) -> int:
-    """Renew one bounded page of eligible owners, independent of the camera cursor.
+    """Renew one bounded page of owners the scan would keep.
 
-    The page advances even when a row is ineligible, so a stale owner cannot
-    sit at the front and starve healthy ones. Ineligible rows are not renewed.
-    Region is the assignment's region: a site-region change is the camera
-    scan's decision, and renewal must not drop a still-eligible owner early.
+    The page advances even when a row is not kept, so a stale owner cannot sit
+    at the front and starve healthy ones. A role the scan no longer requires
+    is not extended. Eligibility uses the camera's current site region.
 
     Args:
         session: Open placement transaction that already holds the execution lock.
@@ -313,6 +372,12 @@ async def _renew_eligible_owners(session, nodes: list[NodeSnapshot], now: dateti
         return 0
 
     camera_ids = [row.camera_id for row in rows]
+    cameras = {
+        camera.id: camera
+        for camera in (
+            await session.execute(select(CameraEntity).where(CameraEntity.id.in_(camera_ids)))
+        ).scalars().all()
+    }
     recording = {
         policy.camera_id: policy
         for policy in (
@@ -321,18 +386,39 @@ async def _renew_eligible_owners(session, nodes: list[NodeSnapshot], now: dateti
             )
         ).scalars().all()
     }
-    nodes_by_id = {node.id: node for node in nodes}
+    ai = {
+        policy.camera_id: policy
+        for policy in (
+            await session.execute(
+                select(CameraAIPolicyEntity).where(CameraAIPolicyEntity.camera_id.in_(camera_ids))
+            )
+        ).scalars().all()
+    }
+    site_ids = sorted({camera.site_id for camera in cameras.values()})
+    tenant_ids = sorted({camera.tenant_id for camera in cameras.values()})
+    site_regions = {
+        (region.tenant_id, region.site_id): region.region_id
+        for region in (
+            await session.execute(
+                select(SiteRegionEntity).where(
+                    SiteRegionEntity.site_id.in_(site_ids),
+                    SiteRegionEntity.tenant_id.in_(tenant_ids),
+                )
+            )
+        ).scalars().all()
+    } if site_ids else {}
     renewed = 0
     for row in rows:
-        node = nodes_by_id.get(row.node_id)
-        if node is None or not node_eligible(node, row.role, row.region_id, now):
+        camera = cameras.get(row.camera_id)
+        if camera is None or not camera.enabled:
             continue
-        if _extend_owner_lease(row, now):
+        if not _role_required(row.role, recording.get(row.camera_id), ai.get(row.camera_id)):
+            continue
+        kept = _owner_to_keep(nodes, row, row.role, _site_region_id(site_regions, camera), now)
+        if kept is None:
+            continue
+        if _keep_owner(row, kept, recording, now):
             renewed += 1
-        if row.role == "recording":
-            policy = recording.get(row.camera_id)
-            if policy is not None:
-                policy.recording_node_id = node.id
 
     if len(rows) >= settings.placement_renewal_batch_size:
         cursor = rows[-1].id
@@ -454,55 +540,90 @@ async def _assign(
     return row, changed
 
 
+def _placement_result(
+    *,
+    scanned: int = 0,
+    moved: int = 0,
+    unplaced: int = 0,
+    deferred_autonomy: int = 0,
+    renewed: int = 0,
+    renewal_budget_exceeded: bool = False,
+    cursor: str | None = None,
+) -> dict:
+    return {
+        "scanned": scanned,
+        "moved": moved,
+        "unplaced": unplaced,
+        "deferred_autonomy": deferred_autonomy,
+        "renewed": renewed,
+        "renewal_budget_exceeded": renewal_budget_exceeded,
+        "cursor": cursor,
+    }
+
+
 async def run_placement_once() -> dict:
     """Run one bounded placement-controller iteration under the execution fence.
 
     Eligible owners are renewed from a cursor that does not follow the camera
-    scan page, and only after the placement execution lock is held. A stale or
-    ineligible owner is left for the scan, which still waits for the shared
-    effective-authority deadline before failover.
+    scan page, and only after the placement execution lock is held. Renewal
+    keeps an owner only when the scan would keep that same owner. A missed
+    lock is retried with a short backoff before this cycle gives up. A live
+    population above the renewal ceiling skips renewal and still scans.
 
     Returns:
         Dictionary containing scanned, moved, unplaced, deferred, and renewed
-        counts plus the persisted camera-scan cursor. Deferred counts are
-        assignments whose previous effective authority (lease plus grace, or a
-        later autonomy deadline) is still live. Renewed counts are eligible
-        owners whose lease moved later on this run's renewal page.
+        counts, whether the live population exceeded the renewal ceiling, and
+        the persisted camera-scan cursor. Deferred counts are assignments whose
+        previous effective authority is still live. Renewed counts are owners
+        the scan would keep whose lease moved later on this run's renewal page.
 
     Raises:
-        PlacementRenewalBudgetError: The configured renewal cycle is not
-            strictly shorter than the lease, or live assignments exceed the
-            configured ceiling. The lease is not shortened.
+        PlacementRenewalBudgetError: The configured budget is not strictly
+            inside the lease. The lease is not shortened. A live population
+            above the ceiling does not raise.
         Exception: Database, fencing or placement mutation failures propagate.
     """
-    assert_placement_renewal_budget(
-        max_assignments=settings.placement_renewal_max_assignments,
-        batch_size=settings.placement_renewal_batch_size,
-        interval_seconds=settings.placement_interval_seconds,
-        lease_seconds=settings.placement_lease_seconds,
-    )
+    assert_settings_renewal_budget(settings)
+    attempts = int(settings.placement_renewal_lock_retry_limit)
+    for attempt in range(attempts):
+        result = await _run_placement_once_locked()
+        if result is not None:
+            return result
+        if attempt + 1 < attempts:
+            await asyncio.sleep(float(settings.placement_renewal_lock_retry_seconds))
+    return _placement_result()
+
+
+async def _run_placement_once_locked() -> dict | None:
+    """Run one locked placement iteration.
+
+    Returns:
+        The run summary, or None when the execution lock was not acquired.
+
+    Raises:
+        PlacementRenewalBudgetError: Propagated from callers that validate
+            settings before this attempt. This function does not raise it for
+            a population above the ceiling.
+        Exception: Database or placement mutation failures propagate.
+    """
     now = datetime.now(timezone.utc)
     scanned = moved = unplaced = deferred_autonomy = renewed = 0
+    renewal_budget_exceeded = False
     cursor: str | None = None
 
     async with SessionLocal() as session:
         async with session.begin():
             if not await _leader_lock(session):
-                return {
-                    "scanned": 0,
-                    "moved": 0,
-                    "unplaced": 0,
-                    "deferred_autonomy": 0,
-                    "renewed": 0,
-                    "cursor": None,
-                }
+                return None
 
             active_assignments = await _active_assignment_count(session)
-            if active_assignments > settings.placement_renewal_max_assignments:
-                raise PlacementRenewalBudgetError(
-                    "placement renewal budget exceeded: "
-                    f"active assignments {active_assignments} exceed "
-                    f"placement_renewal_max_assignments {settings.placement_renewal_max_assignments}"
+            ceiling = int(settings.placement_renewal_max_assignments)
+            if active_assignments > ceiling:
+                renewal_budget_exceeded = True
+                log.critical(
+                    "placement_renewal_budget_exceeded active_assignments=%s ceiling=%s",
+                    active_assignments,
+                    ceiling,
                 )
 
             node_rows = (
@@ -524,7 +645,10 @@ async def run_placement_once() -> dict:
                 )
                 for n in node_rows
             ]
-            renewed = await _renew_eligible_owners(session, nodes, now)
+            if renewal_budget_exceeded:
+                renewed = 0
+            else:
+                renewed = await _renew_eligible_owners(session, nodes, now)
 
             state = await session.get(ServiceStateEntity, CURSOR_KEY, with_for_update=True)
             if state is None:
@@ -544,14 +668,10 @@ async def run_placement_once() -> dict:
                 cameras = list((await session.execute(camera_query(None))).scalars().all())
             if not cameras:
                 state.value_json = {"camera_id": None}
-                return {
-                    "scanned": 0,
-                    "moved": 0,
-                    "unplaced": 0,
-                    "deferred_autonomy": 0,
-                    "renewed": renewed,
-                    "cursor": None,
-                }
+                return _placement_result(
+                    renewed=renewed,
+                    renewal_budget_exceeded=renewal_budget_exceeded,
+                )
 
             camera_ids = [c.id for c in cameras]
             recording = {
@@ -601,30 +721,16 @@ async def run_placement_once() -> dict:
                     exhausted_moves = True
                     break
 
-                region_id = site_regions.get(
-                    (camera.tenant_id, camera.site_id),
-                    settings.placement_default_region,
-                )
+                region_id = _site_region_id(site_regions, camera)
 
                 for role in ("media", "recording", "ai"):
-                    if role == "recording":
-                        policy = recording.get(camera.id)
-                        if not policy or not policy.enabled:
-                            continue
-                    if role == "ai":
-                        policy = ai.get(camera.id)
-                        if not policy or not policy.enabled:
-                            continue
+                    if not _role_required(role, recording.get(camera.id), ai.get(camera.id)):
+                        continue
 
                     existing = assignments.get((camera.id, role))
-                    current_node = next(
-                        (n for n in nodes if existing is not None and n.id == existing.node_id),
-                        None,
-                    )
-                    if current_node and node_eligible(current_node, role, region_id, now):
-                        _extend_owner_lease(existing, now)
-                        if role == "recording":
-                            recording[camera.id].recording_node_id = current_node.id
+                    kept = _owner_to_keep(nodes, existing, role, region_id, now)
+                    if kept is not None:
+                        _keep_owner(existing, kept, recording, now)
                         continue
 
                     # A partitioned owner keeps executing until lease plus fence
@@ -679,11 +785,12 @@ async def run_placement_once() -> dict:
                 cursor = None
             state.value_json = {"camera_id": cursor}
 
-    return {
-        "scanned": scanned,
-        "moved": moved,
-        "unplaced": unplaced,
-        "deferred_autonomy": deferred_autonomy,
-        "renewed": renewed,
-        "cursor": cursor,
-    }
+    return _placement_result(
+        scanned=scanned,
+        moved=moved,
+        unplaced=unplaced,
+        deferred_autonomy=deferred_autonomy,
+        renewed=renewed,
+        renewal_budget_exceeded=renewal_budget_exceeded,
+        cursor=cursor,
+    )
