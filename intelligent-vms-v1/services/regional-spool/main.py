@@ -183,9 +183,45 @@ class Store:
         conn = sqlite3.connect(self.path, timeout=busy_timeout_ms / 1000)
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
-        conn.execute("PRAGMA journal_mode=WAL")
+        self._enable_wal(conn, busy_timeout_ms=busy_timeout_ms)
         conn.execute("PRAGMA synchronous=FULL")
         return conn
+
+    def _enable_wal(self, conn, *, busy_timeout_ms: int) -> None:
+        """Switch the spool file to WAL, retrying a locked rollback journal.
+
+        PRAGMA journal_mode=WAL raises "database is locked" immediately when
+        the file is still a rollback journal and another connection holds a
+        write transaction. SQLite does not apply busy_timeout to that pragma,
+        so two agents opening one legacy spool at startup lose the race even
+        when the rest of the upgrade waits. Each retry is idempotent. The
+        deadline matches this connection's busy timeout.
+
+        Args:
+            conn: Open connection whose busy timeout is already set.
+            busy_timeout_ms: How long to keep retrying, in milliseconds.
+
+        Returns:
+            None after the file reports journal_mode wal.
+
+        Raises:
+            sqlite3.OperationalError: If WAL is not enabled before the deadline,
+                or the pragma fails for a reason other than a lock.
+        """
+        deadline = time.monotonic() + (busy_timeout_ms / 1000)
+        while True:
+            try:
+                row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
+                continue
+            if row is not None and str(row[0]).lower() == "wal":
+                return
+            if time.monotonic() >= deadline:
+                raise sqlite3.OperationalError("database is locked")
+            time.sleep(0.02)
 
     def _init(self):
         # executescript() commits before it runs, so it cannot stay inside the

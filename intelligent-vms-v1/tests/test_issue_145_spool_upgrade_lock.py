@@ -209,6 +209,84 @@ def test_issue_145_concurrent_openers_wait_out_legacy_upgrade(tmp_path, monkeypa
     assert pending[0]["revision"] == 1
 
 
+def test_issue_145_wal_enable_retries_while_legacy_writer_holds_lock(tmp_path, monkeypatch):
+    """Enabling WAL waits out a rollback-journal writer instead of failing at once.
+
+    PRAGMA journal_mode=WAL raises database is locked immediately, and ignores
+    busy_timeout, while another connection holds a write transaction on a
+    database that is still a rollback journal. Two openers hit that window
+    when they both switch a legacy spool to WAL. This test holds that writer
+    until the opener has entered the pragma. A build that does not retry the
+    pragma loses the opener before the writer releases the lock.
+    """
+    mod = load_spool(tmp_path, monkeypatch)
+    legacy_path = tmp_path / "legacy.db"
+    _write_legacy_spool(legacy_path)
+    holder = sqlite3.connect(legacy_path)
+    holder.execute("BEGIN IMMEDIATE")
+    assert holder.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    real_connect = mod.sqlite3.connect
+    attempted = threading.Event()
+    errors: list[str] = []
+
+    class Proxy:
+        def __init__(self, connection):
+            object.__setattr__(self, "_connection", connection)
+            object.__setattr__(self, "_execute", connection.execute)
+
+        def execute(self, sql, *params):
+            text = sql if isinstance(sql, str) else ""
+            if text.lstrip().upper().startswith("PRAGMA JOURNAL_MODE"):
+                attempted.set()
+            return self._execute(sql, *params)
+
+        def __enter__(self):
+            self._connection.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._connection.__exit__(exc_type, exc, tb)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+        def __setattr__(self, name, value):
+            setattr(self._connection, name, value)
+
+    monkeypatch.setattr(
+        mod.sqlite3,
+        "connect",
+        lambda *args, **kwargs: Proxy(real_connect(*args, **kwargs)),
+    )
+
+    def open_store():
+        try:
+            mod.Store(str(legacy_path), 100)
+        except Exception as exc:
+            errors.append(f"{exc.__class__.__name__}: {exc}")
+
+    opener = threading.Thread(target=open_store)
+    opener.start()
+    assert attempted.wait(timeout=2), "opener did not attempt to enable WAL"
+    # The unfixed pragma returns in the same call. A retry loop is still in
+    # that call's caller 200ms later, because the writer has not released.
+    opener.join(timeout=0.2)
+    still_waiting = opener.is_alive() and errors == []
+    holder.close()
+    opener.join(timeout=5)
+
+    assert still_waiting
+    assert not opener.is_alive()
+    assert errors == []
+    with sqlite3.connect(legacy_path) as db:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        stored = db.execute(
+            "SELECT body_json, attempts, created_at, revision FROM spool_items WHERE id=?",
+            (HEARTBEAT_ID,),
+        ).fetchone()
+    assert stored == (LEGACY_BODY, 3, LEGACY_CREATED_AT, 1)
+
+
 def test_issue_145_interrupted_upgrade_rolls_back_legacy_rows(tmp_path, monkeypatch):
     """A failure during ALTER rolls the schema back and keeps the legacy row.
 
