@@ -506,7 +506,7 @@ def test_explicit_unknown_blocks_a_zero_that_would_look_idle(tmp_path, monkeypat
                 enabled=True,
                 capacity_json={**capacity, "max_recordings": 100},
                 load_json={},
-                heartbeat_at=observed,
+                heartbeat_at=observed - timedelta(hours=1),
                 authority_mode="central_online",
             )
 

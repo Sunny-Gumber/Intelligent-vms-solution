@@ -4,13 +4,15 @@ PostgreSQL cases use the migrated schema (Alembic head 0019) and two sessions.
 ``SHOW transaction_isolation`` is reported with each failure. Every barrier wait
 is bounded. If the other transaction blocks on a row lock, the harness releases
 the holder so that transaction can commit, then lets the blocked side continue.
-That blocked-then-serialised order is a correct outcome. The assertions still
-fail on the current lost-update code.
+That blocked-then-serialised order is a correct outcome. Open races still fail
+on the lost-update handlers. The assertions are the correct outcome.
 
 Accepted fix shapes are documented in
-``docs/qualification/VMS_FIX_033_RACE_REPRODUCTION_REPORT.md``. The tests are
-marked ``known_race`` and deselected from the default suite. They are not
-xfailed.
+``docs/qualification/VMS_FIX_033_RACE_REPRODUCTION_REPORT.md``. Races that are
+still open are marked ``known_race`` and deselected from the default suite.
+They are not xfailed. ``test_out_of_order_heartbeat_does_not_regress`` is the
+VMS-FIX-042 fix: its marker is removed so it runs as a normal PostgreSQL test,
+and its assertion is unchanged.
 
 Run the reproductions::
 
@@ -1073,7 +1075,6 @@ def test_manual_list_expiry_preserves_earlier_stop(postgres_url):
     _fail("manual list-expiry versus earlier stop", isolation, rows)
 
 
-@pytest.mark.known_race
 def test_out_of_order_heartbeat_does_not_regress(postgres_url):
     """An older heartbeat must not replace a newer observation, load, or mode."""
 

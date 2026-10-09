@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import (
@@ -126,7 +126,12 @@ async def heartbeat_node(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_global_admin(allow_node_service=True)),
 ):
-    """Update node load, authority mode and bounded heartbeat freshness.
+    """Update node load, role readiness, authority mode and heartbeat freshness.
+
+    The write is one conditional update. The clamped observation must be
+    strictly newer than the stored heartbeat. An older or equal observation
+    leaves load, role readiness, authority mode and heartbeat_at unchanged.
+    The stored row is returned in both cases.
 
     Args:
         node_id: Infrastructure node sending the heartbeat.
@@ -135,7 +140,7 @@ async def heartbeat_node(
         principal: Global administrator, or the service identity bound to this node.
 
     Returns:
-        Updated NodeRead.
+        Stored NodeRead after the conditional update.
 
     Raises:
         HTTPException: If node identity/scope is invalid or the node is unregistered.
@@ -146,20 +151,30 @@ async def heartbeat_node(
     if not row:
         raise HTTPException(404, "Infrastructure node not registered")
     # FIX-014 lock order: this handler does not take the placement advisory
-    # fence. Do not load this row and then wait on that fence. Readiness is
-    # written on the same row as load and heartbeat_at.
-    # FIX-042 overlap: draft PR #136 replaces these assignments with one
-    # conditional UPDATE keyed by heartbeat_at. role_readiness_json belongs in
-    # that UPDATE's values. Leaving it dirty on the ORM object lets a later
-    # flush write readiness without the heartbeat_at predicate.
+    # fence. Do not load this row and then wait on that fence.
     now = datetime.now(timezone.utc)
     observed_at = payload.observed_at.astimezone(timezone.utc)
     # Delayed regional-spool delivery must not make stale telemetry look fresh.
     # Future node clocks are clamped so they cannot extend placement freshness.
-    row.load_json = dict(payload.load)
-    row.role_readiness_json = persisted_role_readiness(payload, row.roles_json)
-    row.authority_mode = payload.authority_mode
-    row.heartbeat_at = min(observed_at, now)
+    # Do not assign the loaded ORM fields. A dirty object is flushed on commit
+    # and would replace this predicate with the stale observation. Readiness
+    # is in the same UPDATE as load and heartbeat_at (FIX-042).
+    clamped = min(observed_at, now)
+    await session.execute(
+        update(InfrastructureNodeEntity)
+        .where(
+            InfrastructureNodeEntity.id == node_id,
+            InfrastructureNodeEntity.heartbeat_at < clamped,
+        )
+        .values(
+            load_json=dict(payload.load),
+            role_readiness_json=persisted_role_readiness(payload, row.roles_json),
+            authority_mode=payload.authority_mode,
+            heartbeat_at=clamped,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    session.expire(row)
     await session.commit()
     await session.refresh(row)
     return node_read(row)
