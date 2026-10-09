@@ -51,6 +51,33 @@ async def _finalize_if_expired(session: AsyncSession, row: ManualRecordingSessio
     return False
 
 
+async def _expire_listed_session_if_still_active(
+    session: AsyncSession, row: ManualRecordingSessionEntity, now: datetime
+) -> bool:
+    """Stop one listed session only when a locked re-read is still ACTIVE.
+
+    The active list selects without holding the row. An explicit stop can
+    commit ``stopped_at`` in that gap. Re-reading under ``FOR UPDATE`` sees
+    that commit. The stale list object is not assigned, so flush cannot
+    replace the earlier stop with ``max_stop_at``. SQLite has no row lock
+    clause; the same re-read runs without ``FOR UPDATE``.
+    """
+    if row.state != "ACTIVE" or _max_stop(row) > now:
+        return False
+    locked = await session.get(
+        ManualRecordingSessionEntity,
+        row.id,
+        populate_existing=True,
+        with_for_update=session.get_bind().dialect.name == "postgresql",
+    )
+    if locked is None or locked.state != "ACTIVE" or _max_stop(locked) > now:
+        return False
+    locked.state = "STOPPED"
+    locked.stopped_at = _max_stop(locked)
+    await session.flush()
+    return True
+
+
 async def _owned_session(session: AsyncSession, session_id: str, principal: Principal, *, lock: bool = False):
     stmt = select(ManualRecordingSessionEntity).where(ManualRecordingSessionEntity.id == session_id)
     if lock:
@@ -122,7 +149,19 @@ async def active_manual_recordings(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_roles("admin", "operator")),
 ):
-    """Return currently active manual intents visible to this principal."""
+    """Return currently active manual intents visible to this principal.
+
+    Expiry locks the session on PostgreSQL and re-reads ``state``. ``stopped_at``
+    is written only while that locked row is still ``ACTIVE``, so an earlier
+    explicit stop keeps its timestamp.
+
+    Args:
+        session: Database session for this request.
+        principal: Admin or operator whose tenant, site, and ownership filter the list.
+
+    Returns:
+        Sessions that are still ``ACTIVE`` after expiry, oldest start first.
+    """
     stmt = select(ManualRecordingSessionEntity).where(ManualRecordingSessionEntity.state == "ACTIVE")
     if principal.tenant_id != "*":
         stmt = stmt.where(ManualRecordingSessionEntity.tenant_id == principal.tenant_id)
@@ -134,7 +173,7 @@ async def active_manual_recordings(
     now = datetime.now(timezone.utc)
     changed = False
     for row in rows:
-        changed = await _finalize_if_expired(session, row, now) or changed
+        changed = await _expire_listed_session_if_still_active(session, row, now) or changed
     if changed:
         await session.commit()
     return [_read(row) for row in rows if row.state == "ACTIVE"]
