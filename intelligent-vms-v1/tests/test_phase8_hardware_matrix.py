@@ -266,6 +266,12 @@ def test_different_nic_or_storage_identity_does_not_combine_repeats():
 
 
 def test_reproducibility_filter_excludes_unapproved_benchmark_ids():
+    """An unapproved member of the same group stays inside the group verdict.
+
+    The 100000 row shares commit, hardware, and workload with the tight three.
+    Approving only those three must not qualify the group. The omitted id is
+    still recorded as QA-excluded.
+    """
     results = [
         fake_result(benchmark_id="b1", capacity=1000),
         fake_result(benchmark_id="b2", capacity=1010),
@@ -282,8 +288,11 @@ def test_reproducibility_filter_excludes_unapproved_benchmark_ids():
         approved_benchmark_fingerprints=approved,
     )
     role = output["profiles"][0]["roles"]["event_ingest"]
-    assert role["status"] == "QUALIFIED_FROM_MEASURED_EVIDENCE"
-    assert role["observed_capacity_per_node_min"] == 1000
+    assert role["status"] == "UNQUALIFIED"
+    assert "nodes_required" not in role
+    assert "observed_capacity_per_node_min" not in role
+    assert "capacity CV" in role["reason"]
+    assert output["qualified_evidence"] == []
     assert output["qa_filter_applied"] is True
     assert output["qa_excluded_benchmark_ids"] == ["unapproved-fast-run"]
     assert output["qa_fingerprint_mismatch_benchmark_ids"] == []
