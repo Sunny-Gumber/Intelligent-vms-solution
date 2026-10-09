@@ -1260,11 +1260,14 @@ class _MutationWatch:
 
         Returns:
             True when the watch is armed. False when this platform has no
-            inotify or the watch cannot be created.
+            inotify or the watch cannot be created. Windows has no inotify;
+            that is the documented residual, not a crash.
 
         Raises:
             This function does not raise.
         """
+        if sys.platform!="linux":
+            return False
         try:
             libc=ctypes.CDLL(None, use_errno=True)
             init=getattr(libc, "inotify_init1", None)
@@ -1286,7 +1289,7 @@ class _MutationWatch:
                 return False
             self.fd=fd
             return True
-        except (AttributeError, OSError):
+        except (AttributeError, OSError, TypeError, ValueError):
             if self.fd>=0:
                 os.close(self.fd)
                 self.fd=-1

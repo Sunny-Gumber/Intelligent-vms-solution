@@ -489,6 +489,34 @@ def test_restored_private_copy_with_mtime_fails_closed(tmp_path, monkeypatch, ca
     assert payload == {"status": "FAIL", "detail": "ARTIFACT_CHANGED"}
 
 
+def test_inotify_load_failure_keeps_unchanged_verdict(tmp_path, monkeypatch, capsys):
+    """A libc load failure must not traceback. An unchanged copy keeps its verdict."""
+    artifact = tmp_path / "notsigned.exe"
+    _write_pe(artifact, 32)
+
+    def broken_cdll(*args, **kwargs):
+        raise TypeError("argument of type 'NoneType' is not iterable")
+
+    def fake_run(args, **kwargs):
+        stdout = json.dumps({"Status": "NotSigned"})
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(q.ctypes, "CDLL", broken_cdll)
+    monkeypatch.setattr(q, "_authenticode_verification_available", lambda: True, raising=False)
+    monkeypatch.setattr(q.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["qualify.py", "verify-signature", "--artifact", str(artifact), "--expect-unsigned"],
+    )
+    code = q.main()
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert payload["status"] == "UNSIGNED_EXPECTED"
+
+
 def test_signed_valid_and_linux_not_run_exit_zero(tmp_path, monkeypatch, capsys):
     """Valid exits 0 as SIGNED_VALID. The same file on Linux exits 0 as NOT_RUN."""
     artifact = tmp_path / "captured.exe"
