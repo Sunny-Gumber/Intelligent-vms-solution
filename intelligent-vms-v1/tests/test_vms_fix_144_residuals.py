@@ -6,6 +6,7 @@ for a reproducibility group that failed. The capacities 20000, 30000 and
 """
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -100,14 +101,14 @@ def _synthetic_storage(
     }
 
 
-def _storage_demand():
+def _storage_demand(requested=1500.0):
     return {
         "required_roles": {"storage": "storage_write_mbps"},
         "profiles": [
             {
                 "name": "synthetic-probe",
                 "cameras": 1,
-                "demands": {"storage_write_mbps": 1500.0},
+                "demands": {"storage_write_mbps": requested},
             }
         ],
     }
@@ -204,3 +205,187 @@ def test_direct_build_matrix_does_not_qualify_failed_p95_latency_cv_group():
     assert "nodes_required" not in role
     assert output["qualified_evidence"] == []
     assert "p95 latency CV" in role["reason"]
+
+
+def _dispersed_identity_group():
+    """Five synthetic rows in one commit/hardware/workload group.
+
+    1000, 1010 and 1020 are tight. 400 and 2500 make the full group fail
+    capacity CV and relative range. These are fixture numbers, not hardware
+    measurements.
+    """
+    capacities = (
+        ("synthetic-tight-1000", 1000.0),
+        ("synthetic-tight-1010", 1010.0),
+        ("synthetic-tight-1020", 1020.0),
+        ("synthetic-dispersed-400", 400.0),
+        ("synthetic-dispersed-2500", 2500.0),
+    )
+    return [
+        _synthetic_storage(benchmark_id=benchmark_id, aggregate_write_mbps=capacity)
+        for benchmark_id, capacity in capacities
+    ]
+
+
+def _assert_tight_three_still_qualify(results):
+    """The same three tight rows qualify when the dispersed rows are absent."""
+    output = matrix.build_matrix(
+        results=results,
+        demand=_storage_demand(1000.0),
+        approved_benchmark_fingerprints={
+            item["benchmark_id"]: common.result_fingerprint(item) for item in results
+        },
+    )
+    role = output["profiles"][0]["roles"]["storage"]
+    assert role["status"] == "QUALIFIED_FROM_MEASURED_EVIDENCE"
+    assert role["observed_capacity_per_node_min"] == 1000.0
+    assert role["nodes_required"] == 3
+
+
+def test_partial_fingerprint_map_cannot_qualify_dispersed_group():
+    results = _dispersed_identity_group()
+    report = reproducibility.build_report(results=results)
+    assert report["summary"] == {"groups": 1, "passed": 0, "failed": 1}
+    reasons = " ".join(report["groups"][0]["reasons"])
+    assert "capacity CV 0.5887" in reasons
+    assert "capacity relative range 1.7707" in reasons
+
+    tight = results[:3]
+    approved = {
+        item["benchmark_id"]: common.result_fingerprint(item) for item in tight
+    }
+    output = matrix.build_matrix(
+        results=results,
+        demand=_storage_demand(1000.0),
+        approved_benchmark_fingerprints=approved,
+    )
+    rendered = json.dumps(output)
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in rendered
+    assert output["qualified_evidence"] == []
+    role = output["profiles"][0]["roles"]["storage"]
+    assert role["status"] == "UNQUALIFIED"
+    assert "nodes_required" not in role
+    assert "observed_capacity_per_node_min" not in role
+    assert "capacity CV" in role["reason"]
+    assert "capacity relative range" in role["reason"]
+    assert output["qa_excluded_benchmark_ids"] == [
+        "synthetic-dispersed-400",
+        "synthetic-dispersed-2500",
+    ]
+
+    _assert_tight_three_still_qualify(tight)
+    other = _synthetic_storage(
+        benchmark_id="synthetic-other-commit",
+        aggregate_write_mbps=2500.0,
+    )
+    other["environment"]["commit_sha"] = "synthetic-other-commit"
+    separated = matrix.build_matrix(
+        results=[*tight, other],
+        demand=_storage_demand(1000.0),
+        approved_benchmark_fingerprints=approved,
+    )
+    separated_role = separated["profiles"][0]["roles"]["storage"]
+    assert separated_role["status"] == "QUALIFIED_FROM_MEASURED_EVIDENCE"
+    assert separated_role["observed_capacity_per_node_min"] == 1000.0
+    assert separated["qa_excluded_benchmark_ids"] == ["synthetic-other-commit"]
+
+
+def test_cli_subset_reproducibility_report_cannot_qualify_full_results(tmp_path):
+    results = _dispersed_identity_group()
+    tight = results[:3]
+    result_dir = tmp_path / "results"
+    tight_dir = tmp_path / "tight"
+    result_dir.mkdir()
+    tight_dir.mkdir()
+    for item in results:
+        (result_dir / f"{item['benchmark_id']}.json").write_text(
+            json.dumps(item),
+            encoding="utf-8",
+        )
+    for item in tight:
+        (tight_dir / f"{item['benchmark_id']}.json").write_text(
+            json.dumps(item),
+            encoding="utf-8",
+        )
+    demand_path = tmp_path / "demand.json"
+    demand_path.write_text(json.dumps(_storage_demand(1000.0)), encoding="utf-8")
+    report_path = tmp_path / "reproducibility.json"
+    matrix_path = tmp_path / "hardware-matrix.json"
+    tight_report_cli = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_reproducibility.py"),
+            "--results",
+            str(tight_dir),
+            "--output",
+            str(report_path),
+            "--fail-on-rejected-groups",
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert tight_report_cli.returncode == 0, tight_report_cli.stdout + tight_report_cli.stderr
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["summary"]["passed"] == 1
+    assert set(report["groups"][0]["benchmark_ids"]) == {
+        "synthetic-tight-1000",
+        "synthetic-tight-1010",
+        "synthetic-tight-1020",
+    }
+    matrix_cli = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_hardware_matrix.py"),
+            "--results",
+            str(result_dir),
+            "--demand",
+            str(demand_path),
+            "--reproducibility-report",
+            str(report_path),
+            "--output",
+            str(matrix_path),
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert matrix_cli.returncode == 0, matrix_cli.stdout + matrix_cli.stderr
+    produced = json.loads(matrix_path.read_text(encoding="utf-8"))
+    rendered = json.dumps(produced)
+    assert "QUALIFIED_FROM_MEASURED_EVIDENCE" not in rendered
+    role = produced["profiles"][0]["roles"]["storage"]
+    assert role["status"] == "UNQUALIFIED"
+    assert "nodes_required" not in role
+    assert "observed_capacity_per_node_min" not in role
+    assert "covers a subset" in role["reason"]
+    assert "synthetic-dispersed-400" in role["reason"]
+    assert "synthetic-dispersed-2500" in role["reason"]
+
+    tight_matrix_path = tmp_path / "tight-matrix.json"
+    tight_matrix_cli = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS / "phase8_hardware_matrix.py"),
+            "--results",
+            str(tight_dir),
+            "--demand",
+            str(demand_path),
+            "--reproducibility-report",
+            str(report_path),
+            "--output",
+            str(tight_matrix_path),
+        ],
+        cwd=TOOLS.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert tight_matrix_cli.returncode == 0, tight_matrix_cli.stdout + tight_matrix_cli.stderr
+    tight_produced = json.loads(tight_matrix_path.read_text(encoding="utf-8"))
+    tight_role = tight_produced["profiles"][0]["roles"]["storage"]
+    assert tight_role["status"] == "QUALIFIED_FROM_MEASURED_EVIDENCE"
+    assert tight_role["observed_capacity_per_node_min"] == 1000.0
+    assert tight_role["nodes_required"] == 3

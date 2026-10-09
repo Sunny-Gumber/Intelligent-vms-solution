@@ -541,6 +541,81 @@ def _reproducibility_blocking_reasons(
     return blocked
 
 
+def _measured_group_members(
+    results: list[dict[str, Any]],
+) -> dict[tuple[str, str, str], tuple[str, ...]]:
+    """Group parsed benchmark ids by commit, hardware, and workload.
+
+    Args:
+        results: Every supplied benchmark result, including rows a fingerprint
+            map would later drop.
+
+    Returns:
+        Identity key to the benchmark ids that enter one reproducibility group.
+        Rejected rows and rows with null measured fields stay out of that group.
+    """
+    grouped: dict[tuple[str, str, str], list[str]] = {}
+    for result in results:
+        parsed = parse_benchmark_record(result)
+        if isinstance(parsed, Rejection) or parsed.null_measured_reasons:
+            continue
+        key = (parsed.commit_sha, parsed.hardware_key, parsed.workload_key)
+        grouped.setdefault(key, []).append(parsed.benchmark_id)
+    return {key: tuple(member_ids) for key, member_ids in grouped.items()}
+
+
+def _subset_report_blocking_reasons(
+    results: list[dict[str, Any]],
+    covered_benchmark_ids: set[str],
+) -> dict[str, tuple[str, ...]]:
+    """Block a group when the reproducibility report lists only some of its runs.
+
+    Args:
+        results: Every supplied benchmark result.
+        covered_benchmark_ids: Benchmark ids named by the reproducibility report,
+            including FAIL groups.
+
+    Returns:
+        Benchmark ids mapped to one subset-coverage reason. A group the report
+        does not mention at all is omitted, so an unrelated file cannot block
+        a fully covered group.
+    """
+    blocked: dict[str, tuple[str, ...]] = {}
+    for member_ids in _measured_group_members(results).values():
+        missing = sorted({member_id for member_id in member_ids if member_id not in covered_benchmark_ids})
+        covered = [member_id for member_id in member_ids if member_id in covered_benchmark_ids]
+        if not covered or not missing:
+            continue
+        reason = (
+            "reproducibility report covers a subset of the commit/hardware/workload group; "
+            "missing benchmark IDs: " + ", ".join(missing)
+        )
+        for member_id in member_ids:
+            blocked[str(member_id)] = (reason,)
+    return blocked
+
+
+def _merge_blocking_reasons(
+    *blocking_maps: dict[str, tuple[str, ...]],
+) -> dict[str, tuple[str, ...]]:
+    """Combine blocking reasons without dropping either source.
+
+    Args:
+        blocking_maps: Benchmark-id maps from independent fail-closed checks.
+
+    Returns:
+        One map whose reasons stay in first-seen order.
+    """
+    merged: dict[str, list[str]] = {}
+    for blocking in blocking_maps:
+        for benchmark_id, reasons in blocking.items():
+            bucket = merged.setdefault(str(benchmark_id), [])
+            for reason in reasons:
+                if reason not in bucket:
+                    bucket.append(reason)
+    return {benchmark_id: tuple(reasons) for benchmark_id, reasons in merged.items()}
+
+
 def _role_reproducibility_reason(
     evidence: list[Evidence],
     blocked: dict[str, tuple[str, ...]],
@@ -589,6 +664,7 @@ def build_matrix(
     design_headroom_fraction: float = 0.80,
     n_plus_one: bool = True,
     approved_benchmark_fingerprints: dict[str, str] | None = None,
+    reproducibility_report_benchmark_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Build deployment node requirements strictly from qualified measured evidence.
 
@@ -597,11 +673,13 @@ def build_matrix(
     That uniqueness is enforced in this function, including when no reproducibility
     report is supplied. A direct call also refuses a record that failed the
     reproducibility percentile-order or thermal-limit check. The same call
-    applies the reproducibility group verdict: capacity CV, capacity relative
-    range, and p95 latency CV use the reproducibility defaults. A failed group
-    cannot become QUALIFIED_FROM_MEASURED_EVIDENCE, including when approved
-    fingerprints are passed in. repeat_count is the number of unique content
-    fingerprints.
+    applies the reproducibility group verdict to every supplied result that
+    shares commit, hardware, and workload identity, before approved fingerprints
+    can drop a member. Capacity CV, capacity relative range, and p95 latency CV
+    use the reproducibility defaults. Omitting the dispersed members from the
+    fingerprint map cannot qualify the rest. When reproducibility report ids are
+    supplied, a report that names only part of that group fails closed too.
+    repeat_count is the number of unique content fingerprints.
     The fingerprint omits descriptive hardware text, notes, timestamps, and
     volatile host state such as storage_free_bytes. That text is part of the
     shared hardware key instead. Byte-identical aggregated measurements fail
@@ -623,6 +701,9 @@ def build_matrix(
         design_headroom_fraction: Fraction of observed capacity usable for design.
         n_plus_one: Whether one spare node is added to required nonzero roles.
         approved_benchmark_fingerprints: Optional reproducibility-approved IDs/fingerprints.
+        reproducibility_report_benchmark_ids: Benchmark ids listed in the report,
+            including FAIL groups. None skips the subset-coverage check. The CLI
+            passes every id the report names.
 
     Returns:
         Hardware matrix with policy, qualified/rejected evidence and profile results.
@@ -635,6 +716,27 @@ def build_matrix(
         raise ValueError("design_headroom_fraction must be in (0, 1]")
     if min_repeats < 1:
         raise ValueError("min_repeats must be >= 1")
+
+    supplied_results = list(results)
+    blocked = _reproducibility_blocking_reasons(
+        supplied_results,
+        min_repeats=min_repeats,
+        min_duration_seconds=min_duration_seconds,
+        min_warmup_seconds=min_warmup_seconds,
+        max_failure_rate=max_failure_rate,
+        max_capacity_cv=max_capacity_cv,
+        max_p95_latency_cv=max_p95_latency_cv,
+        max_capacity_relative_range=max_capacity_relative_range,
+        require_thermal=require_thermal,
+    )
+    if reproducibility_report_benchmark_ids is not None:
+        blocked = _merge_blocking_reasons(
+            blocked,
+            _subset_report_blocking_reasons(
+                supplied_results,
+                reproducibility_report_benchmark_ids,
+            ),
+        )
 
     qa_excluded = []
     qa_fingerprint_mismatches = []
@@ -671,17 +773,6 @@ def build_matrix(
         )
         is not None
     ]
-    blocked = _reproducibility_blocking_reasons(
-        results,
-        min_repeats=min_repeats,
-        min_duration_seconds=min_duration_seconds,
-        min_warmup_seconds=min_warmup_seconds,
-        max_failure_rate=max_failure_rate,
-        max_capacity_cv=max_capacity_cv,
-        max_p95_latency_cv=max_p95_latency_cv,
-        max_capacity_relative_range=max_capacity_relative_range,
-        require_thermal=require_thermal,
-    )
     eligible = [
         item
         for item in evidence
@@ -851,6 +942,40 @@ def approved_fingerprints_from_reproducibility_report(path: str) -> dict[str, st
     return approved
 
 
+def benchmark_ids_from_reproducibility_report(path: str) -> set[str]:
+    """Load every benchmark id named by a reproducibility report.
+
+    PASS and FAIL groups both count. The matrix CLI uses this set to see
+    whether the report omitted a member of a commit/hardware/workload group
+    that is still present in the result files.
+
+    Args:
+        path: Phase-8 reproducibility report JSON path.
+
+    Returns:
+        Benchmark ids listed on groups or in group fingerprint maps.
+
+    Raises:
+        ValueError: If the report version is unsupported or a JSON key repeats.
+        OSError: If the report cannot be read.
+        json.JSONDecodeError: If the report is not valid JSON.
+    """
+    report = loads_benchmark_json(Path(path).read_text(encoding="utf-8"))
+    if report.get("report_version") != "phase8-reproducibility-v1":
+        raise ValueError("unsupported reproducibility report")
+    covered: set[str] = set()
+    for group in report.get("groups", []):
+        if not isinstance(group, dict):
+            continue
+        member_ids = group.get("benchmark_ids")
+        if isinstance(member_ids, list):
+            covered.update(str(member_id) for member_id in member_ids)
+        fingerprints = group.get("benchmark_fingerprints")
+        if isinstance(fingerprints, dict):
+            covered.update(str(member_id) for member_id in fingerprints)
+    return covered
+
+
 def _fail_closed_matrix(reason: str) -> dict[str, Any]:
     """Build a minimal unqualified matrix that is always safe to serialize.
 
@@ -913,10 +1038,14 @@ def main():
         approved_fingerprints = approved_fingerprints_from_reproducibility_report(
             args.reproducibility_report
         )
+        covered_benchmark_ids = benchmark_ids_from_reproducibility_report(
+            args.reproducibility_report
+        )
         matrix = build_matrix(
             results=results,
             demand=demand,
             approved_benchmark_fingerprints=approved_fingerprints,
+            reproducibility_report_benchmark_ids=covered_benchmark_ids,
             min_repeats=args.min_repeats,
             min_duration_seconds=args.min_duration_seconds,
             min_warmup_seconds=args.min_warmup_seconds,
