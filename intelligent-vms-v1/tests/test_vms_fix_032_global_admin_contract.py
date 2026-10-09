@@ -125,6 +125,9 @@ OTHER_SERVICE_ROOTS = (
     "services/onvif-event-worker/main.py",
 )
 NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+# Older than HEARTBEAT_BODY observed_at. An authorized heartbeat is then the
+# newest observation, so these authorization tests still see the write.
+HEARTBEAT_SEED_AT = datetime(2026, 10, 7, 0, 0, tzinfo=timezone.utc)
 NODE_BODY = {
     "name": "renamed-by-tenant-admin",
     "region_id": "region-other",
@@ -366,7 +369,7 @@ def test_tenant_admin_cannot_register_configure_or_drain_nodes():
 def test_tenant_admin_cannot_heartbeat_and_global_admin_can():
     async def scenario():
         async with _api(placement.router) as (client, sessions, holder):
-            await _seed_nodes(sessions)
+            await _seed_nodes(sessions, heartbeat_at=HEARTBEAT_SEED_AT)
             before = await _one(sessions, InfrastructureNodeEntity, "node-a")
             holder["principal"] = _admin("tenant-a")
             denied = await client.post(
@@ -392,7 +395,7 @@ def test_tenant_admin_cannot_heartbeat_and_global_admin_can():
 def test_node_service_can_heartbeat_only_its_node():
     async def scenario():
         async with _api(placement.router) as (client, sessions, holder):
-            await _seed_nodes(sessions)
+            await _seed_nodes(sessions, heartbeat_at=HEARTBEAT_SEED_AT)
             before = await _one(sessions, InfrastructureNodeEntity, "node-a")
             holder["principal"] = _service("node-b")
             denied = await client.post(
