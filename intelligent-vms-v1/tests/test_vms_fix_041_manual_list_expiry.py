@@ -252,6 +252,124 @@ def test_list_expiry_keeps_an_earlier_explicit_stop(postgres_url):
     asyncio.run(_earlier_stop_kept(postgres_url))
 
 
+def _is_recent_list(statement) -> bool:
+    """True for the recent-history select, not stop's id lookup or the active list."""
+    rendered = " ".join(str(statement).split())
+    return "manual_recording_sessions" in rendered and " ORDER BY " in rendered and " DESC" in rendered
+
+
+async def _recent_stop_kept(url: str) -> None:
+    """Recent selects, stop commits, then recent expiry must not rewrite stopped_at."""
+    engine = create_async_engine(
+        url,
+        connect_args={"server_settings": {"lock_timeout": "8s", "statement_timeout": "15s"}},
+    )
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    camera_id = "fix041-cam-recent"
+    session_id = "fix041-manual-recent"
+    max_stop = T0 + timedelta(seconds=100)
+    stop_at = T0 + timedelta(seconds=40)
+    try:
+        async with sessions() as session:
+            isolation = (await session.execute(text("SHOW transaction_isolation"))).scalar_one()
+            await session.rollback()
+        assert isolation == "read committed"
+        await _insert(sessions, camera_id, session_id, max_stop)
+
+        phase = {"mode": "list"}
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if phase["mode"] == "stop":
+                    return stop_at
+                return max_stop
+
+        original_dt = manual_recordings.datetime
+        original_execute = AsyncSession.execute
+        listed = asyncio.Event()
+        release = asyncio.Event()
+
+        async def wrapped_execute(self, statement, *args, **kwargs):
+            result = await original_execute(self, statement, *args, **kwargs)
+            if _is_recent_list(statement):
+                listed.set()
+                try:
+                    await asyncio.wait_for(release.wait(), HOLDER_TIMEOUT)
+                except asyncio.TimeoutError:
+                    return result
+            return result
+
+        manual_recordings.datetime = Clock
+        AsyncSession.execute = wrapped_execute
+        listing = None
+        try:
+            async def do_recent():
+                async with sessions() as session:
+                    return await manual_recordings.recent_manual_recordings(20, session, ADMIN)
+
+            async def do_stop():
+                async with sessions() as session:
+                    return await manual_recordings.stop_manual_recording(session_id, session, ADMIN)
+
+            listing = asyncio.create_task(do_recent())
+            await asyncio.wait_for(listed.wait(), HOLDER_TIMEOUT)
+            phase["mode"] = "stop"
+            stopped = await asyncio.wait_for(do_stop(), HOLDER_TIMEOUT)
+            async with sessions() as session:
+                midpoint = await session.get(ManualRecordingSessionEntity, session_id)
+            assert midpoint.stopped_at == stop_at
+            phase["mode"] = "list"
+            release.set()
+            visible = await asyncio.wait_for(listing, HOLDER_TIMEOUT)
+        finally:
+            AsyncSession.execute = original_execute
+            manual_recordings.datetime = original_dt
+            release.set()
+            if listing is not None and not listing.done():
+                listing.cancel()
+                await asyncio.gather(listing, return_exceptions=True)
+
+        state, stored_stop = await _stored(sessions, session_id)
+        assert stopped.state == "STOPPED"
+        assert stopped.stopped_at == stop_at
+        assert state == "STOPPED"
+        assert stored_stop == stop_at
+        assert stored_stop != max_stop
+        assert [item.id for item in visible] == [session_id]
+        assert visible[0].state == "STOPPED"
+        assert visible[0].stopped_at == stop_at
+
+        cap_camera = "fix041-cam-recent-cap"
+        cap_session = "fix041-manual-recent-cap"
+        try:
+            await _insert(sessions, cap_camera, cap_session, max_stop)
+            manual_recordings.datetime = type(
+                "RecentCapClock",
+                (datetime,),
+                {"now": classmethod(lambda cls, tz=None: max_stop)},
+            )
+            async with sessions() as session:
+                visible = await manual_recordings.recent_manual_recordings(20, session, ADMIN)
+            state, stored_stop = await _stored(sessions, cap_session)
+            assert state == "STOPPED"
+            assert stored_stop == max_stop
+            shown = {item.id: item for item in visible}
+            assert shown[cap_session].state == "STOPPED"
+            assert shown[cap_session].stopped_at == max_stop
+        finally:
+            manual_recordings.datetime = original_dt
+            await _delete(sessions, cap_camera, cap_session)
+    finally:
+        await _delete(sessions, camera_id, session_id)
+        await engine.dispose()
+
+
+def test_recent_list_expiry_keeps_an_earlier_explicit_stop(postgres_url):
+    """A committed stop at 12:00:40Z stays there when recent-list expiry runs afterwards."""
+    asyncio.run(_recent_stop_kept(postgres_url))
+
+
 def test_sqlite_cap_expiry_stops_an_active_session_at_max_stop():
     """The default SQLite database still finalizes an overdue active session."""
 
@@ -272,14 +390,27 @@ def test_sqlite_cap_expiry_stops_an_active_session_at_max_stop():
                 {"now": classmethod(lambda cls, tz=None: max_stop)},
             )
             async with sessions() as session:
-                visible = await manual_recordings.active_manual_recordings(session, ADMIN)
+                active = await manual_recordings.active_manual_recordings(session, ADMIN)
             state, stored_stop = await _stored(sessions, session_id)
             # SQLite returns TIMESTAMP values without tzinfo. The column is UTC.
             if stored_stop is not None and stored_stop.tzinfo is None:
                 stored_stop = stored_stop.replace(tzinfo=timezone.utc)
-            assert visible == []
+            assert active == []
             assert state == "STOPPED"
             assert stored_stop == max_stop
+
+            camera_recent = "fix041-sqlite-recent-cam"
+            session_recent = "fix041-sqlite-recent"
+            await _insert(sessions, camera_recent, session_recent, max_stop)
+            async with sessions() as session:
+                recent = await manual_recordings.recent_manual_recordings(20, session, ADMIN)
+            state, stored_stop = await _stored(sessions, session_recent)
+            if stored_stop is not None and stored_stop.tzinfo is None:
+                stored_stop = stored_stop.replace(tzinfo=timezone.utc)
+            assert state == "STOPPED"
+            assert stored_stop == max_stop
+            shown = {item.id: item for item in recent}
+            assert shown[session_recent].stopped_at.replace(tzinfo=timezone.utc) == max_stop
         finally:
             manual_recordings.datetime = original_dt
             await engine.dispose()
