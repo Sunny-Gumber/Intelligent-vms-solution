@@ -101,6 +101,28 @@ python tools/phase8_storage_benchmark.py \
 
 Use `--fsync` when the target production write policy requires it. This measures storage write baseline only; it does not certify end-to-end VMS recording throughput.
 
+### Evidence files
+
+A new invocation of the reconnect benchmark or the storage benchmark removes a regular file
+or symlink at `--output-json` before it runs. That path is the latest invocation. A failed
+new run does not put the previous file back. Two overlapping invocations of the same
+`--output-json` are not a way to keep every process that exits 0.
+
+JSON and the optional CSV are published by replacing a private temporary file created with
+`tempfile.mkstemp` in the destination directory (mode `0600`). The tool fsyncs that file,
+replaces the destination, then fsyncs the directory. It does not write the destination
+again after that replace. A process killed with `SIGKILL` while a temporary file is still
+being written can leave `<output>.<random>.partial` behind. The next run does not search
+the directory and does not delete arbitrary temporary files to clean those up. Remove a
+leftover temporary file by hand if you need the disk space.
+
+The storage benchmark also removes a regular file at the legacy `<name>.partial` path once
+during that startup pass. A symlink there is left alone. Both benchmarks fail before
+deleting anything when `--output-json` or that legacy path is a directory.
+
+`tcp-reconnect-storm` is not a hardware-qualification workload. The storage tool measures a
+write baseline only.
+
 ## Scale progression
 
 Do not jump directly to a 100K claim.
