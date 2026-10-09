@@ -1477,9 +1477,11 @@ def _tcp_open(host: str, port: int) -> bool:
 def _authority_database_urls():
     """SQLite always. PostgreSQL when a local server is accepting connections.
 
-    The hosted unit job has no PostgreSQL service. This is not a skip of a
-    failing assertion: the SQLite case is collected everywhere, and the
-    PostgreSQL case is collected when the server is up.
+    The hosted unit job does not start PostgreSQL, so it collects only SQLite.
+    The vms-postgres job publishes a disposable server on 127.0.0.1:5432 with
+    synthetic user vms and database vms_fix_014, which is the probe below.
+    This is not a skip of a failing assertion: the SQLite case is collected
+    everywhere, and the PostgreSQL case is collected when the server is up.
     """
     urls = ["sqlite"]
     configured = os.environ.get("VMS_PLACEMENT_AUTHORITY_TEST_DATABASE_URL")
