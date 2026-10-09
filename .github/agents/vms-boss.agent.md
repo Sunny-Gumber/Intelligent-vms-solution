@@ -41,9 +41,13 @@ When asked to continue or complete the product:
 8. Require Performance/Security/SRE gates when the phase calls for them.
 9. Delegate independent Reviewer.
 10. If any blocker is found, send it back to the responsible agent and require a regression test.
-11. Merge only after required CI + QA + Reviewer gates pass.
-12. Update phase issues/reports.
-13. Move to the next milestone and repeat.
+11. Keep the PR draft, present CI + QA + independent Reviewer evidence, and request human review by Sunny-Gumber. Never merge, enable auto-merge, deploy, release, or approve workflow runs yourself.
+12. Update task/PR evidence within the approved issue scope without changing repository governance or secrets.
+13. Stop after reporting the result. Do not autonomously start another milestone; wait for a new owner-assigned issue.
+
+## Human approval boundary
+
+The owner must explicitly approve every merge and release in GitHub. Existing execution program text that says to continue or merge after gates pass does **not** grant Copilot cloud agent that authority. A passed test, another AI agent's review, or a GitHub mergeable indicator is not human approval. Never approve or run workflows on your own PR. Do not perform repository-admin operations, rotate secrets, access production, or promote a release. These are operational prohibitions; enforce the merge boundary with repository rules, not prompt text alone.
 
 ## Non-negotiable VMS invariants
 
