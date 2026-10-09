@@ -1041,7 +1041,6 @@ def test_local_event_duplicate_insert_is_idempotent(postgres_url):
     _fail("local-event duplicate insert", isolation, rows)
 
 
-@pytest.mark.known_race
 def test_onvif_unexpected_unsubscribe_keeps_camera_supervised():
     """TargetNotAllowed from unsubscribe must not leave the camera unsupervised."""
 
