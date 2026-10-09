@@ -4,19 +4,23 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
+import os  # CLI tests patch os.replace here; atomic publish uses the same module.
 import stat
-import tempfile
 import time
 from collections.abc import Awaitable
 from pathlib import Path
 from typing import TypeVar
 
+import phase8_atomic_publish as atomic_publish
 from phase8_benchmark_common import SystemSampler, build_result, utc_iso, write_result
 
 
 LOG = logging.getLogger(__name__)
 _T = TypeVar("_T")
+# How long shutdown waits for a task that was cancelled. A workload that
+# ignores CancelledError fails the run when this elapses. Cooperative
+# attempt() calls return as soon as they are cancelled.
+_SHUTDOWN_JOIN_SECONDS = 5.0
 
 
 async def attempt(host: str, port: int, timeout: float) -> tuple[bool, float]:
@@ -206,6 +210,132 @@ async def _await_releasing_cancellation(awaitable: Awaitable[_T]) -> _T:
                 current.cancel()
 
 
+def _contained_task_outcome(task: asyncio.Task[object]) -> object:
+    """Return a finished task's result, including a stored exception.
+
+    ``asyncio.gather(..., return_exceptions=True)`` yields exception instances
+    instead of raising them. Shutdown uses ``asyncio.wait`` and then reads each
+    task the same way. A cancelled task becomes ``CancelledError`` so callers
+    can ignore the cancellation they requested.
+
+    Args:
+        task: Finished worker, producer, or sampler task.
+
+    Returns:
+        The task's return value, or the exception it stored.
+
+    Raises:
+        InvalidStateError: If ``task`` is not done.
+        asyncio.CancelledError: Not raised. A cancelled task returns an instance.
+    """
+    if task.cancelled():
+        try:
+            task.exception()
+        except asyncio.CancelledError as exc:
+            # task.exception() raises the CancelledError the coroutine stored,
+            # including its message. A fresh CancelledError would drop that text.
+            return exc
+        return asyncio.CancelledError("reconnect benchmark worker cancelled")
+    error = task.exception()
+    if error is not None:
+        return error
+    return task.result()
+
+
+async def _await_finished_task(task: asyncio.Task[object]) -> object:
+    """Wait until ``task`` finishes, failing when it ignores cancellation.
+
+    Args:
+        task: Drive or sampler task. A task that is already done is not waited
+            on again.
+
+    Returns:
+        The task's return value. A returned ``BaseException`` is a value, not
+        a raised error. ``drive_measured`` uses that for ``KeyboardInterrupt``
+        and ``SystemExit``.
+
+    Raises:
+        RuntimeError: ``task`` was still pending after ``_SHUTDOWN_JOIN_SECONDS``.
+        BaseException: The exception stored on ``task``, including
+            ``CancelledError`` when the task itself was cancelled.
+    """
+    if not task.done():
+        _done, pending = await _await_releasing_cancellation(
+            asyncio.wait({task}, timeout=_SHUTDOWN_JOIN_SECONDS)
+        )
+        if pending:
+            LOG.error("reconnect benchmark shutdown timed out; a workload ignored cancellation")
+            raise RuntimeError(
+                "reconnect benchmark shutdown timed out; a workload ignored cancellation"
+            )
+    if task.cancelled():
+        # Re-raise the stored CancelledError so its message is preserved.
+        task.exception()
+    return task.result()
+
+
+def _run_benchmark(awaitable: Awaitable[_T]) -> _T:
+    """Run ``awaitable`` and abandon tasks that ignore cancellation.
+
+    ``asyncio.run`` waits until every task finishes during loop shutdown. A
+    workload that swallows ``CancelledError`` would keep that wait open. This
+    runner closes the loop after ``_SHUTDOWN_JOIN_SECONDS`` and lets the
+    original benchmark error propagate.
+
+    Args:
+        awaitable: Benchmark coroutine, normally ``run(args)``.
+
+    Returns:
+        The awaitable's result when it finishes.
+
+    Raises:
+        BaseException: The awaitable's error, after leftover tasks have been
+            cancelled and either finished or abandoned.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        task = loop.create_task(awaitable)
+        try:
+            return loop.run_until_complete(task)
+        finally:
+            _abandon_tasks_that_ignore_cancellation(loop)
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
+def _abandon_tasks_that_ignore_cancellation(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel leftover tasks and stop waiting after the shutdown bound.
+
+    Args:
+        loop: Loop that just finished the benchmark task.
+
+    Returns:
+        None. Tasks still pending after the bound are left for ``loop.close``.
+        Closing the loop does not wait for them.
+
+    Raises:
+        None. Failures while cancelling are logged. The benchmark error that
+        is already in flight stays the error the caller sees.
+    """
+    pending = [item for item in asyncio.all_tasks(loop) if not item.done()]
+    for item in pending:
+        item.cancel()
+    if not pending:
+        return
+    try:
+        loop.run_until_complete(asyncio.wait(set(pending), timeout=_SHUTDOWN_JOIN_SECONDS))
+    except Exception:
+        LOG.exception("reconnect benchmark failed while abandoning tasks")
+    leftover = [item for item in pending if not item.done()]
+    if leftover:
+        LOG.error(
+            "reconnect benchmark abandoned %s task(s) that ignored cancellation",
+            len(leftover),
+        )
+
+
 async def run(args) -> dict:
     """Run the configured reconnect workload and build benchmark evidence.
 
@@ -230,7 +360,9 @@ async def run(args) -> dict:
         RuntimeError: A successful ``SystemExit`` from a worker, the sampler,
             setup, teardown, or result building is rewritten to this so the
             process cannot exit 0. Also raised when recorded attempts do not
-            match the attempts that were dequeued or configured.
+            match the attempts that were dequeued or configured, and when a
+            cancelled worker or sampler is still running after
+            ``_SHUTDOWN_JOIN_SECONDS`` because it ignored cancellation.
     """
     queue: asyncio.Queue[int | None] = asyncio.Queue(maxsize=max(1, args.concurrency * 4))
     latencies: list[float] = []
@@ -330,16 +462,25 @@ async def run(args) -> dict:
                     break
         finally:
             shutdown_requested = True
+            tasks = (*workers, enqueue_task, watch_task)
             try:
-                for task in (*workers, enqueue_task, watch_task):
+                for task in tasks:
                     if not task.done():
                         requested_cancel.add(task)
                         task.cancel()
-                outcomes = await _await_releasing_cancellation(
-                    asyncio.gather(*workers, enqueue_task, watch_task, return_exceptions=True)
+                _done, pending = await _await_releasing_cancellation(
+                    asyncio.wait(set(tasks), timeout=_SHUTDOWN_JOIN_SECONDS)
                 )
+                if pending:
+                    LOG.error(
+                        "reconnect benchmark shutdown timed out; a workload ignored cancellation"
+                    )
+                    raise RuntimeError(
+                        "reconnect benchmark shutdown timed out; a workload ignored cancellation"
+                    )
                 _drain_queue(queue)
-                for task, outcome in zip((*workers, enqueue_task, watch_task), outcomes, strict=True):
+                for task in tasks:
+                    outcome = _contained_task_outcome(task)
                     if not isinstance(outcome, BaseException):
                         continue
                     if isinstance(outcome, asyncio.CancelledError) and task in requested_cancel:
@@ -356,7 +497,8 @@ async def run(args) -> dict:
                         )
             except BaseException as exc:
                 # A teardown SystemExit(0) must not replace a worker failure or
-                # exit the process with status 0.
+                # exit the process with status 0. A shutdown timeout is a
+                # teardown failure as well: the run must not publish.
                 teardown_error = exc
         if isinstance(teardown_error, KeyboardInterrupt):
             _raise_failed(teardown_error, source="teardown")
@@ -449,7 +591,7 @@ async def run(args) -> dict:
         drive_task.cancel()
     drive_error: BaseException | None = None
     try:
-        drive_outcome = await _await_releasing_cancellation(drive_task)
+        drive_outcome = await _await_finished_task(drive_task)
     except BaseException as exc:
         drive_error = exc
     else:
@@ -461,7 +603,7 @@ async def run(args) -> dict:
         sample_task.cancel()
     sample_error: BaseException | None = None
     try:
-        sample_outcome = await _await_releasing_cancellation(sample_task)
+        sample_outcome = await _await_finished_task(sample_task)
     except BaseException as exc:
         sample_error = exc
     else:
@@ -596,84 +738,62 @@ def _discard_stale_destination(json_path: Path) -> None:
     json_path.unlink(missing_ok=True)
 
 
-def _create_staging_file(json_path: Path) -> Path:
-    """Create an exclusive temporary JSON file beside the destination.
-
-    ``tempfile.mkstemp`` uses ``O_EXCL``, so two runs of the same
-    ``--output-json`` do not share one staging file. The name is
-    ``<output>.<random>.partial`` in the destination directory.
-
-    Args:
-        json_path: Final ``--output-json`` path.
-
-    Returns:
-        The new file path. The caller owns it until ``os.replace`` renames it
-        or the caller unlinks it.
-
-    Raises:
-        OSError: If the directory cannot be created or the file cannot be
-            created exclusively.
-    """
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(
-        dir=json_path.parent,
-        prefix=f"{json_path.name}.",
-        suffix=".partial",
-    )
-    os.close(descriptor)
-    return Path(name)
-
-
-def _unlink_owned_staging(staging: Path) -> None:
-    """Remove the temporary file this run created.
-
-    Args:
-        staging: Path returned by ``_create_staging_file`` for this run.
-
-    Returns:
-        None after that path is absent. The destination is not removed, even
-        when ``os.replace`` has already moved this file onto it: after a
-        successful replace the temporary name no longer exists.
-
-    Raises:
-        OSError: If the temporary file exists and cannot be removed.
-    """
-    staging.unlink(missing_ok=True)
-
-
 def _publish_benchmark_result(result: dict, json_path: Path, csv_path: str | None) -> None:
-    """Publish JSON only after a successful run, by atomic replace.
+    """Publish JSON and the optional CSV through the shared atomic helper.
 
-    The JSON is written to a private temporary file, then ``os.replace`` moves
-    that file onto ``--output-json``. The CSV row is appended only after that
-    replace returns. A failure before the replace unlinks the temporary file
-    and leaves the destination untouched, so a sibling run's published JSON
-    stays in place. A CSV failure after the replace also leaves the destination
-    in place.
+    Each file is written to a private ``tempfile.mkstemp`` file, fsynced,
+    replaced, and then the directory is fsynced. The JSON file is not opened
+    again after its replace, so the CSV publish cannot truncate it. A failure
+    unlinks only the temporary file that replace has not yet committed. An
+    unlink error does not replace the original publish error.
+
+    A ``SIGKILL`` during the temporary write skips that unlink. The leftover
+    ``<output>.<random>.partial`` file stays in the destination directory.
+    This function does not delete unrelated files to clean that up.
 
     Args:
         result: Completed benchmark result dictionary.
         json_path: Destination JSON evidence path.
-        csv_path: Optional append-only CSV summary path.
+        csv_path: Optional CSV summary path.
 
     Returns:
         None after the destination JSON is this run's evidence. When
-        ``csv_path`` is set, the CSV row is appended after the replace.
+        ``csv_path`` is set, that file is replaced after the JSON replace.
 
     Raises:
         Exception: Validation or filesystem failures from ``write_result`` or
-            ``os.replace``. The temporary file is removed when the replace has
-            not committed it.
+            the atomic replace. The temporary file is removed when the replace
+            has not committed it. The destination JSON is left in place when
+            the failure happens after that replace.
     """
-    staging = _create_staging_file(json_path)
+    atomic_publish.publish_benchmark_evidence(
+        result,
+        json_path,
+        csv_path,
+        write_result=write_result,
+    )
+
+
+def _require_positive_attempts(value: str) -> int:
+    """Reject a reconnect workload that would publish zero attempts.
+
+    Args:
+        value: Text from ``--attempts``.
+
+    Returns:
+        The attempt count when it is an integer greater than or equal to 1.
+
+    Raises:
+        argparse.ArgumentTypeError: The value is not an integer or is below 1.
+            ``argparse`` exits before any evidence file is removed.
+    """
     try:
-        write_result(result, json_path=str(staging), csv_path=None)
-        os.replace(staging, json_path)
-    except BaseException:
-        _unlink_owned_staging(staging)
-        raise
-    if csv_path:
-        write_result(result, json_path=str(json_path), csv_path=csv_path)
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("attempts must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("attempts must be >= 1")
+    return parsed
 
 
 def main():
@@ -686,16 +806,28 @@ def main():
 
     After those checks, a regular file or symlink at ``--output-json`` is
     removed once, before the benchmark, so this process's own failure cannot
-    be read as a previous run. That removal is not repeated. Each run then
-    writes JSON to its own ``<output>.<random>.partial`` file in the same
-    directory and ``os.replace`` moves it onto the destination. Cleanup of a
-    failed replace unlinks only that temporary file. It does not unlink the
-    destination, so a sibling process that published after this process
-    started keeps the file from the run that exited 0. A later invocation of
-    the same path may clear it at that invocation's startup; that is a new
-    run. The CSV row is appended only after ``os.replace`` returns, and the
-    CSV is not deleted when a later run fails. ``--help`` and argument errors
-    still exit from ``argparse`` before any file is removed.
+    be read as a previous run. That removal is the latest-run rule: a later
+    invocation clears the path at its own startup, and a failure does not put
+    the previous file back. Two overlapping invocations of the same path are
+    not a way to keep every process that exits 0. The removal is not repeated
+    after the run starts.
+
+    Each output is then published by ``phase8_atomic_publish``: a private
+    ``<output>.<random>.partial`` file created with ``tempfile.mkstemp`` in
+    mode ``0600``, an ``fsync`` of that file, ``os.replace``, and an ``fsync``
+    of the directory. Nothing is written to a file after its replace. Cleanup
+    of a failed replace unlinks only that temporary file and keeps the original
+    exception if the unlink fails. It does not unlink the destination, so a
+    sibling process that published after this process started keeps the file
+    from the run that exited 0. The CSV is a separate replace, not a rewrite
+    of the JSON, and it is not deleted when a later run fails.
+
+    ``SIGKILL`` while a temporary file is still open leaves that file behind.
+    The next run does not delete arbitrary files to remove it. ``--help`` and
+    argument errors, including ``--attempts`` below 1, still exit from
+    ``argparse`` before any file is removed. Shutdown of a workload that
+    ignores cancellation is bounded by ``_SHUTDOWN_JOIN_SECONDS`` and fails
+    the run.
 
     Args:
         None. Arguments are read from the process command line.
@@ -717,7 +849,7 @@ def main():
     parser = argparse.ArgumentParser(description="Phase 8 TCP reconnect benchmark")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8554)
-    parser.add_argument("--attempts", type=int, default=10000)
+    parser.add_argument("--attempts", type=_require_positive_attempts, default=10000)
     parser.add_argument("--warmup-attempts", type=int, default=100)
     parser.add_argument("--concurrency", type=int, default=100)
     parser.add_argument("--timeout", type=float, default=2.0)
@@ -729,7 +861,7 @@ def main():
     _refuse_unsafe_evidence_paths(json_path)
     _discard_stale_destination(json_path)
     try:
-        result = asyncio.run(run(args))
+        result = _run_benchmark(run(args))
         _publish_benchmark_result(result, json_path, args.output_csv)
     except BaseException as exc:
         _raise_failed(exc, source="publish")

@@ -7,11 +7,13 @@ import contextvars
 import errno
 import logging
 import os
+import stat
 import tempfile
 import threading
 import time
 from pathlib import Path
 
+import phase8_atomic_publish as atomic_publish
 from phase8_benchmark_common import SystemSampler, build_result, utc_iso, write_result
 
 _LOG = logging.getLogger(__name__)
@@ -163,23 +165,35 @@ def _release_stream_files(paths: list[Path], keep_files: bool) -> None:
 
     Missing files are ignored. An unlink failure, including a Windows
     open-handle error, is logged and does not stop cleanup of the other paths.
-    Paths this run did not create are not in ``paths`` and are left alone,
-    including a pre-existing file or symlink outside the benchmark directory.
+    A ``KeyboardInterrupt`` while one path is removed is remembered and the
+    remaining paths are still removed; the interrupt is raised after that
+    pass. Paths this run did not create are not in ``paths`` and are left
+    alone, including a pre-existing file or symlink outside the benchmark
+    directory.
 
     Args:
         paths: Stream files this run created.
-        keep_files: When true, leave every path on disk.
+        keep_files: When true, leave every path on disk, including when the
+            run was cancelled or the join was interrupted.
 
     Returns:
         None.
 
     Raises:
-        None. Unlink failures are logged.
+        KeyboardInterrupt: When an interrupt arrived during this pass, after
+            every path has been attempted. ``OSError`` from unlink is logged
+            and not raised.
     """
     if keep_files:
         return
+    interrupted: KeyboardInterrupt | None = None
     for path in paths:
-        _unlink_stream_file(path)
+        try:
+            _unlink_stream_file(path)
+        except KeyboardInterrupt as exc:
+            interrupted = exc
+    if interrupted is not None:
+        raise interrupted
 
 
 def _unlink_if_cancelled(path: Path) -> None:
@@ -295,11 +309,12 @@ def _join_write_workers(state: _WriterState, timeout: float) -> None:
 
     A worker still inside ``_write_stream`` at the deadline is logged, and
     cleanup continues. ``os.open`` and ``os.fsync`` are not interrupted. The
-    directory entry of a file this run already created is still removed. If
-    ``open`` creates a file after that pass, the worker unlinks it before
-    returning when the stop event is set. The process can still wait for the
-    syscall itself while the default executor shuts down; this wait does not
-    extend to idle pool threads.
+    directory entry of a file this run already created is still removed by the
+    caller, including when this wait raises ``KeyboardInterrupt``. If ``open``
+    creates a file after that pass, the worker unlinks it before returning
+    when the stop event is set. The process can still wait for the syscall
+    itself while the default executor shuts down; this wait does not extend
+    to idle pool threads.
 
     Args:
         state: Writer state for this run. Active threads are those currently
@@ -310,7 +325,8 @@ def _join_write_workers(state: _WriterState, timeout: float) -> None:
         None.
 
     Raises:
-        None. A writer still active at ``timeout`` is logged.
+        KeyboardInterrupt: When a signal interrupts ``time.sleep``. The caller
+            still releases recorded stream files, then propagates this.
     """
     deadline = time.monotonic() + timeout
     while True:
@@ -378,8 +394,11 @@ def _tracked_write(
     """Mark this thread active, write one stream, and remember a new file.
 
     The thread is active only while this call is on the stack. An idle pool
-    thread is not active. A file that appears during the call and was not
-    already present is recorded for cleanup. A pre-existing path, including a
+    thread is not active. A path is owned only after ``os.open`` with
+    ``O_CREAT|O_EXCL`` succeeds inside ``_open_stream_file``. ``EEXIST`` and
+    ``ELOOP`` leave the path on disk. A file this call created by another
+    means, and that was not refused by that exclusive open, is still recorded
+    so a later failure can unlink it. A pre-existing path, including a
     symlink, is not recorded and is not deleted.
 
     Args:
@@ -400,10 +419,18 @@ def _tracked_write(
     thread = threading.current_thread()
     already_there = path.is_symlink() or path.exists()
     _mark_writer_active(thread)
+    refused_existing = False
     try:
         return _write_stream(path, total_bytes, chunk_bytes, fsync)
+    except StorageBenchmarkWriteError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, OSError) and cause.errno in (errno.EEXIST, errno.ELOOP):
+            # The exclusive open refused this path. A file that appeared in
+            # the gap is not one this run created.
+            refused_existing = True
+        raise
     finally:
-        if not already_there and not path.is_symlink() and path.exists():
+        if not refused_existing and not already_there and not path.is_symlink() and path.exists():
             _remember_created_stream(path)
         _mark_writer_inactive(thread)
 
@@ -613,12 +640,15 @@ async def run(args) -> dict:
         asyncio.CancelledError: The run was cancelled, including a keyboard
             interrupt delivered through ``asyncio.run``, at any await from the
             start of the writers through the sampler wait and the return.
-            Active writers are asked to stop and waited on within a bound, and
-            every stream file this run created is removed, before this
-            exception propagates. It is not converted into a successful result.
-            A cancellation while a stream error is already in hand surfaces
-            that stream error instead, with this cancellation chained as its
-            cause.
+            Active writers are asked to stop and waited on within a bound.
+            Stream files this run created are removed before this exception
+            propagates, except when ``--keep-files`` is set. ``--keep-files``
+            leaves those files in place, including when the run is cancelled.
+            A ``KeyboardInterrupt`` during the writer join still removes
+            recorded files, unless ``--keep-files`` is set, and then propagates.
+            This exception is not converted into a successful result. A
+            cancellation while a stream error is already in hand surfaces that
+            stream error instead, with this cancellation chained as its cause.
     """
     target_dir = Path(args.path)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -737,23 +767,30 @@ async def run(args) -> dict:
     finally:
         state.cancel.set()
         stop.set()
-        _join_write_workers(state, _WORKER_JOIN_SECONDS)
-        with state.lock:
-            created = list(state.created)
-        _release_stream_files(created, state.keep_files)
-        if sample_task is not None and not sample_task.done():
-            sample_task.cancel()
-        _WRITER_STATE.reset(token)
+        try:
+            _join_write_workers(state, _WORKER_JOIN_SECONDS)
+        finally:
+            # A second SIGINT can land in the join sleep. Recorded files are
+            # still released, then the interrupt propagates. The process does
+            # not exit 0.
+            try:
+                with state.lock:
+                    created = list(state.created)
+                _release_stream_files(created, state.keep_files)
+            finally:
+                if sample_task is not None and not sample_task.done():
+                    sample_task.cancel()
+                _WRITER_STATE.reset(token)
 
 
-def _staging_json_path(json_path: Path) -> Path:
-    """Return the temporary JSON path published with ``os.replace``.
+def _legacy_partial_path(json_path: Path) -> Path:
+    """Return the old shared staging name, which this run does not publish to.
 
     Args:
         json_path: Final ``--output-json`` path.
 
     Returns:
-        A sibling path whose name ends in ``.partial``.
+        The sibling path ``<name>.partial``.
 
     Raises:
         None.
@@ -761,63 +798,194 @@ def _staging_json_path(json_path: Path) -> Path:
     return json_path.with_name(f"{json_path.name}.partial")
 
 
-def _discard_benchmark_json(json_path: Path) -> None:
-    """Remove this run's JSON evidence and any staging file.
-
-    The optional CSV is an append-only log of publishes that completed, so
-    this function does not remove it. Unlink does not follow a symlink, so a
-    destination that points outside the directory is not truncated.
+def _refuse_unsafe_evidence_paths(json_path: Path) -> None:
+    """Fail closed before any evidence file is removed.
 
     Args:
         json_path: Configured ``--output-json`` path.
 
     Returns:
-        None after both paths are absent or were already missing.
+        None when neither the destination nor the legacy staging name is a
+        real directory.
+
+    Raises:
+        RuntimeError: When either path is a directory. Nothing is deleted.
+    """
+    if atomic_publish.is_real_directory(json_path):
+        raise RuntimeError(f"storage benchmark output JSON is a directory: {json_path}")
+    legacy = _legacy_partial_path(json_path)
+    if atomic_publish.is_real_directory(legacy):
+        raise RuntimeError(f"storage benchmark staging path is a directory: {legacy}")
+
+
+def _discard_stale_destination(json_path: Path) -> None:
+    """Remove the destination once, before this run starts.
+
+    Call this only after ``_refuse_unsafe_evidence_paths``. It removes a
+    regular file or a symlink at ``--output-json`` and does not follow a
+    symlink. A regular file at the legacy ``<name>.partial`` path is removed
+    once as well, because older builds published through that shared name.
+    A symlink at that legacy path is left alone. Random ``mkstemp`` files,
+    including one left by ``SIGKILL``, are not removed.
+
+    A failed publish must not call this again. Another process may have
+    replaced the destination after this process started.
+
+    Args:
+        json_path: Configured ``--output-json`` path.
+
+    Returns:
+        None after the startup removal has been attempted.
 
     Raises:
         OSError: If a present file cannot be removed.
     """
     json_path.unlink(missing_ok=True)
-    _staging_json_path(json_path).unlink(missing_ok=True)
+    legacy = _legacy_partial_path(json_path)
+    if legacy.is_symlink() or atomic_publish.is_real_directory(legacy):
+        return
+    try:
+        info = legacy.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISREG(info.st_mode):
+        legacy.unlink()
 
 
 def _publish_benchmark_result(result: dict, json_path: Path, csv_path: str | None) -> None:
-    """Publish JSON only after a successful run, by atomic replace.
+    """Publish JSON and the optional CSV through the shared atomic helper.
 
-    ``write_result`` validates and writes a sibling staging file, appending the
-    optional CSV from that same call. ``os.replace`` then moves the staging
-    file onto ``--output-json``. The destination is removed before the run, so
-    a crash before the replace leaves it absent.
+    Each file is written to a private ``tempfile.mkstemp`` file in mode
+    ``0600``, fsynced, replaced, and then the directory is fsynced. The CSV
+    row is not appended before the JSON replace, and the JSON file is not
+    rewritten afterwards. A failure unlinks only the temporary file that has
+    not been committed. It does not unlink ``--output-json`` again.
 
     Args:
         result: Completed benchmark result dictionary.
         json_path: Destination JSON evidence path.
-        csv_path: Optional append-only CSV summary path.
+        csv_path: Optional CSV summary path.
 
     Returns:
         None after the destination JSON is this run's evidence.
 
     Raises:
-        Exception: Validation or filesystem failures from ``write_result`` or
-            ``os.replace``.
+        Exception: Validation or filesystem failures. A committed JSON file is
+            left in place when a later step fails.
     """
-    staging = _staging_json_path(json_path)
-    staging.unlink(missing_ok=True)
-    write_result(result, json_path=str(staging), csv_path=csv_path)
-    os.replace(staging, json_path)
+    atomic_publish.publish_benchmark_evidence(
+        result,
+        json_path,
+        csv_path,
+        write_result=write_result,
+    )
+
+
+def _require_positive_streams(value: str) -> int:
+    """Reject a storage workload with no streams.
+
+    Args:
+        value: Text from ``--streams``.
+
+    Returns:
+        The stream count when it is an integer greater than or equal to 1.
+
+    Raises:
+        argparse.ArgumentTypeError: The value is not an integer or is below 1.
+            ``argparse`` exits before any evidence file is removed.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("streams must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("streams must be >= 1")
+    return parsed
+
+
+def _require_positive_mib(value: str) -> float:
+    """Reject a per-stream size that would write zero bytes.
+
+    Args:
+        value: Text from ``--mib-per-stream``.
+
+    Returns:
+        The MiB value when the integer byte count is positive.
+
+    Raises:
+        argparse.ArgumentTypeError: The value is not a number, is not positive,
+            or truncates to zero bytes. ``argparse`` exits before any evidence
+            file is removed.
+    """
+    return _require_positive_mebibytes(value, flag="mib-per-stream")
+
+
+def _require_positive_chunk_mib(value: str) -> float:
+    """Reject a chunk size that would write zero bytes.
+
+    Args:
+        value: Text from ``--chunk-mib``.
+
+    Returns:
+        The MiB value when the integer byte count is positive.
+
+    Raises:
+        argparse.ArgumentTypeError: The value is not a number, is not positive,
+            or truncates to zero bytes. ``argparse`` exits before any evidence
+            file is removed.
+    """
+    return _require_positive_mebibytes(value, flag="chunk-mib")
+
+
+def _require_positive_mebibytes(value: str, *, flag: str) -> float:
+    """Parse a MiB flag that must produce at least one byte.
+
+    Args:
+        value: Text from the command line.
+        flag: Flag name included in the error.
+
+    Returns:
+        The parsed float when ``int(value * 1024 * 1024)`` is positive.
+
+    Raises:
+        argparse.ArgumentTypeError: The value cannot be used as a byte count.
+    """
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{flag} must be a number") from exc
+    if parsed <= 0 or int(parsed * 1024 * 1024) <= 0:
+        raise argparse.ArgumentTypeError(f"{flag} must be positive")
+    return parsed
 
 
 def main():
     """Parse CLI arguments, execute the storage benchmark, and write results.
 
-    Evidence policy: ``--output-json`` is removed before the run. JSON is
-    written only after ``run`` succeeds, to a sibling ``<name>.partial`` file,
-    then ``os.replace`` moves that file onto the destination. A failed run,
-    including cancellation and a successful ``SystemExit`` from a worker,
-    leaves the destination absent, so an earlier run's JSON cannot be read as
-    this run's result. ``--output-csv`` is an append-only log of publishes that
-    completed and is not deleted when a later run fails. ``--help`` and
-    argument errors still exit from ``argparse`` before any file is removed.
+    Evidence policy: directory checks run first and delete nothing. A real
+    directory at ``--output-json`` or at the legacy ``<name>.partial`` path
+    raises ``RuntimeError`` and leaves every existing file in place. A symlink
+    at ``<name>.partial`` is not removed and its target is not modified.
+
+    After those checks, a regular file or symlink at ``--output-json`` is
+    removed once, before the benchmark. That is the latest-run rule: the path
+    means the latest invocation, and a failure does not put the previous file
+    back. Two overlapping invocations of the same path are not a way to keep
+    every process that exits 0. A regular file at the legacy ``<name>.partial``
+    name is removed in that same startup pass. The removal is not repeated
+    when the run fails, so a sibling that published after startup keeps its
+    file.
+
+    JSON and the optional CSV are published only after ``run`` succeeds, each
+    through a private ``tempfile.mkstemp`` file (mode ``0600``), an ``fsync``,
+    ``os.replace``, and a directory ``fsync``. Nothing is written to a file
+    after its replace. The CSV row is not appended before the JSON replace.
+    ``SIGKILL`` during the temporary write can leave ``<output>.<random>.partial``
+    in the destination directory. The next run does not delete arbitrary files
+    to clean that up. ``--help`` and argument errors, including zero streams or
+    a non-positive MiB size, still exit from ``argparse`` before any file is
+    removed. ``--keep-files`` leaves stream files on disk when the run is
+    cancelled.
 
     Args:
         None. Arguments are read from the process command line.
@@ -828,8 +996,12 @@ def main():
     Raises:
         RuntimeError: A successful ``SystemExit`` from the run or from
             publishing is rewritten to this so the process cannot exit 0.
-        Exception: Benchmark or output failures propagate and leave no JSON
-            evidence for this run.
+            Also raised when the destination or the legacy staging path is a
+            directory.
+        Exception: Benchmark or output failures propagate. A failed publish
+            does not remove JSON that another run has already replaced into
+            place, and it does not rewrite a JSON file that this run already
+            replaced.
         KeyboardInterrupt: Propagates when the run is interrupted.
         asyncio.CancelledError: Propagates when the run task is cancelled.
     """
@@ -837,24 +1009,22 @@ def main():
         description="Phase 8 synthetic concurrent storage write baseline; not VMS recording certification"
     )
     parser.add_argument("--path", default=tempfile.gettempdir())
-    parser.add_argument("--streams", type=int, default=4)
-    parser.add_argument("--mib-per-stream", type=float, default=256)
-    parser.add_argument("--chunk-mib", type=float, default=1)
+    parser.add_argument("--streams", type=_require_positive_streams, default=4)
+    parser.add_argument("--mib-per-stream", type=_require_positive_mib, default=256)
+    parser.add_argument("--chunk-mib", type=_require_positive_chunk_mib, default=1)
     parser.add_argument("--fsync", action="store_true")
     parser.add_argument("--keep-files", action="store_true")
     parser.add_argument("--sample-interval", type=float, default=1.0)
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--output-csv")
     args = parser.parse_args()
-    if args.streams < 1:
-        raise SystemExit("streams must be >= 1")
     json_path = Path(args.output_json)
-    _discard_benchmark_json(json_path)
+    _refuse_unsafe_evidence_paths(json_path)
+    _discard_stale_destination(json_path)
     try:
         result = asyncio.run(run(args))
         _publish_benchmark_result(result, json_path, args.output_csv)
     except BaseException as exc:
-        _discard_benchmark_json(json_path)
         _raise_failed(exc, source="publish")
     print(
         f"bytes={result['result']['bytes_written']} "
