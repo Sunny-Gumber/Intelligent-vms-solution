@@ -227,6 +227,10 @@ async def publish_event(event: dict):
 async def camera_loop(target: Target, stop: asyncio.Event):
     """Maintain one camera PullPoint subscription with bounded reconnect backoff.
 
+    An unexpected ``unsubscribe`` failure is logged and the reconnect loop
+    continues. ``asyncio.CancelledError`` still propagates. Known ``OnvifError``
+    cleanup remains best-effort inside ``unsubscribe``.
+
     Args:
         target: Camera event target.
         stop: Shared shutdown event.
@@ -284,12 +288,46 @@ async def camera_loop(target: Target, stop: asyncio.Event):
                 pass
         finally:
             if subscription:
-                await unsubscribe(subscription, target.username, target.password)
+                try:
+                    await unsubscribe(subscription, target.username, target.password)
+                except Exception:
+                    # TargetNotAllowed is a ValueError and OSError is not OnvifError.
+                    # Either one used to end this task, and a finished task was left
+                    # in the supervisor table with no replacement.
+                    log.exception("unsubscribe_failed camera_id=%s", target.camera_id)
                 subscription = None
+
+
+def _log_finished_camera_task(camera_id: str, task: asyncio.Task) -> None:
+    """Log a camera task that finished on its own and retrieve its exception.
+
+    Args:
+        camera_id: Camera whose subscription task finished.
+        task: Finished task. Callers must pass a done task.
+
+    Returns:
+        None. A clean exit and a cancellation are not logged as errors.
+
+    Raises:
+        asyncio.InvalidStateError: If ``task`` is not done.
+    """
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is None:
+        return
+    log.error(
+        "camera_task_exited camera_id=%s",
+        camera_id,
+        exc_info=(type(error), error, error.__traceback__),
+    )
 
 
 async def supervisor():
     """Supervise shard-local ONVIF camera subscription tasks.
+
+    A camera task that has already finished is dropped. When that camera is
+    still a target, a replacement starts in the same refresh.
 
     Returns:
         None under normal operation; runs until cancelled.
@@ -311,8 +349,11 @@ async def supervisor():
 
             for camera_id, (old_target, task) in list(tasks.items()):
                 new_target = targets.get(camera_id)
-                if new_target != old_target:
-                    task.cancel()
+                if task.done() or new_target != old_target:
+                    if task.done():
+                        _log_finished_camera_task(camera_id, task)
+                    else:
+                        task.cancel()
                     tasks.pop(camera_id, None)
 
             for camera_id, target in targets.items():
