@@ -207,6 +207,25 @@ def test_blocking_sample_fails_inside_shutdown_bound(tmp_path: Path) -> None:
     assert output.read_text(encoding="utf-8") == "ORIGINAL_JSON"
 
 
+def test_windows_file_fsync_opens_a_writable_handle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows FlushFileBuffers rejects a read-only handle with EBADF."""
+    helper = _helper()
+    monkeypatch.setattr(helper.os, "name", "nt")
+    target = tmp_path / "evidence.json"
+    target.write_text("BYTES", encoding="utf-8")
+    opened: dict[str, int] = {}
+    real_open = helper.os.open
+
+    def tracking_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        opened["flags"] = flags
+        return real_open(path, flags)
+
+    monkeypatch.setattr(helper.os, "open", tracking_open)
+    monkeypatch.setattr(helper.os, "fsync", lambda _fd: None)
+    helper._fsync_file(target)
+    assert opened["flags"] & 0b11 == os.O_RDWR
+
+
 def test_publish_succeeds_when_fchmod_is_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Publishing must replace the destination when the platform has no fchmod."""
     helper = _helper()

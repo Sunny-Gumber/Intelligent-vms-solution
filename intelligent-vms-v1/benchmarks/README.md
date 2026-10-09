@@ -128,7 +128,9 @@ A directory, FIFO, socket, or device at the JSON or CSV destination is refused
 before either file is replaced. A symlink at the destination is replaced and is
 not followed. On Windows, where `os.fchmod` does not exist, the temporary file's
 inherited DACL is replaced with a current-user read/write/delete ACE before the
-payload is written, and the destination directory is flushed with backup semantics.
+payload is written. The file is flushed through a writable handle, because a
+read-only handle makes `os.fsync` raise `EBADF`. The destination directory is
+flushed with backup semantics and write access.
 
 `tcp-reconnect-storm` is not a hardware-qualification workload. The storage tool measures a
 write baseline only.

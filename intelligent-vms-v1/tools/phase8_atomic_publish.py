@@ -56,6 +56,10 @@ _WIN_FILE_SHARE_READ_WRITE_DELETE = 0x1 | 0x2 | 0x4
 _WIN_OPEN_EXISTING = 3
 _WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WIN_GENERIC_READ = 0x80000000
+_WIN_GENERIC_WRITE = 0x40000000
+# FlushFileBuffers requires a writable handle. A directory opened only for
+# read returns EBADF or access denied from the flush.
+_WIN_DIRECTORY_ACCESS = _WIN_GENERIC_READ | _WIN_GENERIC_WRITE
 _WIN_INVALID_HANDLE = 0xFFFFFFFFFFFFFFFF
 
 # Stable CSV column order. Dict insertion order is not the contract; writers
@@ -347,6 +351,10 @@ def _create_private_temp(destination: Path) -> Path:
 def _fsync_file(path: Path) -> None:
     """Fsync the bytes of a regular file.
 
+    Windows ``FlushFileBuffers`` rejects a read-only handle with ``EBADF``.
+    The temporary file is opened read/write there. Unix keeps a read-only
+    open, which is enough for ``os.fsync``.
+
     Args:
         path: Temporary evidence file to flush.
 
@@ -356,7 +364,10 @@ def _fsync_file(path: Path) -> None:
     Raises:
         OSError: The file could not be opened or fsynced.
     """
-    descriptor = os.open(path, os.O_RDONLY)
+    flags = os.O_RDWR if os.name == "nt" else os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    descriptor = os.open(path, flags)
     try:
         os.fsync(descriptor)
     finally:
@@ -626,7 +637,7 @@ def _fsync_directory_windows(directory: Path) -> None:
     kernel32.CloseHandle.restype = wintypes.BOOL
     handle = kernel32.CreateFileW(
         os.fspath(directory),
-        _WIN_GENERIC_READ,
+        _WIN_DIRECTORY_ACCESS,
         _WIN_FILE_SHARE_READ_WRITE_DELETE,
         None,
         _WIN_OPEN_EXISTING,
