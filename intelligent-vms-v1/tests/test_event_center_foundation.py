@@ -67,6 +67,8 @@ def test_small_site_health_events_use_local_store_not_dead_outbox():
 def test_event_history_dedupes_by_authoritative_id_and_has_retention():
     assert "event_id: Mapped[str] = mapped_column(String(128), primary_key=True)" in ENTITIES
     store=(ROOT/"services/control-api/app/services/local_event_store.py").read_text(encoding="utf-8")
+    assert "on_conflict_do_nothing(index_elements=[EventHistoryEntity.event_id])" in store
+    assert "bool(result.rowcount)" in store
     assert "session.get(EventHistoryEntity, event_id)" in store
     assert "event_local_retention_days" in store
     assert "delete(EventHistoryEntity)" in store
