@@ -1133,7 +1133,6 @@ def test_recording_health_completion_is_monotonic(postgres_url):
     _fail("recording-health monotonic write", isolation, rows)
 
 
-@pytest.mark.known_race
 def test_camera_delete_leaves_no_active_manual_recording(postgres_url):
     """Deleting a camera removes it and leaves no ACTIVE manual session."""
 

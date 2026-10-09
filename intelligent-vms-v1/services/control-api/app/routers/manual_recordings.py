@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.db.session import get_session
 from app.models.entities import CameraEntity, ManualRecordingSessionEntity
 from app.models.schemas import ManualRecordingRead
-from app.routers.cameras import authorized_camera
+from app.routers.cameras import _lock_camera_row, authorized_camera
 from app.routers.recordings import _policy_for_camera, stream_recording_clip
 
 router = APIRouter(prefix="/api/v1/manual-recordings", tags=["manual-recordings"])
@@ -67,8 +67,16 @@ async def start_manual_recording(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_roles("admin", "operator")),
 ):
-    """Persist an idempotent server-timed manual-recording intent."""
+    """Persist an idempotent server-timed manual-recording intent.
+
+    The camera row is locked before the policy read and the session insert so
+    that insert cannot commit between a concurrent delete's active-session
+    stop and the camera delete.
+    """
     camera = await authorized_camera(session, camera_id, principal)
+    camera = await _lock_camera_row(session, camera.id)
+    if camera is None:
+        raise HTTPException(404, "Camera not found")
     policy = await _policy_for_camera(session, camera.id, lock=True)
     if policy is None or not policy.enabled or policy.mode != "continuous":
         raise HTTPException(409, "Continuous authoritative recording must be active before Start")
