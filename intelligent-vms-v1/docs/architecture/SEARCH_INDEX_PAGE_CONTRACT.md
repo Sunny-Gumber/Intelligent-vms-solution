@@ -50,11 +50,16 @@ returns `next_after_segment_start` and `next_after_segment_id` when the valid
 page is full and another row may exist. The next call passes those values as
 `after_segment_start` and `after_segment_id`. Both are empty when the scan is
 exhausted. The timeline and export routes fill one page up to
-`recording_query_max_segments` and do not expose that cursor. That cap is a
-separate bound from `X-VMS-Partial`. Callers that need a longer walk use the
-client cursor. Point lookup is not this oldest-first page: `segment_for_start`
-keeps rows that contain the instant, orders by latest start, and limits after
-that filter.
+`recording_query_max_segments` and do not expose that cursor. When the timeline
+page is full and the recording index is not exhausted, `X-VMS-Partial` is
+`true` even if no malformed row was skipped. `X-VMS-Skipped-Rows` stays the
+malformed-row count. Export does not turn that cap into a short clip: a page
+that does not cover the requested interval continuously is still rejected.
+Callers that need a longer walk use the client cursor. Point lookup is not
+this oldest-first page: `segment_for_start` keeps rows that contain the
+instant, orders by latest start, and limits after that filter. Unmerged
+versions of one segment are collapsed with `argMax` on `indexed_at` before
+that duration filter.
 
 A scan that cannot advance, or that exceeds the bounded batch cap, fails with
 the existing store error and does not return a short page. The error text does
