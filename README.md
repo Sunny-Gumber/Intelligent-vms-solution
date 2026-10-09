@@ -37,6 +37,14 @@ For the accepted Ubuntu field-test procedure, see:
 
 The normal engineering gates include Python compilation, Ruff/public-docstring checks, full pytest, the deterministic 623-row / 48-category feature catalog check, Alembic migration validation, Compose/Helm validation, security scanning, chaos/release gates and Ubuntu field-test validation.
 
+From a clean environment, the Python test gate is:
+
+```bash
+cd intelligent-vms-v1 && pip install -r tests/requirements.txt && VMS_SECRET_KEY=ci-test-key python3 -m pytest -q tests
+```
+
+`tests/requirements.txt` includes the pinned control-api requirements, so that single install collects the suite.
+
 ## Security
 
 Never commit camera credentials, service tokens, production secrets, private signing keys, diagnostic archives or customer data. Read `SECURITY.md` and the security documents under `intelligent-vms-v1/docs/security/`.

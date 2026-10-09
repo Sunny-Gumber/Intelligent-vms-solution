@@ -93,6 +93,15 @@ docker compose up --build
 
 Development defaults may use `AUTH_DISABLED=true`. Never expose that mode to an untrusted network.
 
+From this directory, the Python test gate is:
+
+```bash
+pip install -r tests/requirements.txt
+VMS_SECRET_KEY=ci-test-key python3 -m pytest -q tests
+```
+
+`tests/requirements.txt` includes `services/control-api/requirements.txt`.
+
 ## Production evidence discipline
 
 Do not infer camera/server/GPU/storage capacity from formulas or CI smoke tests.

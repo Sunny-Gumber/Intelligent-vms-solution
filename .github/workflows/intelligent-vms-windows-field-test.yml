@@ -39,7 +39,7 @@ jobs:
           VMS_SECRET_KEY: windows-ci-test-key-not-for-production
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r services/control-api/requirements.txt -r tests/requirements.txt pyyaml
+          python -m pip install -r tests/requirements.txt
           python -m pytest -q tests/test_windows_field_test_release.py tests/test_recording_phase3.py tests/test_field_test_browser_session.py
 
       - name: Preflight native Windows runner
