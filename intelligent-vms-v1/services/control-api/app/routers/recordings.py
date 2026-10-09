@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import math
 import re
@@ -8,13 +9,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.types import Send
 
 from app.core.auth import Principal, require_roles
 from app.core.config import settings
+from app.core.errors import build_error_payload
 from app.db.session import get_session
 from app.models.entities import CameraEntity, ManualRecordingSessionEntity, RecordingPolicyEntity
 from app.models.placement import PlacementAssignmentEntity, PlacementRevocationEntity
@@ -24,7 +28,12 @@ from app.services.coordination import PlacementExecutionBusy, require_placement_
 from app.services.outbox import enqueue_message_once
 from app.services.mediamtx import mediamtx
 from app.services.node_media import NodeEndpointError, assigned_node, get_node, node_clients
-from app.services.playback import PlaybackError, playback_client
+from app.services.playback import (
+    UPSTREAM_FAILURE_DETAIL,
+    UPSTREAM_TIMEOUT_DETAIL,
+    PlaybackError,
+    playback_client,
+)
 from app.services.recording import make_record_stream_key, provision_recording
 from app.services.recording_health import (
     record_segment_completion,
@@ -495,6 +504,81 @@ async def timeline(
     return _playback_timespans(spans, start, end)
 
 
+class _PlaybackProxyResponse(StreamingResponse):
+    """Proxy a playback body, or return 504/502 if it stalls before the first byte.
+
+    Starlette sends response headers before iterating a normal streaming body.
+    This waits for the first upstream chunk so a recorder that has already
+    returned headers and then goes silent is still a gateway error. A stall
+    after bytes have started ends the body and relies on the generator to
+    close the upstream response and client.
+    """
+
+    async def stream_response(self, send: Send) -> None:
+        iterator = self.body_iterator.__aiter__()
+        try:
+            try:
+                first = await anext(iterator)
+            except StopAsyncIteration:
+                await _send_start(send, self.status_code, self.raw_headers)
+                await _send_end(send)
+                return
+            except httpx.TimeoutException:
+                await _send_gateway_error(send, 504, UPSTREAM_TIMEOUT_DETAIL)
+                return
+            except httpx.HTTPError:
+                await _send_gateway_error(send, 502, UPSTREAM_FAILURE_DETAIL)
+                return
+
+            await _send_start(send, self.status_code, self.raw_headers)
+            if first:
+                await _send_chunk(send, _as_bytes(first, self.charset))
+            try:
+                async for chunk in iterator:
+                    await _send_chunk(send, _as_bytes(chunk, self.charset))
+            except (httpx.TimeoutException, httpx.HTTPError):
+                await _send_end(send)
+                return
+            await _send_end(send)
+        finally:
+            await iterator.aclose()
+
+
+def _as_bytes(chunk: bytes | memoryview | str, charset: str) -> bytes:
+    if isinstance(chunk, bytes):
+        return chunk
+    if isinstance(chunk, memoryview):
+        return chunk.tobytes()
+    return chunk.encode(charset)
+
+
+async def _send_start(send: Send, status: int, headers: list[tuple[bytes, bytes]]) -> None:
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+
+
+async def _send_chunk(send: Send, chunk: bytes) -> None:
+    await send({"type": "http.response.body", "body": chunk, "more_body": True})
+
+
+async def _send_end(send: Send) -> None:
+    await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
+async def _send_gateway_error(send: Send, status: int, message: str) -> None:
+    body = json.dumps(build_error_payload(status, message)).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body, "more_body": False})
+
+
 @router.get("/cameras/{camera_id}/play")
 async def play(
     request: Request,
@@ -517,10 +601,12 @@ async def play(
         principal: Authenticated administrator, operator or viewer.
 
     Returns:
-        StreamingResponse proxied from the selected playback service.
+        StreamingResponse proxied from the selected playback service. A stall
+        before the first playback byte is HTTP 504 instead of an open stream.
 
     Raises:
-        HTTPException: If authorization/policy/index/node/playback validation fails.
+        HTTPException: If authorization, policy, index, node, or playback
+            validation fails, or if the upstream stalls before streaming starts.
     """
     camera = await authorized_camera(session, camera_id, principal)
     if start.tzinfo is None:
@@ -600,6 +686,10 @@ async def play(
         if play_duration is None:
             raise HTTPException(404, "No recording is available at requested start")
 
+    # Ordinary play omits timeout_seconds. open_stream then applies
+    # recording_playback_connect_timeout_seconds and
+    # recording_playback_read_timeout_seconds. Export passes
+    # recording_export_io_timeout_seconds and keeps that single-phase contract.
     try:
         client, upstream = await playback.open_stream(
             policy.record_stream_key,
@@ -616,14 +706,20 @@ async def play(
             async for chunk in upstream.aiter_bytes():
                 yield chunk
         finally:
-            await upstream.aclose()
-            await client.aclose()
+            try:
+                await upstream.aclose()
+            except Exception:
+                pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
 
     headers = {}
     for name in ("content-length", "content-range", "accept-ranges", "cache-control"):
         if name in upstream.headers:
             headers[name] = upstream.headers[name]
-    return StreamingResponse(
+    return _PlaybackProxyResponse(
         body(),
         status_code=upstream.status_code,
         media_type=upstream.headers.get("content-type", "video/mp4"),
