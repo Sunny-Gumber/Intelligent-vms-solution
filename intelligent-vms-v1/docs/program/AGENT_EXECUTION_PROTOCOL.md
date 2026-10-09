@@ -2,6 +2,19 @@
 
 This protocol applies to every repository Copilot custom agent.
 
+## Copilot cloud agent: owner approval override
+
+For the cloud agent, any later instruction to "merge after passing gates" or
+"continue until complete" is superseded by this control: **do not merge, enable
+auto-merge, deploy, release, change repository settings, authorize GitHub
+Actions workflows, or start the next issue without explicit Sunny-Gumber
+approval.** Stop at a reviewed draft PR with evidence and ask the repository
+owner to perform the controlled final actions. Never push directly to main.
+
+An AI reviewer verdict is advisory, not a substitute for an authorized human
+review. The owner must separately enable enforced branch/PR rules and keep
+Copilot cloud-agent workflow approval on.
+
 
 ## Mandatory coding standard
 
