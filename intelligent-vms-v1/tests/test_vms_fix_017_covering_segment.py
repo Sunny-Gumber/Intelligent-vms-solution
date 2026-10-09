@@ -8,6 +8,7 @@ predicate, order, and limit the client actually sends.
 
 import asyncio
 import json
+import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +18,11 @@ from starlette.requests import Request
 
 from app.core.auth import Principal
 from app.routers import recordings
-from app.services.recording_index import RecordingIndexClient, RecordingIndexError
+from app.services.recording_index import (
+    RecordingIndexClient,
+    RecordingIndexError,
+    _MAX_SEGMENT_DURATION_SECONDS,
+)
 
 
 ORIGIN = datetime(2026, 9, 26, tzinfo=timezone.utc)
@@ -85,7 +90,13 @@ class IndexStore:
         self.queries.append(query)
         where = query.split("WHERE", 1)[1].split("ORDER BY", 1)[0]
         order = query.split("ORDER BY", 1)[1].split("LIMIT", 1)[0]
-        matched = [row for row in self.rows if _matches(row, params, where)]
+        # Collapse versions before the duration and overlap filters when the
+        # SQL aggregates by indexed_at. Otherwise a replaced longer row still
+        # matches the instant.
+        rows = self.rows
+        if "argMax" in query and "indexed_at" in query:
+            rows = _collapse_versions(rows)
+        matched = [row for row in rows if _matches(row, params, where)]
         matched.sort(key=_key, reverse="segment_start DESC" in order)
         if "LIMIT 1 BY segment_id" in query:
             deduped = []
@@ -109,7 +120,65 @@ class IndexStore:
         return _Response(page)
 
 
+def _scope_allowed(row, params, where):
+    """Honor tenant, site, and camera predicates when the SQL binds them."""
+    checks = (
+        ("tenant_id = {tenant:String}", "tenant_id", "param_tenant"),
+        ("site_id = {site:String}", "site_id", "param_site"),
+        ("camera_id = {camera:String}", "camera_id", "param_camera"),
+    )
+    for clause, field, param in checks:
+        if clause in where and row.get(field) != params.get(param):
+            return False
+    return True
+
+
+def _duration_allowed(row, where):
+    """Honor the finite one-day duration cap when the SQL states it."""
+    if "duration_seconds <=" not in where:
+        return True
+    duration = row.get("duration_seconds")
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+        return False
+    if not math.isfinite(duration):
+        return False
+    return 0 < duration <= _MAX_SEGMENT_DURATION_SECONDS
+
+
+def _indexed_at(row):
+    raw = row.get("indexed_at")
+    if raw is None or raw == "":
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return _parse(raw)
+
+
+def _collapse_versions(rows):
+    """Keep the newest indexed_at row for each ReplacingMergeTree sort key."""
+    best = {}
+    order = []
+    for row in rows:
+        key = (
+            row.get("tenant_id"),
+            row.get("site_id"),
+            row.get("camera_id"),
+            str(row.get("segment_start")),
+            str(row.get("segment_id")),
+        )
+        current = best.get(key)
+        if current is None:
+            best[key] = row
+            order.append(key)
+            continue
+        if _indexed_at(row) >= _indexed_at(current):
+            best[key] = row
+    return [best[key] for key in order]
+
+
 def _matches(row, params, where):
+    if not _scope_allowed(row, params, where):
+        return False
+    if not _duration_allowed(row, where):
+        return False
     start = _parse(row["segment_start"])
     end = _end(row)
     if "toIntervalMicrosecond" in where and "param_instant" in params:
@@ -149,6 +218,9 @@ def _segment(segment_id, node, start, duration=SEGMENT_SECONDS):
         "record_stream_key": "cam-record",
         "segment_path": f"/recordings/{segment_id}.mp4",
         "segment_start": start.isoformat(),
+        "tenant_id": "tenant-1",
+        "site_id": "site-1",
+        "camera_id": "cam-1",
         "duration_seconds": duration,
         "completed_at": (start + timedelta(seconds=duration)).isoformat(),
         "storage_tier": "hot",
