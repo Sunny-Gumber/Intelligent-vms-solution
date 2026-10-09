@@ -16,7 +16,7 @@ from app.models.entities import (
     RecordingPolicyEntity,
 )
 from app.models.placement import InfrastructureNodeEntity, PlacementAssignmentEntity
-from app.services.placement import NodeSnapshot, role_utilization
+from app.services.placement import role_utilization, snapshot_for_node
 
 
 CAMERA_STATES = ("online", "degraded", "offline", "unknown", "other")
@@ -287,17 +287,7 @@ async def collect_operational_snapshot(
         if heartbeat < node_stale_before:
             stale_nodes += 1
 
-        snapshot = NodeSnapshot(
-            id=node.id,
-            region_id=node.region_id,
-            roles=frozenset(node.roles_json or []),
-            state=node.state,
-            enabled=node.enabled,
-            capacity=node.capacity_json or {},
-            load=dict(node.load_json or {}),
-            heartbeat_at=heartbeat,
-            authority_mode=node.authority_mode or "fenced_degraded",
-        )
+        snapshot = snapshot_for_node(node, heartbeat_at=heartbeat)
         for role in PLACEMENT_ROLES:
             if role not in snapshot.roles:
                 continue

@@ -33,7 +33,7 @@ from app.services.fencing import (
     fence_snapshot,
 )
 from app.services.coordination import PlacementExecutionBusy, await_placement_execution_lock
-from app.services.placement import run_placement_once
+from app.services.placement import persisted_role_readiness, run_placement_once
 
 router = APIRouter(prefix="/api/v1/infrastructure", tags=["infrastructure"])
 _NODE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -51,12 +51,14 @@ def node_read(row: InfrastructureNodeEntity) -> NodeRead:
         row: Persisted infrastructure node to serialize.
 
     Returns:
-        NodeRead containing roles, endpoints, capacity/load and authority state.
+        NodeRead containing roles, endpoints, capacity/load, role readiness
+        and authority state.
     """
     return NodeRead(
         id=row.id, name=row.name, region_id=row.region_id, roles=list(row.roles_json or []),
         state=row.state, enabled=row.enabled, endpoints=row.endpoints_json or {},
         capacity=row.capacity_json or {}, load=row.load_json or {},
+        role_readiness=row.role_readiness_json,
         heartbeat_at=row.heartbeat_at, authority_mode=row.authority_mode,
         generation=row.generation,
     )
@@ -124,12 +126,12 @@ async def heartbeat_node(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_global_admin(allow_node_service=True)),
 ):
-    """Update node load, authority mode and bounded heartbeat freshness.
+    """Update node load, role readiness, authority mode and heartbeat freshness.
 
     The write is one conditional update. The clamped observation must be
     strictly newer than the stored heartbeat. An older or equal observation
-    leaves load, authority mode and heartbeat_at unchanged. The stored row
-    is returned in both cases.
+    leaves load, role readiness, authority mode and heartbeat_at unchanged.
+    The stored row is returned in both cases.
 
     Args:
         node_id: Infrastructure node sending the heartbeat.
@@ -148,12 +150,15 @@ async def heartbeat_node(
     row = await session.get(InfrastructureNodeEntity, node_id)
     if not row:
         raise HTTPException(404, "Infrastructure node not registered")
+    # FIX-014 lock order: this handler does not take the placement advisory
+    # fence. Do not load this row and then wait on that fence.
     now = datetime.now(timezone.utc)
     observed_at = payload.observed_at.astimezone(timezone.utc)
     # Delayed regional-spool delivery must not make stale telemetry look fresh.
     # Future node clocks are clamped so they cannot extend placement freshness.
     # Do not assign the loaded ORM fields. A dirty object is flushed on commit
-    # and would replace this predicate with the stale observation.
+    # and would replace this predicate with the stale observation. Readiness
+    # is in the same UPDATE as load and heartbeat_at (FIX-042).
     clamped = min(observed_at, now)
     await session.execute(
         update(InfrastructureNodeEntity)
@@ -163,6 +168,7 @@ async def heartbeat_node(
         )
         .values(
             load_json=dict(payload.load),
+            role_readiness_json=persisted_role_readiness(payload, row.roles_json),
             authority_mode=payload.authority_mode,
             heartbeat_at=clamped,
         )

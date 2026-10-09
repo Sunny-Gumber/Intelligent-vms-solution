@@ -447,6 +447,8 @@ class HeartbeatSession:
             self.row.load_json = params["load_json"]
             self.row.authority_mode = params["authority_mode"]
             self.row.heartbeat_at = clamped
+            if "role_readiness_json" in params:
+                self.row.role_readiness_json = params["role_readiness_json"]
         return None
 
     def expire(self, _row):

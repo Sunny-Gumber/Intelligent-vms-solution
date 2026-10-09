@@ -116,6 +116,9 @@ class NodeSnapshot:
         load: Reported current load dimensions.
         heartbeat_at: Last trusted heartbeat timestamp.
         authority_mode: Current fencing/authority mode.
+        role_readiness: Explicit per-role readiness. ``not_ready`` and
+            ``unknown`` are not measurements. None leaves count-based load
+            unchanged for callers that build a snapshot by hand.
     """
 
     id: str
@@ -127,6 +130,126 @@ class NodeSnapshot:
     load: dict
     heartbeat_at: datetime
     authority_mode: str = "central_online"
+    role_readiness: dict | None = None
+
+
+_READINESS_ROLES = frozenset({"media", "recording", "ai"})
+_READINESS_STATES = frozenset({"ready", "not_ready", "unknown"})
+_UNREADY_STATES = frozenset({"not_ready", "unknown"})
+_MEDIA_COUNT_KEYS = (
+    ("media", "active_sources"),
+    ("recording", "active_recordings"),
+)
+
+
+def _reported_readiness(stored) -> dict[str, str]:
+    """Return explicit readiness states from one stored or requested report."""
+    if not isinstance(stored, dict):
+        return {}
+    reported: dict[str, str] = {}
+    for role, state in stored.items():
+        if role in _READINESS_ROLES and state in _READINESS_STATES:
+            reported[role] = state
+    return reported
+
+
+def role_readiness_for_placement(stored, load, roles) -> dict[str, str]:
+    """Resolve per-role readiness for one placement decision.
+
+    An explicit ready, not_ready, or unknown state wins. When the report is
+    missing, a zero media or recording count is unknown: an older agent did
+    not prove that zero was measured. A positive count from that older agent
+    stays unstated so placement can still use it. AI is not inferred from a
+    zero AI count or from the media probe.
+
+    Args:
+        stored: Persisted role-readiness object, or None when the row never
+            reported one.
+        load: Node load mapping that accompanied the heartbeat.
+        roles: Roles configured on the node.
+
+    Returns:
+        States placement must honor. Unstated roles are omitted.
+    """
+    resolved = _reported_readiness(stored)
+    load = load or {}
+    role_set = set(roles or [])
+    for role, count_key in _MEDIA_COUNT_KEYS:
+        if role not in role_set or role in resolved:
+            continue
+        if count_key in load and _num(load, count_key) == 0.0:
+            resolved[role] = "unknown"
+    return resolved
+
+
+def persisted_role_readiness(payload, roles) -> dict | None:
+    """Return the readiness object to store for one heartbeat.
+
+    An explicit report is kept. An older payload that omits the field stores
+    unknown for a zero media or recording count and stores nothing for a
+    positive count. AI is stored only when the payload says so.
+
+    Args:
+        payload: Heartbeat object with ``load`` and optional ``role_readiness``.
+        roles: Roles configured on the node row receiving the heartbeat.
+
+    Returns:
+        The mapping to persist, or None when there is nothing to quarantine
+        and the payload did not report a state.
+    """
+    reported = getattr(payload, "role_readiness", None)
+    resolved = role_readiness_for_placement(
+        reported if reported is not None else None,
+        getattr(payload, "load", None) or {},
+        roles,
+    )
+    if reported is None and not resolved:
+        return None
+    return resolved or None
+
+
+def snapshot_for_node(node: InfrastructureNodeEntity, *, heartbeat_at: datetime | None = None) -> NodeSnapshot:
+    """Build the placement snapshot for one infrastructure-node row.
+
+    Readiness is resolved here so every placement and metrics caller shares
+    the older-agent zero-count rule. Hand-built snapshots are unchanged.
+
+    Args:
+        node: Persisted infrastructure node.
+        heartbeat_at: Optional replacement timestamp. Metrics pass a
+            normalized value; placement uses the row.
+
+    Returns:
+        Node snapshot whose readiness blocks unready media and recording roles.
+    """
+    load = dict(node.load_json or {})
+    roles = frozenset(node.roles_json or [])
+    return NodeSnapshot(
+        id=node.id,
+        region_id=node.region_id,
+        roles=roles,
+        state=node.state,
+        enabled=node.enabled,
+        capacity=node.capacity_json or {},
+        load=load,
+        heartbeat_at=node.heartbeat_at if heartbeat_at is None else heartbeat_at,
+        authority_mode=node.authority_mode or "fenced_degraded",
+        role_readiness=role_readiness_for_placement(
+            getattr(node, "role_readiness_json", None),
+            load,
+            roles,
+        ),
+    )
+
+
+def _role_unready(node: NodeSnapshot, role: str) -> bool:
+    """Return whether this role was reported not ready or unknown.
+
+    AI is included only when its own state says so. A media probe does not
+    mark the AI role.
+    """
+    readiness = node.role_readiness or {}
+    return readiness.get(role) in _UNREADY_STATES
 
 
 def _num(data: dict, key: str) -> float:
@@ -145,8 +268,11 @@ def role_utilization(node: NodeSnapshot, role: str) -> tuple[float, float] | Non
 
     Returns:
         Tuple of worst capacity ratio and active-count load, or None when the
-        role/capacity/load data is insufficient for safe placement.
+        role/capacity/load data is insufficient for safe placement. A role
+        reported not_ready or unknown is not a measured load.
     """
+    if _role_unready(node, role):
+        return None
     c, l = node.capacity, node.load
     if role == "media":
         dimensions = [
@@ -195,7 +321,8 @@ def node_eligible(node: NodeSnapshot, role: str, region_id: str, now: datetime) 
         now: Controller evaluation time.
 
     Returns:
-        True only when role, region, freshness, authority mode and headroom pass.
+        True only when role, region, freshness, authority mode, readiness and
+        headroom pass.
     """
     if not node.enabled or node.state != "active" or role not in node.roles:
         return False
@@ -1713,20 +1840,7 @@ async def _run_placement_once_locked() -> dict | None:
                         select(InfrastructureNodeEntity).where(InfrastructureNodeEntity.enabled.is_(True))
                     )
                 ).scalars().all()
-                nodes = [
-                    NodeSnapshot(
-                        id=n.id,
-                        region_id=n.region_id,
-                        roles=frozenset(n.roles_json or []),
-                        state=n.state,
-                        enabled=n.enabled,
-                        capacity=n.capacity_json or {},
-                        load=dict(n.load_json or {}),
-                        heartbeat_at=n.heartbeat_at,
-                        authority_mode=n.authority_mode or "fenced_degraded",
-                    )
-                    for n in node_rows
-                ]
+                nodes = [snapshot_for_node(n) for n in node_rows]
                 candidates: list[_RenewalCandidate] = []
                 renewal_cursor: str | None = None
                 track_renewal_cursor = False
