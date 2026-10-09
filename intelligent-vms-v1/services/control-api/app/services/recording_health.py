@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -114,34 +115,117 @@ async def record_segment_completion(
         observed_at: Optional deterministic clock value for health observation.
 
     Returns:
-        Updated per-camera RecordingHealthStateEntity.
+        Stored per-camera RecordingHealthStateEntity. An older completion leaves
+        the newer row unchanged.
 
     Raises:
         Exception: Database/session failures propagate to the caller.
+        RuntimeError: The health row is still missing after the insert attempt.
     """
     if completed_at.tzinfo is None:
         completed_at = completed_at.replace(tzinfo=timezone.utc)
     observed_at = observed_at or datetime.now(timezone.utc)
+    # Do not assign the loaded ORM fields. A dirty object is flushed on commit
+    # and would replace this predicate with the stale completion.
+    values = {
+        "last_segment_id": segment_id,
+        "last_segment_completed_at": completed_at,
+        "gap_deadline_at": recording_gap_deadline(
+            completed_at,
+            policy.segment_duration_seconds,
+        ),
+        "recording_node_id": recording_node_id,
+        "assignment_generation": assignment_generation,
+        "observed_at": observed_at,
+    }
 
     health = await session.get(RecordingHealthStateEntity, policy.camera_id)
     if health is None:
-        health = RecordingHealthStateEntity(camera_id=policy.camera_id)
-        session.add(health)
+        # Two first-time writers can both miss the row. ON CONFLICT keeps the
+        # second insert from aborting the caller's transaction.
+        await session.execute(
+            _recording_health_insert(session)(RecordingHealthStateEntity)
+            .values(camera_id=policy.camera_id, **values)
+            .on_conflict_do_nothing(index_elements=[RecordingHealthStateEntity.camera_id])
+        )
+        health = await session.get(RecordingHealthStateEntity, policy.camera_id)
+    if health is None:
+        raise RuntimeError("recording health row missing after insert")
 
-    previous = health.last_segment_completed_at
-    if previous is not None:
-        if previous.tzinfo is None:
-            previous = previous.replace(tzinfo=timezone.utc)
-        if completed_at < previous:
-            return health
-
-    health.last_segment_id = segment_id
-    health.last_segment_completed_at = completed_at
-    health.gap_deadline_at = recording_gap_deadline(
-        completed_at,
-        policy.segment_duration_seconds,
+    await session.execute(
+        update(RecordingHealthStateEntity)
+        .where(
+            RecordingHealthStateEntity.camera_id == policy.camera_id,
+            or_(
+                RecordingHealthStateEntity.last_segment_completed_at.is_(None),
+                RecordingHealthStateEntity.last_segment_completed_at < completed_at,
+                # An equal instant is not older, so it still advances. The
+                # strict `<` clause is what rejects a stale completion.
+                RecordingHealthStateEntity.last_segment_completed_at == completed_at,
+            ),
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
     )
-    health.recording_node_id = recording_node_id
-    health.assignment_generation = assignment_generation
-    health.observed_at = observed_at
+    session.expire(health)
+    await session.refresh(health)
+    return _detach_aware_health(session, health)
+
+
+def _recording_health_insert(session):
+    """Return the dialect INSERT that can ignore a duplicate camera row.
+
+    Args:
+        session: Session whose bind selects PostgreSQL or SQLite.
+
+    Returns:
+        SQLAlchemy insert constructor for that dialect.
+
+    Raises:
+        RuntimeError: The bound dialect cannot express ON CONFLICT.
+    """
+    name = session.get_bind().dialect.name
+    if name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    elif name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    else:
+        raise RuntimeError(f"recording health insert is not supported for dialect {name}")
+    return dialect_insert
+
+
+def _detach_aware_health(
+    session: AsyncSession,
+    health: RecordingHealthStateEntity,
+) -> RecordingHealthStateEntity:
+    """Detach the refreshed row and return UTC-aware completion timestamps.
+
+    SQLite hands back naive datetimes. Attaching UTC on a persistent object
+    would mark it dirty and let commit flush over the conditional update.
+
+    Args:
+        session: Session that loaded ``health``.
+        health: Refreshed recording-health row.
+
+    Returns:
+        The same instance, detached, with naive timestamps marked as UTC.
+    """
+    session.expunge(health)
+    health.last_segment_completed_at = _aware_utc(health.last_segment_completed_at)
+    health.gap_deadline_at = _aware_utc(health.gap_deadline_at)
+    health.observed_at = _aware_utc(health.observed_at)
     return health
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    """Treat a naive timestamp as UTC without changing an aware value.
+
+    Args:
+        value: Timestamp loaded from the database, or None.
+
+    Returns:
+        The same instant with UTC attached when the driver omitted it.
+    """
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
