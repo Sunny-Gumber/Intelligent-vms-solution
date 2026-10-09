@@ -88,6 +88,11 @@ Every qualified row includes benchmark IDs, commit SHA, hardware fingerprint, co
 - High failure rate or over-threshold CPU/RAM evidence is rejected.
 - Missing measurements remain missing; they are never converted to zero utilization.
 - A missing `failure_rate` is unqualified. It is not stored as `0.0`.
+- A rejected record does not store `failure_rate` as `0.0`. The internal row uses none.
+- Identity flags (`thermal_measured`, `thermal_limit_exceeded`, `gpu_measured`, NIC `is_up`, and `fsync_each_chunk`) are not coerced to numeric 0 or 1 and are not capacity.
+- Duplicate JSON keys are rejected. The rejection names the path, for example `duplicate JSON key: result.failure_rate`.
+- Nesting deeper than 32 names the path of the container that crosses the limit.
+- A direct `build_matrix` call does not qualify a record that failed the reproducibility percentile-order or thermal-limit check.
 
 ## Required measured fields
 
@@ -122,6 +127,54 @@ Optional sensor nulls stay accepted. A null, a missing key, or a number in these
 - `environment.hardware.network_interfaces[].speed_mbps`
 
 Reconnect evidence has no capacity mapping. A complete reconnect repeat can pass reproducibility and still leave every capacity role `UNQUALIFIED`.
+
+A mapped capacity of zero or negative zero fails reproducibility. The undefined-metric warning is only for a workload that has no capacity row.
+
+### Exported required paths
+
+This inventory is the set returned by `required_measured_fields` and `required_measured_fields_for_workload`. A test locks the backtick paths in this section to that set.
+
+- `result.aggregate_write_MBps`
+- `result.aggregate_write_mbps`
+- `result.bytes_written`
+- `result.failure_rate`
+- `result.latency.count`
+- `result.latency.max_ms`
+- `result.latency.mean_ms`
+- `result.latency.p50_ms`
+- `result.latency.p95_ms`
+- `result.latency.p99_ms`
+- `result.observed_ai_mpix_s`
+- `result.observed_media_mbps`
+- `result.observed_recording_mbps`
+- `result.operations_failed`
+- `result.operations_ok`
+- `result.throughput_ops_s`
+- `resources.cpu_freq_mhz.max`
+- `resources.cpu_freq_mhz.mean`
+- `resources.cpu_freq_mhz.p95`
+- `resources.cpu_pct.max`
+- `resources.cpu_pct.mean`
+- `resources.cpu_pct.p95`
+- `resources.disk_read_mbps.max`
+- `resources.disk_read_mbps.mean`
+- `resources.disk_read_mbps.p95`
+- `resources.disk_write_mbps.max`
+- `resources.disk_write_mbps.mean`
+- `resources.disk_write_mbps.p95`
+- `resources.net_rx_mbps.max`
+- `resources.net_rx_mbps.mean`
+- `resources.net_rx_mbps.p95`
+- `resources.net_tx_mbps.max`
+- `resources.net_tx_mbps.mean`
+- `resources.net_tx_mbps.p95`
+- `resources.ram_pct.max`
+- `resources.ram_pct.mean`
+- `resources.ram_pct.p95`
+- `resources.ram_used_bytes.max`
+- `resources.ram_used_bytes.mean`
+- `resources.ram_used_bytes.p95`
+- `resources.samples`
 
 ## Prohibited interpretation
 

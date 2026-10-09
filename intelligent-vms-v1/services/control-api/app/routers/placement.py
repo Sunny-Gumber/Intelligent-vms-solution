@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import (
@@ -32,6 +32,7 @@ from app.services.fencing import (
     acknowledge_revocation,
     fence_snapshot,
 )
+from app.services.coordination import PlacementExecutionBusy, await_placement_execution_lock
 from app.services.placement import run_placement_once
 
 router = APIRouter(prefix="/api/v1/infrastructure", tags=["infrastructure"])
@@ -84,9 +85,17 @@ async def upsert_node(
         Persisted NodeRead.
 
     Raises:
-        HTTPException: If the node identifier is invalid.
+        HTTPException: If the node identifier is invalid, or the placement fence
+            is still held when the bounded wait expires.
     """
     _validate_node_id(node_id)
+    try:
+        await await_placement_execution_lock(session)
+    except PlacementExecutionBusy as exc:
+        raise HTTPException(
+            409,
+            "Placement ownership is changing; retry node update",
+        ) from exc
     row = await session.get(InfrastructureNodeEntity, node_id)
     created = row is None
     if row is None:
@@ -117,6 +126,11 @@ async def heartbeat_node(
 ):
     """Update node load, authority mode and bounded heartbeat freshness.
 
+    The write is one conditional update. The clamped observation must be
+    strictly newer than the stored heartbeat. An older or equal observation
+    leaves load, authority mode and heartbeat_at unchanged. The stored row
+    is returned in both cases.
+
     Args:
         node_id: Infrastructure node sending the heartbeat.
         payload: Validated load/authority/observation payload.
@@ -124,7 +138,7 @@ async def heartbeat_node(
         principal: Global administrator, or the service identity bound to this node.
 
     Returns:
-        Updated NodeRead.
+        Stored NodeRead after the conditional update.
 
     Raises:
         HTTPException: If node identity/scope is invalid or the node is unregistered.
@@ -134,13 +148,27 @@ async def heartbeat_node(
     row = await session.get(InfrastructureNodeEntity, node_id)
     if not row:
         raise HTTPException(404, "Infrastructure node not registered")
-    row.load_json = dict(payload.load)
-    row.authority_mode = payload.authority_mode
     now = datetime.now(timezone.utc)
     observed_at = payload.observed_at.astimezone(timezone.utc)
     # Delayed regional-spool delivery must not make stale telemetry look fresh.
     # Future node clocks are clamped so they cannot extend placement freshness.
-    row.heartbeat_at = min(observed_at, now)
+    # Do not assign the loaded ORM fields. A dirty object is flushed on commit
+    # and would replace this predicate with the stale observation.
+    clamped = min(observed_at, now)
+    await session.execute(
+        update(InfrastructureNodeEntity)
+        .where(
+            InfrastructureNodeEntity.id == node_id,
+            InfrastructureNodeEntity.heartbeat_at < clamped,
+        )
+        .values(
+            load_json=dict(payload.load),
+            authority_mode=payload.authority_mode,
+            heartbeat_at=clamped,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    session.expire(row)
     await session.commit()
     await session.refresh(row)
     return node_read(row)
@@ -261,9 +289,17 @@ async def set_site_region(
         Persisted SiteRegionRead.
 
     Raises:
-        HTTPException: If tenant/site scope authorization fails.
+        HTTPException: If tenant/site scope authorization fails, or the placement
+            fence is still held when the bounded wait expires.
     """
     require_scope(principal, payload.tenant_id, payload.site_id)
+    try:
+        await await_placement_execution_lock(session)
+    except PlacementExecutionBusy as exc:
+        raise HTTPException(
+            409,
+            "Placement ownership is changing; retry site region update",
+        ) from exc
     row = (
         await session.execute(
             select(SiteRegionEntity).where(
@@ -344,7 +380,9 @@ async def run_placement(
         principal: Global administrator (role admin and tenant_id "*").
 
     Returns:
-        PlacementRunRead containing scan/move/unplaced/deferred counts and cursor.
+        PlacementRunRead containing scan, move, unplaced, deferred, and renewed
+        counts, whether the live population exceeded the renewal ceiling,
+        whether every lock attempt failed, and the cursor.
 
     Raises:
         Exception: Placement service failures propagate to the API error handler.

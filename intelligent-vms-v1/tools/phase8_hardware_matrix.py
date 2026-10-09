@@ -12,6 +12,7 @@ from typing import Any
 
 from phase8_benchmark_common import (
     Rejection,
+    loads_benchmark_json,
     parse_benchmark_record,
     repeat_verdict,
     result_fingerprint,
@@ -50,7 +51,8 @@ class Evidence:
         duration_seconds: Measured workload duration.
         warmup_seconds: Warmup duration.
         failure_rate: Observed operation failure rate, or None when that field
-            is absent, empty, or JSON null. Qualified rows always carry a number.
+            is absent, empty, JSON null, or the record was rejected. A Rejection
+            row does not store 0.0. Qualified rows always carry a number.
         cpu_p95_pct: CPU p95 utilization when measured.
         ram_p95_pct: RAM p95 utilization when measured.
         qualified: Whether policy thresholds are satisfied.
@@ -209,6 +211,71 @@ def capacity_dimension(result: dict[str, Any]) -> tuple[str, str, float] | None:
     return (role, dimension, capacity) if capacity and capacity > 0 else None
 
 
+def nonpositive_capacity_reason(result: dict[str, Any]) -> str | None:
+    """Name a mapped capacity metric that is present and not positive.
+
+    tcp-reconnect-storm and any other workload without a capacity row return
+    None. A missing capacity key stays with the measured-field schema. Zero
+    and negative zero are not a positive finite capacity.
+
+    Args:
+        result: Phase-8 benchmark result.
+
+    Returns:
+        Path-named reason, or None when the metric is positive or unmapped.
+    """
+    workload = result.get("workload") if isinstance(result, dict) else None
+    if not isinstance(workload, dict) or not isinstance(workload.get("type"), str):
+        return None
+    spec = _WORKLOAD_CAPACITY.get(workload["type"])
+    if spec is None:
+        return None
+    _role, _dimension, key = spec
+    metrics = result.get("result") if isinstance(result.get("result"), dict) else {}
+    if key not in metrics:
+        return None
+    number = _num(metrics.get(key))
+    if number is not None and math.isfinite(number) and number > 0:
+        return None
+    return f"capacity metric result.{key} is not a positive finite number"
+
+
+def _reproducibility_hard_reasons(
+    result: dict[str, Any],
+    *,
+    benchmark_id: str,
+    thermal_limit_exceeded: bool,
+) -> tuple[str, ...]:
+    """Return per-record reproducibility failures the matrix must not qualify.
+
+    Percentile order and an observed thermal limit fail the reproducibility
+    group. A direct build_matrix call has to apply those same failures, or a
+    finite record that failed reproducibility can still become
+    QUALIFIED_FROM_MEASURED_EVIDENCE.
+
+    Args:
+        result: Parsed benchmark source.
+        benchmark_id: Benchmark identity named in the reason.
+        thermal_limit_exceeded: Whether the record observed a thermal limit.
+
+    Returns:
+        Reasons that keep the record out of qualified evidence. Empty when
+        those two checks pass.
+    """
+    from phase8_reproducibility import percentile_order_valid
+
+    reasons: list[str] = []
+    if thermal_limit_exceeded:
+        reasons.append(
+            "thermal high/critical limit observed for benchmark IDs: " + benchmark_id
+        )
+    if not percentile_order_valid(result):
+        reasons.append(
+            "latency percentile ordering invalid for benchmark IDs: " + benchmark_id
+        )
+    return tuple(reasons)
+
+
 def extract_evidence(
     result: dict[str, Any],
     *,
@@ -249,7 +316,7 @@ def extract_evidence(
             observed_capacity=0.0,
             duration_seconds=0.0,
             warmup_seconds=0.0,
-            failure_rate=0.0,
+            failure_rate=None,
             cpu_p95_pct=None,
             ram_p95_pct=None,
             qualified=False,
@@ -263,6 +330,13 @@ def extract_evidence(
     cpu_p95 = parsed.cpu_p95_pct
     ram_p95 = parsed.ram_p95_pct
     reasons = list(parsed.null_measured_reasons)
+    reasons.extend(
+        _reproducibility_hard_reasons(
+            result,
+            benchmark_id=parsed.benchmark_id,
+            thermal_limit_exceeded=parsed.thermal_limit_exceeded,
+        )
+    )
     if mapping is None:
         workload = result.get("workload") if isinstance(result.get("workload"), dict) else {}
         workload_type = workload.get("type") if isinstance(workload.get("type"), str) else ""
@@ -325,6 +399,7 @@ def load_results(paths: list[str]) -> list[dict[str, Any]]:
     Raises:
         OSError: If an input path cannot be read.
         json.JSONDecodeError: If an input file is not valid JSON.
+        ValueError: If an object repeats a key. The message names the path.
     """
     results = []
     for raw in paths:
@@ -334,7 +409,7 @@ def load_results(paths: list[str]) -> list[dict[str, Any]]:
         else:
             candidates = [path]
         for candidate in candidates:
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            payload = loads_benchmark_json(candidate.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
                 payload["_source_file"] = str(candidate)
             results.append(payload)
@@ -420,7 +495,9 @@ def build_matrix(
     Duplicate benchmark identities and duplicate allowlisted content fingerprints
     are not independent repeats and cannot produce QUALIFIED_FROM_MEASURED_EVIDENCE.
     That uniqueness is enforced in this function, including when no reproducibility
-    report is supplied. repeat_count is the number of unique content fingerprints.
+    report is supplied. A direct call also refuses a record that failed the
+    reproducibility percentile-order or thermal-limit check. repeat_count is the
+    number of unique content fingerprints.
     The fingerprint omits descriptive hardware text, notes, timestamps, and
     volatile host state such as storage_free_bytes. That text is part of the
     shared hardware key instead. Byte-identical aggregated measurements fail
@@ -612,8 +689,10 @@ def approved_fingerprints_from_reproducibility_report(path: str) -> dict[str, st
         ValueError: If the report version or PASS-group fingerprint evidence is invalid.
         OSError: If the report cannot be read.
         json.JSONDecodeError: If the report is not valid JSON.
+        ValueError: If the report repeats a JSON key or its version or
+            PASS-group fingerprint evidence is invalid.
     """
-    report = json.loads(Path(path).read_text(encoding="utf-8"))
+    report = loads_benchmark_json(Path(path).read_text(encoding="utf-8"))
     if report.get("report_version") != "phase8-reproducibility-v1":
         raise ValueError("unsupported reproducibility report")
     approved: dict[str, str] = {}
@@ -684,7 +763,7 @@ def main():
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         results = load_results(args.results)
-        demand = json.loads(Path(args.demand).read_text(encoding="utf-8"))
+        demand = loads_benchmark_json(Path(args.demand).read_text(encoding="utf-8"))
         approved_fingerprints = approved_fingerprints_from_reproducibility_report(
             args.reproducibility_report
         )

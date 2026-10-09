@@ -1,7 +1,8 @@
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.effective_authority import DEFAULT_FENCE_EXPIRY_GRACE_SECONDS
+from app.core.placement_renewal import PlacementRenewalBudgetError, assert_settings_renewal_budget
 
 
 def playback_record_path_accepted(record_path: str) -> bool:
@@ -171,6 +172,38 @@ class Settings(BaseSettings):
     placement_offline_autonomy_seconds: int = 0
     placement_batch_size: int = 1000
     placement_max_moves_per_run: int = 200
+    # Lease renewal budget (VMS-FIX-014). Independent of the camera-scan batch.
+    # required = pages * (retry_sleep + max_run + interval)
+    #   + missed_lock_cycles * (retry_sleep + interval)
+    #   + max_run
+    #   + fence_poll + clock_skew + safety_margin, and required < lease.
+    # retry_sleep is (lock attempts - 1) * retry delay. Later cycles pay it
+    # before the attempt that acquires the lock. The trailing max_run is the
+    # revisit of the first page, which pages * max_run does not include.
+    # pages = ceil(ceiling / batch). missed_lock_cycles is at least 1.
+    # Fence poll 5s and clock skew 5s match the node-agent defaults; this block
+    # does not change the node. Fence grace is not extra lease life.
+    # The batch equals the ceiling so the reviewed 21000 assignments are one
+    # page. Lease writes on PostgreSQL are chunked statements, and a run that
+    # passes max_run rolls back instead of committing a partial page. max_run
+    # is that deadline, not a measured rate and not a fleet-capacity claim.
+    # Other fixes may add settings in this file; keep this block together.
+    placement_interval_seconds: float = Field(default=10.0, gt=0)
+    placement_renewal_batch_size: int = Field(default=21000, ge=1)
+    placement_renewal_max_assignments: int = Field(default=21000, ge=1)
+    # 4s, not 2s: one PostgreSQL 16 sample of a 21000-row page on this host
+    # finished in 1.743s. That is inside 2s and leaves no margin, so the
+    # deadline the budget charges is 4s. The sample is this host only, not a
+    # capacity claim. 0 is rejected here. It arms no deadline, so it is not a
+    # supported configuration. The budget formula still accepts 0 when a proof
+    # asks what reserving no run time would require.
+    placement_renewal_max_run_seconds: float = Field(default=4.0, ge=0)
+    placement_renewal_missed_lock_cycles: int = Field(default=1, ge=1)
+    placement_renewal_fence_poll_seconds: float = Field(default=5.0, ge=1)
+    placement_renewal_clock_skew_seconds: float = Field(default=5.0, ge=0)
+    placement_renewal_safety_margin_seconds: float = Field(default=5.0, ge=1)
+    placement_renewal_lock_retry_seconds: float = Field(default=0.25, gt=0)
+    placement_renewal_lock_retry_limit: int = Field(default=4, ge=1)
     placement_execution_enabled: bool = False
     placement_local_node_id: str = "media-local-01"
     node_fence_snapshot_max_items: int = 10000
@@ -184,6 +217,30 @@ class Settings(BaseSettings):
                 "recordPath rules: %path, %f, and either %s or %Y %m %d %H %M %S"
             )
         return value
+
+    @model_validator(mode="after")
+    def reject_unsatisfiable_placement_renewal_budget(self) -> "Settings":
+        """Reject a renewal cadence that is not strictly inside the lease.
+
+        Returns:
+            This settings instance when the conservative budget holds.
+
+        Raises:
+            PlacementRenewalBudgetError: When max run is not positive, or when
+                pages, the retry sleep later cycles may spend before they
+                acquire, reserved missed cycles, the revisit's own max run,
+                fence poll, clock skew and the safety margin do not fit before
+                lease expiry. The lease is not reduced and fence grace is not
+                spent to fit. A max run of 0 is rejected because it arms no
+                deadline.
+        """
+        if float(self.placement_renewal_max_run_seconds) <= 0:
+            raise PlacementRenewalBudgetError(
+                "placement renewal max run must be > 0; "
+                "0 reserves no deadline and is not a supported configuration"
+            )
+        assert_settings_renewal_budget(self)
+        return self
 
 
 settings = Settings()

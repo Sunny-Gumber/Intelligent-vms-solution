@@ -43,6 +43,8 @@ A repeat counts only when its required measured fields are present and finite. T
 
 Each required path uses one reason, and that reason names the full path. A missing key, `{}`, `[]`, or any other object or list fails the group with `MISSING_MEASURED_FIELD:<path>` and `repeat_count` 0. A present null remains `<path> is null`. A non-finite number, string, or boolean remains `<path> is not a finite number`. A boolean is not stored as 0 or 1. A missing `failure_rate`, including `{}` or `[]`, stays unset. It is not stored as `0.0`, and the reason is `MISSING_MEASURED_FIELD:result.failure_rate`.
 
+Duplicate JSON keys are rejected with `duplicate JSON key: <path>` before last-wins can keep a trailing value. A mapped capacity of zero or negative zero fails the group because that metric is not a positive finite number. Reconnect has no capacity row, so a complete reconnect repeat can still pass with the undefined-metric warning. Nesting deeper than 32 fails closed and the reason names the path.
+
 Optional sensor nulls stay accepted: max CPU frequency, platform temperature, CPU frequency ratio, and NIC `speed_mbps`. Those nulls do not split a content fingerprint and do not, by themselves, reject the repeat.
 
 ## Thermal and frequency awareness

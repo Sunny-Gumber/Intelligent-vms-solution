@@ -9,6 +9,7 @@ from app.db.session import get_session
 from app.models.entities import AIModelEntity, CameraAIPolicyEntity, CameraEntity
 from app.models.schemas import AIIngestRead, AIModelCreate, AIModelRead, AIPolicyRead, AIPolicyUpdate, AIResultIn, AIStatusRead
 from app.routers.cameras import authorized_camera
+from app.services.coordination import PlacementExecutionBusy, await_placement_execution_lock
 from app.services.ai import (
     publish_ai_events,
     redact_provider_config,
@@ -142,9 +143,17 @@ async def set_camera_policy(camera_id: str, payload: AIPolicyUpdate, session: As
 
     Raises:
         HTTPException: If camera/model authorization, availability or provider
-            configuration validation fails.
+            configuration validation fails, or the placement fence is still held
+            when the bounded wait expires.
     """
     camera = await authorized_camera(session, camera_id, principal)
+    try:
+        await await_placement_execution_lock(session)
+    except PlacementExecutionBusy as exc:
+        raise HTTPException(
+            409,
+            "Placement ownership is changing; retry AI policy update",
+        ) from exc
     model = None
     if payload.source_mode == "inference" and payload.model_id:
         model = await session.get(AIModelEntity, payload.model_id)

@@ -5,15 +5,18 @@ PostgreSQL cases use the migrated schema (Alembic head 0019) and two sessions.
 is bounded. If the other transaction blocks on a row lock, the harness releases
 the holder so that transaction can commit, then lets the blocked side continue.
 That blocked-then-serialised order is a correct outcome. Unfixed reproductions
-still fail on the lost-update code. The alarm acknowledge-versus-close
-reproduction is fixed by VMS-FIX-040.
+still fail on the lost-update code. Open races still fail on the lost-update
+handlers. The assertions are the correct outcome. The alarm
+acknowledge-versus-close reproduction is fixed by VMS-FIX-040.
 
 Accepted fix shapes are documented in
-``docs/qualification/VMS_FIX_033_RACE_REPRODUCTION_REPORT.md``. Unfixed tests
-are marked ``known_race`` and deselected from the default suite. They are not
-xfailed. ``test_alarm_close_is_not_overwritten_by_stale_acknowledge`` is the
-VMS-FIX-040 fix and runs as a normal PostgreSQL test; without a Postgres URL
-its fixture skips. The other six reproductions stay ``known_race``.
+``docs/qualification/VMS_FIX_033_RACE_REPRODUCTION_REPORT.md``. Races that are
+still open are marked ``known_race`` and deselected from the default suite.
+They are not xfailed. ``test_alarm_close_is_not_overwritten_by_stale_acknowledge``
+is the VMS-FIX-040 fix and runs as a normal PostgreSQL test; without a Postgres
+URL its fixture skips. ``test_out_of_order_heartbeat_does_not_regress`` is the
+VMS-FIX-042 fix: its marker is removed so it runs as a normal PostgreSQL test,
+and its assertion is unchanged.
 
 Run the reproductions::
 
@@ -1075,7 +1078,6 @@ def test_manual_list_expiry_preserves_earlier_stop(postgres_url):
     _fail("manual list-expiry versus earlier stop", isolation, rows)
 
 
-@pytest.mark.known_race
 def test_out_of_order_heartbeat_does_not_regress(postgres_url):
     """An older heartbeat must not replace a newer observation, load, or mode."""
 

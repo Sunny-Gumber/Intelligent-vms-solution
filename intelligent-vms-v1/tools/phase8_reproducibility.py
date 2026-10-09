@@ -12,13 +12,14 @@ from typing import Any
 
 from phase8_benchmark_common import (
     Rejection,
+    loads_benchmark_json,
     parse_benchmark_record,
     repeat_verdict,
     safe_workload_config,
     workload_identity_json,
     workload_key as shared_workload_key,
 )
-from phase8_hardware_matrix import capacity_dimension
+from phase8_hardware_matrix import capacity_dimension, nonpositive_capacity_reason
 
 
 REPORT_VERSION = "phase8-reproducibility-v1"
@@ -147,13 +148,14 @@ def load_results(paths: list[str]) -> list[dict[str, Any]]:
     Raises:
         OSError: If an input cannot be read.
         json.JSONDecodeError: If an input is not valid JSON.
+        ValueError: If an object repeats a key. The message names the path.
     """
     results: list[Any] = []
     for raw in paths:
         path = Path(raw)
         candidates = sorted(path.glob("*.json")) if path.is_dir() else [path]
         for candidate in candidates:
-            result = json.loads(candidate.read_text(encoding="utf-8"))
+            result = loads_benchmark_json(candidate.read_text(encoding="utf-8"))
             if isinstance(result, dict):
                 result["_source_file"] = str(candidate)
             results.append(result)
@@ -195,7 +197,9 @@ def review_group(
         the shared hardware key instead. Non-finite measurements, including
         integers that overflow float, fail the group. The check defends against
         duplicated or relabeled evidence, not against deliberately fabricated
-        measurements.
+        measurements. A mapped capacity that is zero or otherwise not positive
+        fails the group. A workload with no capacity row, including
+        tcp-reconnect-storm, keeps the undefined-metric warning and can pass.
     """
     reasons: list[str] = []
     warnings: list[str] = []
@@ -257,11 +261,22 @@ def review_group(
     p95_latency_cv = coefficient_variation(p95_latencies)
     capacity_range = relative_range(capacity_values)
 
-    if not capacity_values:
+    nonpositive_reasons = sorted(
+        {
+            reason
+            for record in results
+            if (reason := nonpositive_capacity_reason(record.source)) is not None
+        }
+    )
+    if nonpositive_reasons:
+        reasons.extend(nonpositive_reasons)
+    if not capacity_values and not nonpositive_reasons:
         warnings.append("no hardware-qualification capacity metric is defined for this workload")
-    elif len(capacity_values) != submitted_count or len(capacity_dimensions) != 1:
+    elif capacity_values and (
+        len(capacity_values) != submitted_count or len(capacity_dimensions) != 1
+    ):
         reasons.append("capacity metric is missing or inconsistent across repeats")
-    else:
+    elif capacity_values:
         if capacity_cv is not None and capacity_cv > max_capacity_cv:
             reasons.append(
                 f"capacity CV {capacity_cv:.4f} > allowed {max_capacity_cv:.4f}"
