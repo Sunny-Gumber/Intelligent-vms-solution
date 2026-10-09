@@ -144,6 +144,8 @@ Wrong state: close returns HTTP 200 with `state=closed`. Acknowledge then return
 
 `VMS-FIX-040` (P1): serialize both handlers with `SELECT ... FOR UPDATE`, and make acknowledge a conditional update `SET state='acknowledged' WHERE id=:id AND state='open'`. If that updates zero rows, re-read and return HTTP 409 when the alarm is already closed. Close remains the terminal write. The test requires the stored state to be `closed`.
 
+Constraint **REV-033-101 / QA-033-101**: the reproduction barrier hooks `session.get`. Both handlers take the lock with `session.get(AlarmInstanceEntity, alarm_id, with_for_update=True)`. A lock written as `session.execute(select(...).with_for_update())` stays red against this barrier; it is bounded and does not hang. Do not change the barrier to make a different lock shape pass unless QA and the Reviewer agree it is still a faithful reproduction. VMS-FIX-040 removes `@pytest.mark.known_race` from `test_alarm_close_is_not_overwritten_by_stale_acknowledge`. VMS-FIX-042 removes it from `test_out_of_order_heartbeat_does_not_regress`. The remaining open reproductions keep the marker.
+
 ### 4. Manual list-expiry versus an earlier stop — REPRODUCED
 
 Path: list loads `ACTIVE` rows without a lock, then `_finalize_if_expired` sets `STOPPED` and `stopped_at=max_stop_at` when `max_stop_at <= now` (`services/control-api/app/routers/manual_recordings.py:45-51` and `:133-140`). Stop locks the row by id and sets `stopped_at=min(now, max_stop_at)` (`services/control-api/app/routers/manual_recordings.py:191-197`).
