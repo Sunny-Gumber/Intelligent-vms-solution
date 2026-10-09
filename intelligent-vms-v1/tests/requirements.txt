@@ -1,3 +1,9 @@
+# Control-plane packages the suite imports at collection time (FastAPI,
+# SQLAlchemy, Alembic, asyncpg, and the rest of that pin set). This path is
+# relative to this file, so `pip install -r tests/requirements.txt` from
+# intelligent-vms-v1/ resolves it.
+-r ../services/control-api/requirements.txt
+
 pytest==8.4.1
 defusedxml==0.7.1
 httpx==0.28.1
@@ -8,3 +14,6 @@ ruff==0.16.9
 # Test-only Prometheus PromQL parser. CI does not install promtool. This wheel
 # has no transitive dependencies and is outside the production dependency audit.
 promql-parser==0.10.0
+# Tests import PyYAML directly. Pin the release already selected by the
+# uvicorn[standard] extra so the gate does not use an unpinned pyyaml install.
+PyYAML==6.0.3

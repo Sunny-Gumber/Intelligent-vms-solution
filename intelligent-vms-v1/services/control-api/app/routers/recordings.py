@@ -24,7 +24,11 @@ from app.models.entities import CameraEntity, ManualRecordingSessionEntity, Reco
 from app.models.placement import PlacementAssignmentEntity, PlacementRevocationEntity
 from app.models.schemas import RecordingPolicyRead, RecordingPolicyUpdate, RecordingTimespan
 from app.routers.cameras import authorized_camera
-from app.services.coordination import PlacementExecutionBusy, require_placement_execution_lock
+from app.services.coordination import (
+    PlacementExecutionBusy,
+    await_placement_execution_lock,
+    require_placement_execution_lock,
+)
 from app.services.outbox import enqueue_message_once
 from app.services.mediamtx import mediamtx
 from app.services.node_media import NodeEndpointError, assigned_node, get_node, node_clients
@@ -306,6 +310,17 @@ async def put_policy(
         # A busy fence is retriable and safer than applying to a stale node.
         try:
             await require_placement_execution_lock(session)
+        except PlacementExecutionBusy as exc:
+            raise HTTPException(
+                409,
+                "Placement ownership is changing; retry recording policy update",
+            ) from exc
+    else:
+        # The renewal fence is held until commit, including the authority row
+        # locks. Wait for it before disabling or enabling a policy. The wait is
+        # bounded by the advisory lock timeout.
+        try:
+            await await_placement_execution_lock(session)
         except PlacementExecutionBusy as exc:
             raise HTTPException(
                 409,

@@ -30,7 +30,7 @@ Each result records:
 
 Missing GPU is represented as `gpu_measured=false`, not 0% utilization.
 
-Qualification uses a stricter measured-field schema than this file schema. Storage, reconnect, hardware-matrix, and reproducibility repeats must include the required paths in `HARDWARE_QUALIFICATION.md`. A missing key, `{}`, or `[]` is `MISSING_MEASURED_FIELD:<path>`. A present null is `<path> is null`. A non-finite number, string, or boolean is `<path> is not a finite number`. A missing `failure_rate` does not qualify and is not treated as zero. Null max CPU frequency, temperature, frequency ratio, and NIC speed remain optional.
+Qualification uses a stricter measured-field schema than this file schema. Storage, reconnect, hardware-matrix, and reproducibility repeats must include the required paths in `HARDWARE_QUALIFICATION.md`. A missing key, `{}`, or `[]` is `MISSING_MEASURED_FIELD:<path>`. A present null is `<path> is null`. A non-finite number, string, or boolean is `<path> is not a finite number`. A missing `failure_rate` does not qualify and is not treated as zero. Duplicate JSON keys are rejected by path. A mapped capacity of zero fails reproducibility. Null max CPU frequency, temperature, frequency ratio, and NIC speed remain optional.
 
 ## Workload tools
 

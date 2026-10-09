@@ -161,15 +161,55 @@ _EVIDENCE_KINDS = (
 MISSING_MEASURED_FIELD_PREFIX = "MISSING_MEASURED_FIELD:"
 
 
+def _canonical_identity_flag(value: Any, field: str) -> str:
+    """Render an identity flag without storing a boolean as 0 or 1.
+
+    thermal_measured, thermal_limit_exceeded, gpu_measured, NIC is_up, and
+    fsync_each_chunk are flags. True and 1 share the token ``true``. False, 0,
+    and negative zero share the token ``false``. Neither token is the decimal
+    text of 0 or 1, and neither flag is a capacity metric.
+
+    Args:
+        value: Boolean or finite number stored on an identity flag.
+        field: Full dotted path used when the value is not a flag or a finite
+            number.
+
+    Returns:
+        ``true``, ``false``, or the fixed decimal text of a non-boolean number
+        other than 0 or 1.
+
+    Raises:
+        ValueError: If the value is not a boolean or a finite number. The
+            reason names field.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    reason = _non_finite_reason(field)
+    if isinstance(value, str) or not isinstance(value, (int, float)):
+        raise ValueError(reason)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError, TypeError) as exc:
+        raise ValueError(reason) from exc
+    if not math.isfinite(number):
+        raise ValueError(reason)
+    if number == 0.0:
+        return "false"
+    if number == 1.0:
+        return "true"
+    return _canonical_number(number, field)
+
+
 def _canonical_number(value: Any, field: str) -> str:
     """Render one measured number as a finite float with a fixed repr.
 
-    Identity flags such as thermal_measured and NIC is_up still map a boolean
-    to 0 or 1 here. Required measured leaves never reach this function with a
-    boolean: the required-field check rejects them first.
+    Identity flags do not use this function. A boolean here is still a 0 or 1
+    measurement for a non-required numeric leaf such as a GPU summary.
+    Required measured leaves never reach this function with a boolean: the
+    required-field check rejects them first.
 
     Args:
-        value: Integer, float, or identity-flag boolean.
+        value: Integer, float, or non-required numeric boolean.
         field: Full dotted path used when the value is not a finite number.
 
     Returns:
@@ -225,6 +265,41 @@ def canonical_descriptor(value: Any) -> str:
 MAX_STRUCTURE_DEPTH = 32
 
 
+def _nesting_overflow_path(value: Any, limit: int) -> str | None:
+    """Return the path of the first container deeper than limit.
+
+    The walk is iterative and breadth-first so a 2000-level document cannot
+    raise RecursionError while it is being rejected. The outermost container
+    is depth 1. The returned path uses dotted keys and list indexes, and it
+    names the container that crosses the limit.
+
+    Args:
+        value: JSON-like object, list, or scalar.
+        limit: Maximum allowed nesting depth.
+
+    Returns:
+        Dotted path of the shallowest container past the limit, or None when
+        the tree is within the limit. The root uses ``<root>`` when it itself
+        is past the limit.
+    """
+    pending: list[tuple[Any, int, str]] = [(value, 1, "")]
+    while pending:
+        current, depth, path = pending.pop(0)
+        if isinstance(current, dict):
+            if depth > limit:
+                return path or "<root>"
+            for key, item in current.items():
+                child = f"{path}.{key}" if path else str(key)
+                pending.append((item, depth + 1, child))
+        elif isinstance(current, list):
+            if depth > limit:
+                return path or "<root>"
+            for index, item in enumerate(current):
+                child = f"{path}.{index}" if path else str(index)
+                pending.append((item, depth + 1, child))
+    return None
+
+
 def _structure_deeper_than(value: Any, limit: int) -> bool:
     """Return whether a JSON-like tree is deeper than limit.
 
@@ -238,18 +313,202 @@ def _structure_deeper_than(value: Any, limit: int) -> bool:
     Returns:
         True when any nested container exceeds the limit.
     """
-    pending = [(value, 1)]
-    while pending:
-        current, depth = pending.pop()
-        if isinstance(current, dict):
-            if depth > limit:
-                return True
-            pending.extend((item, depth + 1) for item in current.values())
-        elif isinstance(current, list):
-            if depth > limit:
-                return True
-            pending.extend((item, depth + 1) for item in current)
-    return False
+    return _nesting_overflow_path(value, limit) is not None
+
+
+def _object_pairs_hook(pairs: list[tuple[str, Any]], path: str) -> dict[str, Any]:
+    """Build one JSON object and reject a repeated key by full path.
+
+    json.loads keeps the last value for a repeated key. This hook is the
+    benchmark parser's rejection point: the second occurrence raises before
+    that value can replace the first.
+
+    Args:
+        pairs: Key and value pairs in document order.
+        path: Dotted path of this object. Empty at the root.
+
+    Returns:
+        The object when every key appears once.
+
+    Raises:
+        ValueError: A key is repeated. The message is
+            ``duplicate JSON key: <path>``.
+    """
+    built: dict[str, Any] = {}
+    for key, value in pairs:
+        key_text = key if isinstance(key, str) else str(key)
+        child = f"{path}.{key_text}" if path else key_text
+        if not child:
+            child = "<root>"
+        if key_text in built:
+            raise ValueError(f"duplicate JSON key: {child}")
+        built[key_text] = value
+    return built
+
+
+class _JsonFrame:
+    """One in-progress container while duplicate keys are rejected."""
+
+    def __init__(self, kind: str, path: str, phase: str) -> None:
+        self.kind = kind
+        self.path = path
+        self.phase = phase
+        self.pairs: list[Any] = []
+        self.pending_key: str | None = None
+
+
+def _json_child_path(parent: _JsonFrame) -> str:
+    """Return the path of the value about to be parsed under parent."""
+    if parent.kind == "object":
+        key = parent.pending_key or ""
+        return f"{parent.path}.{key}" if parent.path else key
+    if parent.kind == "array":
+        index = str(len(parent.pairs))
+        return f"{parent.path}.{index}" if parent.path else index
+    return ""
+
+
+def _json_store(frame: _JsonFrame, value: Any) -> None:
+    """Attach one decoded value to the container that is waiting for it."""
+    if frame.kind == "object":
+        frame.pairs.append((frame.pending_key if frame.pending_key is not None else "", value))
+        frame.pending_key = None
+    else:
+        frame.pairs.append(value)
+    frame.phase = "after"
+
+
+def _json_error(message: str, text: str, index: int) -> json.JSONDecodeError:
+    position = index if index < len(text) else max(len(text) - 1, 0)
+    return json.JSONDecodeError(message, text, position)
+
+
+def loads_benchmark_json(text: str) -> Any:
+    """Parse JSON and reject duplicate object keys with a dotted path.
+
+    The decoder is iterative, so a document deeper than the recursion limit
+    still reaches the nesting check instead of raising RecursionError here.
+    Objects are finished by ``_object_pairs_hook``. Arrays and atoms use the
+    standard library scanner. A repeated key raises before last-wins can keep
+    a trailing number, object, or list.
+
+    Args:
+        text: JSON document text.
+
+    Returns:
+        The decoded value when every object key is unique.
+
+    Raises:
+        json.JSONDecodeError: The document is not valid JSON.
+        ValueError: An object repeats a key. The message names the full path.
+    """
+    decoder = json.JSONDecoder()
+    length = len(text)
+    index = 0
+    frames = [_JsonFrame("root", "", "value")]
+
+    def skip(position: int) -> int:
+        while position < length and text[position] in " \t\r\n":
+            position += 1
+        return position
+
+    completed: Any = None
+    while frames:
+        frame = frames[-1]
+        if frame.kind == "root" and frame.phase == "after":
+            completed = frame.pairs[0]
+            frames.pop()
+            break
+        index = skip(index)
+        if index >= length:
+            raise _json_error("Expecting value", text, index)
+        char = text[index]
+        if frame.phase == "value":
+            if frame.kind == "array" and char == "]" and not frame.pairs:
+                index += 1
+                frames.pop()
+                if not frames:
+                    completed = []
+                    break
+                _json_store(frames[-1], [])
+                continue
+            if char == "{":
+                index += 1
+                frames.append(_JsonFrame("object", _json_child_path(frame), "key"))
+                continue
+            if char == "[":
+                index += 1
+                frames.append(_JsonFrame("array", _json_child_path(frame), "value"))
+                continue
+            try:
+                value, index = decoder.raw_decode(text, index)
+            except json.JSONDecodeError:
+                raise
+            _json_store(frame, value)
+            continue
+        if frame.kind == "object" and frame.phase == "key":
+            if char == "}":
+                if frame.pairs:
+                    raise _json_error("Expecting property name", text, index)
+                obj = _object_pairs_hook(frame.pairs, frame.path)
+                index += 1
+                frames.pop()
+                if not frames:
+                    completed = obj
+                    break
+                _json_store(frames[-1], obj)
+                continue
+            if char != '"':
+                raise _json_error("Expecting property name enclosed in double quotes", text, index)
+            try:
+                key, index = decoder.raw_decode(text, index)
+            except json.JSONDecodeError:
+                raise
+            if not isinstance(key, str):
+                raise _json_error("Expecting property name enclosed in double quotes", text, index)
+            frame.pending_key = key
+            frame.phase = "colon"
+            continue
+        if frame.phase == "colon":
+            if char != ":":
+                raise _json_error("Expecting ':' delimiter", text, index)
+            index += 1
+            frame.phase = "value"
+            continue
+        if frame.phase == "after":
+            if frame.kind == "object" and char == ",":
+                index += 1
+                frame.phase = "key"
+                continue
+            if frame.kind == "object" and char == "}":
+                obj = _object_pairs_hook(frame.pairs, frame.path)
+                index += 1
+                frames.pop()
+                if not frames:
+                    completed = obj
+                    break
+                _json_store(frames[-1], obj)
+                continue
+            if frame.kind == "array" and char == ",":
+                index += 1
+                frame.phase = "value"
+                continue
+            if frame.kind == "array" and char == "]":
+                array = list(frame.pairs)
+                index += 1
+                frames.pop()
+                if not frames:
+                    completed = array
+                    break
+                _json_store(frames[-1], array)
+                continue
+            raise _json_error("Expecting ',' delimiter", text, index)
+        raise _json_error("Expecting value", text, index)
+
+    index = skip(index)
+    if index < length:
+        raise _json_error("Extra data", text, index)
+    return completed
 
 
 def _case_preserving_text(value: Any) -> str:
@@ -456,9 +715,9 @@ def _checked_number(
 ) -> float:
     """Convert one numeric field.
 
-    Identity flags keep the 0/1 boolean mapping. A required measured leaf sets
-    allow_bool to false so a boolean is rejected with the leaf path instead of
-    being stored as 0 or 1.
+    A required measured leaf sets allow_bool to false so a boolean is rejected
+    with the leaf path instead of being stored as 0 or 1. Identity flags do
+    not use this mapping; they stay boolean tokens.
 
     Args:
         value: Raw measurement or hardware number.
@@ -622,9 +881,11 @@ def workload_config_identity(config: Any) -> dict[str, Any]:
                 identity[key] = canonical_descriptor(value)
             continue
         if key in _SHAPING_FLAG_FIELDS:
-            _checked_number(value, _NUMBER_BOUNDS["unit_interval"], field)
-        else:
-            _checked_number(value, _NUMBER_BOUNDS[_SHAPING_NUMBER_FIELDS[key]], field)
+            if not isinstance(value, bool):
+                _checked_number(value, _NUMBER_BOUNDS["unit_interval"], field, allow_bool=False)
+            identity[key] = _canonical_identity_flag(value, field)
+            continue
+        _checked_number(value, _NUMBER_BOUNDS[_SHAPING_NUMBER_FIELDS[key]], field)
         identity[key] = _canonical_number(value, field)
     return identity
 
@@ -747,7 +1008,7 @@ def _measured_content(result: dict[str, Any]) -> dict[str, Any]:
             usage[key] = summary
     for key in ("thermal_measured", "thermal_limit_exceeded", "gpu_measured"):
         if key in resources and resources[key] is not None:
-            usage[key] = _canonical_number(resources[key], f"resources.{key}")
+            usage[key] = _canonical_identity_flag(resources[key], f"resources.{key}")
     inventory = list(hardware.get("gpus") or [])
     usage_items = list(resources.get("gpu") or [])
     if inventory or usage_items:
@@ -802,7 +1063,7 @@ def canonical_hardware_material(result: dict[str, Any]) -> dict[str, Any]:
         if nic.get("name") is not None:
             canonical_nic["name"] = canonical_descriptor(nic["name"])
         if nic.get("is_up") is not None:
-            canonical_nic["is_up"] = _canonical_number(
+            canonical_nic["is_up"] = _canonical_identity_flag(
                 nic["is_up"],
                 "hardware.network_interfaces.is_up",
             )
@@ -1228,8 +1489,12 @@ def _validate_numeric_fields(result: dict[str, Any]) -> dict[str, Any]:
     )
     ratio = _present_number(resources, "cpu_freq_ratio_min", "ratio", "resources.cpu_freq_ratio_min")
     for key in ("thermal_measured", "thermal_limit_exceeded", "gpu_measured"):
-        if key in resources:
-            _checked_number(resources[key], _NUMBER_BOUNDS["unit_interval"], f"resources.{key}")
+        if key not in resources or resources[key] is None:
+            continue
+        flag = resources[key]
+        field = f"resources.{key}"
+        if not isinstance(flag, bool):
+            _checked_number(flag, _NUMBER_BOUNDS["unit_interval"], field, allow_bool=False)
     for item in resources.get("gpu") or []:
         if not isinstance(item, dict):
             raise ValueError("resources.gpu index is required")
@@ -1941,7 +2206,8 @@ def validate_result(result: dict[str, Any]) -> None:
     environment, hardware, workload, result, resources, and result.latency must
     be objects before any attribute access. hardware null is invalid and must
     not collapse to an empty machine identity. Nesting deeper than
-    MAX_STRUCTURE_DEPTH is invalid. Missing latency percentiles are not a
+    MAX_STRUCTURE_DEPTH is invalid, and the rejection names the path of the
+    container that crosses the limit. Missing latency percentiles are not a
     schema exception here; the required-field schema reports them as
     MISSING_MEASURED_FIELD.
 
@@ -1957,8 +2223,11 @@ def validate_result(result: dict[str, Any]) -> None:
     """
     if not isinstance(result, dict):
         raise ValueError("benchmark result is not an object")
-    if _structure_deeper_than(result, MAX_STRUCTURE_DEPTH):
-        raise ValueError(f"benchmark record nesting exceeds {MAX_STRUCTURE_DEPTH}")
+    overflow = _nesting_overflow_path(result, MAX_STRUCTURE_DEPTH)
+    if overflow is not None:
+        raise ValueError(
+            f"benchmark record nesting exceeds {MAX_STRUCTURE_DEPTH} at {overflow}"
+        )
     required_top = {"schema_version", "benchmark_id", "environment", "workload", "result", "resources"}
     missing = required_top - set(result)
     if missing:

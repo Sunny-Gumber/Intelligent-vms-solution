@@ -34,9 +34,10 @@ backend/auth change, migration, installer change or feature expansion is include
 
 ## Regression execution
 
-From `intelligent-vms-v1/`, with Node 22 and the existing Python test dependencies:
+From `intelligent-vms-v1/`, with Node 22 and the Python test requirements (which include the pinned control-api packages):
 
 ```sh
+python -m pip install -r tests/requirements.txt
 python tools/check_frontend_syntax.py
 python -m pytest -q tests/test_frontend_syntax.py tests/test_field_test_browser_session.py
 ```

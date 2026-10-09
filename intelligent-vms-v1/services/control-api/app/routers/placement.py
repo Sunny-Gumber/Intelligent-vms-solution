@@ -32,6 +32,7 @@ from app.services.fencing import (
     acknowledge_revocation,
     fence_snapshot,
 )
+from app.services.coordination import PlacementExecutionBusy, await_placement_execution_lock
 from app.services.placement import run_placement_once
 
 router = APIRouter(prefix="/api/v1/infrastructure", tags=["infrastructure"])
@@ -84,9 +85,17 @@ async def upsert_node(
         Persisted NodeRead.
 
     Raises:
-        HTTPException: If the node identifier is invalid.
+        HTTPException: If the node identifier is invalid, or the placement fence
+            is still held when the bounded wait expires.
     """
     _validate_node_id(node_id)
+    try:
+        await await_placement_execution_lock(session)
+    except PlacementExecutionBusy as exc:
+        raise HTTPException(
+            409,
+            "Placement ownership is changing; retry node update",
+        ) from exc
     row = await session.get(InfrastructureNodeEntity, node_id)
     created = row is None
     if row is None:
@@ -261,9 +270,17 @@ async def set_site_region(
         Persisted SiteRegionRead.
 
     Raises:
-        HTTPException: If tenant/site scope authorization fails.
+        HTTPException: If tenant/site scope authorization fails, or the placement
+            fence is still held when the bounded wait expires.
     """
     require_scope(principal, payload.tenant_id, payload.site_id)
+    try:
+        await await_placement_execution_lock(session)
+    except PlacementExecutionBusy as exc:
+        raise HTTPException(
+            409,
+            "Placement ownership is changing; retry site region update",
+        ) from exc
     row = (
         await session.execute(
             select(SiteRegionEntity).where(
@@ -344,7 +361,9 @@ async def run_placement(
         principal: Global administrator (role admin and tenant_id "*").
 
     Returns:
-        PlacementRunRead containing scan/move/unplaced/deferred counts and cursor.
+        PlacementRunRead containing scan, move, unplaced, deferred, and renewed
+        counts, whether the live population exceeded the renewal ceiling,
+        whether every lock attempt failed, and the cursor.
 
     Raises:
         Exception: Placement service failures propagate to the API error handler.
