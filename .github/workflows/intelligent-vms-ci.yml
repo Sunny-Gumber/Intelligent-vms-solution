@@ -251,6 +251,104 @@ jobs:
           docker compose build control-api event-writer mediamtx onvif-event-worker alarm-worker placement-controller node-agent regional-spool
           docker build -f services/web/Dockerfile -t intelligent-vms-web:ci .
 
+  # Disposable PostgreSQL for the tests the unit job skips. Credentials are
+  # synthetic and match the lease probe (vms:vms, database vms_fix_014).
+  # known_race reproductions stay deselected: they are open failures, not skips.
+  vms-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: vms
+          POSTGRES_PASSWORD: vms
+          POSTGRES_DB: vms
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vms -d vms"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements.txt
+      - name: Create disposable databases
+        env:
+          PGHOST: 127.0.0.1
+          PGUSER: vms
+          PGPASSWORD: vms
+          PGDATABASE: vms
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          import re
+
+          import asyncpg
+
+          NAMES = ("vms_fix_014", "vms_ci")
+          IDENT = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+
+          async def main():
+              for name in NAMES:
+                  if IDENT.fullmatch(name) is None:
+                      raise SystemExit(f"refusing unsafe database name: {name}")
+              connection = await asyncpg.connect(
+                  host=os.environ["PGHOST"],
+                  user=os.environ["PGUSER"],
+                  password=os.environ["PGPASSWORD"],
+                  database=os.environ["PGDATABASE"],
+              )
+              try:
+                  for name in NAMES:
+                      exists = await connection.fetchval(
+                          "SELECT 1 FROM pg_database WHERE datname = $1",
+                          name,
+                      )
+                      if exists:
+                          print(f"database exists: {name}")
+                          continue
+                      await connection.execute(f'CREATE DATABASE "{name}"')
+                      print(f"database created: {name}")
+              finally:
+                  await connection.close()
+
+          asyncio.run(main())
+          PY
+      - name: Run PostgreSQL-dependent tests
+        env:
+          VMS_SECRET_KEY: ci-test-key
+          VMS_TEST_POSTGRES_URL: postgresql+asyncpg://vms:vms@127.0.0.1:5432/vms_ci
+        run: |
+          set -euo pipefail
+          # FIX-038's Postgres case lives on main and is present in the pull_request merge.
+          pytest -q -ra --tb=short \
+            --junitxml=/tmp/vms-postgres-race.xml \
+            tests/test_vms_fix_033_race_reproductions.py \
+            tests/test_vms_fix_038_local_event_duplicate.py \
+            tests/test_vms_fix_040_alarm_ack_close.py \
+            tests/test_vms_fix_042_heartbeat_order.py \
+            tests/test_vms_fix_043_recording_health_monotonic.py \
+            tests/test_vms_fix_044_camera_delete_manual_recording.py
+          pytest -q -ra --tb=short \
+            --junitxml=/tmp/vms-postgres-lease.xml \
+            tests/test_lease_renewal_independent_of_scan.py \
+            -k "postgresql and vms_fix_014"
+          python tools/check_postgres_ci_junit.py \
+            /tmp/vms-postgres-race.xml \
+            /tmp/vms-postgres-lease.xml
+
   vms-windows-atomic-publish:
     runs-on: windows-2022
     defaults:

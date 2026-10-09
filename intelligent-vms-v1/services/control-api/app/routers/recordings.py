@@ -43,7 +43,11 @@ from app.services.recording_health import (
     record_segment_completion,
     sync_recording_health_policy,
 )
-from app.services.recording_index import RecordingIndexError, recording_index
+from app.services.recording_index import (
+    RecordingIndexError,
+    RecordingIndexRequestError,
+    recording_index,
+)
 from app.services.search_page import apply_page_headers
 
 router = APIRouter(prefix="/api/v1/recordings", tags=["recordings"])
@@ -200,6 +204,34 @@ async def _playback_for_policy(session: AsyncSession, policy: RecordingPolicyEnt
         return await node_clients.playback(node)
     except NodeEndpointError as exc:
         raise HTTPException(503, f"Recording node unavailable: {exc}") from exc
+
+
+def _recording_index_http_error(
+    exc: RecordingIndexError,
+    unavailable_detail: str | None = None,
+) -> HTTPException:
+    """Translate a recording-index failure into the public HTTP error.
+
+    A timestamp the index cannot look back from is HTTP 422. Transport and scan
+    failures stay HTTP 503. The detail does not include the caller timestamp or
+    the ClickHouse query.
+
+    Args:
+        exc: Failure raised by the recording-index client.
+        unavailable_detail: Fixed gateway detail. When omitted, the index error
+            text is used for non-request failures.
+
+    Returns:
+        HTTPException with status 422 or 503.
+
+    Raises:
+        This function does not raise. The caller raises the returned exception.
+    """
+    if isinstance(exc, RecordingIndexRequestError):
+        return HTTPException(422, "recording time is outside the supported range")
+    if unavailable_detail is None:
+        return HTTPException(503, str(exc))
+    return HTTPException(503, unavailable_detail)
 
 
 def _playback_timespans(
@@ -442,8 +474,10 @@ async def timeline(
 
     Returns:
         Chronologically sorted recording timespans clipped to the request window.
-        The JSON body stays an array. ``X-VMS-Partial`` and ``X-VMS-Skipped-Rows``
-        report malformed recording-index rows skipped while filling it.
+        The JSON body stays an array. ``X-VMS-Partial`` is true when a malformed
+        recording-index row was skipped or when the page stops at
+        ``recording_query_max_segments`` while another segment may remain.
+        ``X-VMS-Skipped-Rows`` counts only malformed rows.
 
     Raises:
         HTTPException: If authorization/policy fails, the interval is invalid or
@@ -474,8 +508,10 @@ async def timeline(
                 limit=settings.recording_query_max_segments,
             )
         except RecordingIndexError as exc:
-            raise HTTPException(503, str(exc)) from exc
+            raise _recording_index_http_error(exc) from exc
         apply_page_headers(response, rows)
+        if not rows.exhausted:
+            response.headers["X-VMS-Partial"] = "true"
         indexed = [
             RecordingTimespan(
                 start=max(row["segment_start"], start),
@@ -644,7 +680,7 @@ async def play(
                 start=start,
             )
         except RecordingIndexError as exc:
-            raise HTTPException(503, str(exc)) from exc
+            raise _recording_index_http_error(exc) from exc
         if segment is None:
             # A currently-open segment is intentionally absent from the completed
             # index. Validate current-node coverage before asking it to stream.
@@ -790,7 +826,7 @@ async def stream_recording_clip(
                 start=start, end=end, limit=settings.recording_query_max_segments,
             )
         except RecordingIndexError as exc:
-            raise HTTPException(503, "Recording index unavailable") from exc
+            raise _recording_index_http_error(exc, "Recording index unavailable") from exc
         nodes = {str(row["recording_node_id"]) for row in rows if row.get("recording_node_id")}
         spans = [
             RecordingTimespan(start=max(row["segment_start"], start),

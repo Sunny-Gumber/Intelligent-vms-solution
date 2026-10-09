@@ -79,6 +79,10 @@ seconds, allowed range 1 through 300) as one timeout for every phase.
 
 The timeline body stays a JSON array. Malformed recording-index rows are
 skipped, counted, and reported with `X-VMS-Partial` and `X-VMS-Skipped-Rows`.
+A timeline that stops at `recording_query_max_segments` while another segment
+may remain also sets `X-VMS-Partial: true`. `X-VMS-Skipped-Rows` stays the
+malformed-row count. Export still rejects a range the returned page does not
+cover continuously.
 See [Search and index page contract](../architecture/SEARCH_INDEX_PAGE_CONTRACT.md).
 
 ## Time and UI concurrency

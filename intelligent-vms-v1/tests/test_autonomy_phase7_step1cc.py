@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -459,6 +460,12 @@ class HeartbeatSession:
 
     async def refresh(self, _row):
         return None
+
+    def get_bind(self):
+        # heartbeat_node asks for the dialect before the placement fence.
+        # This double is the SQLite path: no advisory lock, then the
+        # in-memory conditional UPDATE.
+        return SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
 
 
 def test_delayed_spooled_heartbeat_preserves_observation_freshness():

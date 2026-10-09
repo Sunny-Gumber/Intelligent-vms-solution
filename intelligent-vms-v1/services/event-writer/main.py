@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 
 import httpx
 from aiokafka import AIOKafkaConsumer
@@ -11,6 +12,10 @@ RECORDING_TOPIC = os.getenv("KAFKA_TOPIC_RECORDINGS", "vms.recordings.v1")
 CH = os.getenv("CLICKHOUSE_URL", "http://clickhouse:8123").rstrip("/")
 DB = os.getenv("CLICKHOUSE_DATABASE", "vms")
 RECORDING_TTL_DAYS = max(30, int(os.getenv("RECORDING_METADATA_TTL_DAYS", "400")))
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Microseconds from the segment name. Nullable so an existing part reads NULL
+# and the lookup falls back to the DateTime64(3) sort key. Not part of ORDER BY.
+_EXACT_START_TYPE = "Nullable(DateTime64(6, 'UTC'))"
 
 EVENTS_SQL = f"""
 CREATE TABLE IF NOT EXISTS {DB}.events
@@ -49,6 +54,7 @@ CREATE TABLE IF NOT EXISTS {DB}.recording_segments
   record_stream_key String,
   segment_path String,
   segment_start DateTime64(3, 'UTC'),
+  segment_start_exact Nullable(DateTime64(6, 'UTC')),
   duration_seconds Float64,
   completed_at DateTime64(3, 'UTC'),
   storage_tier LowCardinality(String),
@@ -114,6 +120,7 @@ def recording_row(item: dict) -> dict:
         "record_stream_key": item["record_stream_key"],
         "segment_path": item["segment_path"],
         "segment_start": item["segment_start"],
+        "segment_start_exact": item["segment_start"],
         "duration_seconds": item["duration_seconds"],
         "completed_at": item["completed_at"],
         "storage_tier": item.get("storage_tier", "hot"),
@@ -121,8 +128,98 @@ def recording_row(item: dict) -> dict:
     }
 
 
+def _canonical_clickhouse_type(value: str) -> str:
+    return "".join(value.split()).replace('"', "'")
+
+
+def _require_clickhouse_identifier(database: str) -> str:
+    if not isinstance(database, str) or _IDENTIFIER.fullmatch(database) is None:
+        raise RuntimeError("Invalid ClickHouse database identifier")
+    return database
+
+
+def recording_exact_start_alter_sql(database: str, column_type: str | None) -> str | None:
+    """Return the additive ALTER for the microsecond segment start.
+
+    The sort key stays `DateTime64(3)`. Widening that key is not a metadata-only
+    change, so precision lives in a new nullable column. This function never
+    drops the column and never modifies `segment_start`.
+
+    Args:
+        database: ClickHouse database identifier.
+        column_type: Current `system.columns` type, or None when the column is absent.
+
+    Returns:
+        ALTER TABLE text when the column must be added, or None when it is already
+        `Nullable(DateTime64(6, 'UTC'))`.
+
+    Raises:
+        RuntimeError: If the database identifier is unsafe, or the column exists
+            with a different type.
+    """
+    database = _require_clickhouse_identifier(database)
+    if column_type is None:
+        return (
+            f"ALTER TABLE {database}.recording_segments "
+            "ADD COLUMN IF NOT EXISTS segment_start_exact Nullable(DateTime64(6, 'UTC'))"
+        )
+    if not isinstance(column_type, str):
+        raise RuntimeError("recording_segments.segment_start_exact has an unexpected type")
+    if _canonical_clickhouse_type(column_type) != _canonical_clickhouse_type(_EXACT_START_TYPE):
+        raise RuntimeError("recording_segments.segment_start_exact has an unexpected type")
+    return None
+
+
+async def ensure_recording_exact_start(client: httpx.AsyncClient, database: str | None = None) -> None:
+    """Add segment_start_exact when an existing recording index lacks it.
+
+    Args:
+        client: ClickHouse HTTP client.
+        database: Database name. Defaults to the writer database.
+
+    Returns:
+        None after the column is present at microsecond precision.
+
+    Raises:
+        RuntimeError: If the identifier is unsafe, the column type is unexpected,
+            or ClickHouse returns column metadata that is not a JSON object.
+        httpx.HTTPError: If ClickHouse rejects the metadata read or ALTER.
+    """
+    database = _require_clickhouse_identifier(DB if database is None else database)
+    query = """
+SELECT type
+FROM system.columns
+WHERE database = {db:String}
+  AND table = 'recording_segments'
+  AND name = 'segment_start_exact'
+FORMAT JSONEachRow
+"""
+    response = await client.post(f"{CH}/", params={"param_db": database}, content=query)
+    response.raise_for_status()
+    column_type = None
+    for line in response.text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("recording index column metadata was not JSON") from exc
+        if not isinstance(row, dict) or not isinstance(row.get("type"), str):
+            raise RuntimeError("recording_segments.segment_start_exact has an unexpected type")
+        column_type = row["type"]
+        break
+    alter = recording_exact_start_alter_sql(database, column_type)
+    if alter is None:
+        return
+    response = await client.post(f"{CH}/", content=alter)
+    response.raise_for_status()
+
+
 async def init_clickhouse(client: httpx.AsyncClient):
     """Create the ClickHouse database and required tables if absent.
+
+    Existing recording tables gain `segment_start_exact` when that column is
+    missing. The sort key is left unchanged, and the new column is not dropped.
 
     Args:
         client: Reusable ClickHouse HTTP client.
@@ -132,12 +229,14 @@ async def init_clickhouse(client: httpx.AsyncClient):
 
     Raises:
         httpx.HTTPError: If ClickHouse rejects the DDL.
+        RuntimeError: If the exact-start column exists with an unexpected type.
     """
     response = await client.post(f"{CH}/", params={"query": f"CREATE DATABASE IF NOT EXISTS {DB}"})
     response.raise_for_status()
     for ddl in (EVENTS_SQL, RECORDINGS_SQL):
         response = await client.post(f"{CH}/", content=ddl)
         response.raise_for_status()
+    await ensure_recording_exact_start(client, DB)
 
 
 async def insert_rows(client: httpx.AsyncClient, table: str, rows: list[dict]):

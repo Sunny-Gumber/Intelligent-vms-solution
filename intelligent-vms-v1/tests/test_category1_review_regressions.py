@@ -318,6 +318,7 @@ def test_delete_camera_cleans_retained_third_key(monkeypatch):
         execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: None)),
         delete=AsyncMock(),
         commit=AsyncMock(),
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="sqlite")),
     )
 
     asyncio.run(cameras.delete_camera(camera.id, session, None))
@@ -340,6 +341,7 @@ def test_delete_camera_cleans_derived_orphan_after_failed_rollback(monkeypatch):
         execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: None)),
         delete=AsyncMock(),
         commit=AsyncMock(),
+        get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name="sqlite")),
     )
 
     asyncio.run(cameras.delete_camera(camera.id, session, None))

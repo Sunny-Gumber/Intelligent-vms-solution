@@ -18,6 +18,15 @@ class RecordingIndexError(RuntimeError):
     """Raised when recording-index queries cannot be completed safely."""
 
 
+class RecordingIndexRequestError(RecordingIndexError):
+    """Raised when a caller timestamp cannot be looked up.
+
+    Year-1 instants cannot subtract the one-day lookback. Routers map this to
+    HTTP 422. It is not a ClickHouse outage, and the message does not echo the
+    caller timestamp.
+    """
+
+
 # MediaMTX rejects a completed segment longer than one day. The indexed range
 # uses that same bound so a long segment is not hidden by a shorter lookback.
 _MAX_SEGMENT_DURATION = timedelta(days=1)
@@ -26,9 +35,30 @@ _MAX_SEGMENT_DURATION_SECONDS = 24 * 60 * 60
 # for a placement overlap; a full page of malformed rows is scanned again.
 _COVERING_CANDIDATE_LIMIT = 32
 
+# The sort key stores segment_start as DateTime64(3). Segment names carry
+# microseconds, so the fence uses segment_start_exact (DateTime64(6), not in
+# the key) when the writer stored it, and the millisecond key otherwise.
+# argMax on indexed_at collapses unmerged ReplacingMergeTree versions before
+# the duration predicate, so a replaced longer row cannot win.
+_VERSIONED_SEGMENT_COLUMNS = """
+    segment_id,
+    argMax(recording_node_id, indexed_at) AS recording_node_id,
+    argMax(record_stream_key, indexed_at) AS record_stream_key,
+    argMax(segment_path, indexed_at) AS segment_path,
+    if(
+      isNotNull(argMax(segment_start_exact, indexed_at)),
+      argMax(segment_start_exact, indexed_at),
+      toDateTime64(segment_start, 6)
+    ) AS exact_start,
+    argMax(duration_seconds, indexed_at) AS duration_seconds,
+    argMax(completed_at, indexed_at) AS completed_at,
+    argMax(storage_tier, indexed_at) AS storage_tier,
+    argMax(object_uri, indexed_at) AS object_uri"""
+
 # Exclusive segment end at microsecond resolution. The if() keeps a non-finite
 # duration from being rounded into an interval that would fail the query.
-_EXCLUSIVE_SEGMENT_END_SQL = f"""segment_start + toIntervalMicrosecond(toInt64(round(
+# exact_start is the collapsed microsecond boundary, not the DateTime64(3) key.
+_EXACT_END_SQL = f"""exact_start + toIntervalMicrosecond(toInt64(round(
   if(isFinite(duration_seconds) AND duration_seconds > 0 AND duration_seconds <= {_MAX_SEGMENT_DURATION_SECONDS}, duration_seconds, 0) * 1000000
 )))"""
 _FINITE_DURATION_SQL = f"""
@@ -36,6 +66,13 @@ _FINITE_DURATION_SQL = f"""
   AND duration_seconds > 0
   AND duration_seconds <= {_MAX_SEGMENT_DURATION_SECONDS}
 """
+
+
+def _index_not_before(instant: datetime) -> datetime:
+    try:
+        return instant - _MAX_SEGMENT_DURATION
+    except OverflowError as exc:
+        raise RecordingIndexRequestError("recording time is outside the supported range") from exc
 
 
 def _exclusive_segment_end(segment_start: datetime, duration_seconds: float) -> datetime:
@@ -164,7 +201,9 @@ class RecordingIndexClient:
         exhausted. Pass the returned `next_after_*` cursor to read the next
         page. A missing cursor means the walk is finished. The timeline and
         export routes request one page up to `recording_query_max_segments`
-        and do not expose this cursor.
+        and do not expose this cursor. A full page that is not exhausted is
+        the timeline cap; that route reports it with `X-VMS-Partial`. Export
+        still rejects a window this page does not cover continuously.
 
         Args:
             tenant_id: Tenant scope for the camera.
@@ -185,6 +224,8 @@ class RecordingIndexClient:
         Raises:
             RecordingIndexError: If timestamps are naive, ClickHouse is
                 unavailable, or the scan cannot advance past a repeated window.
+            RecordingIndexRequestError: If `start` is too early to subtract the
+                one-day lookback.
         """
         if start.tzinfo is None or end.tzinfo is None:
             raise RecordingIndexError("recording index timestamps require timezone")
@@ -270,7 +311,7 @@ class RecordingIndexClient:
     ) -> list[str]:
         # Completed segments are at most one day. Bound the primary-key range
         # by that maximum, then keep only rows that overlap [start, end).
-        query_start = start - _MAX_SEGMENT_DURATION
+        query_start = _index_not_before(start)
         params = {
             "param_tenant": tenant_id,
             "param_site": site_id,
@@ -289,26 +330,34 @@ class RecordingIndexClient:
             if after_id:
                 params["param_after_segment_id"] = after_id
                 cursor_clause = """
-  AND (segment_start > parseDateTime64BestEffort({after_start:String}, 6, 'UTC')
-    OR (segment_start = parseDateTime64BestEffort({after_start:String}, 6, 'UTC')
+  AND (exact_start > parseDateTime64BestEffort({after_start:String}, 6, 'UTC')
+    OR (exact_start = parseDateTime64BestEffort({after_start:String}, 6, 'UTC')
         AND segment_id > {after_segment_id:String}))
 """
             else:
                 cursor_clause = """
-  AND segment_start > parseDateTime64BestEffort({after_start:String}, 6, 'UTC')
+  AND exact_start > parseDateTime64BestEffort({after_start:String}, 6, 'UTC')
 """
         query = f"""
 SELECT
  segment_id, recording_node_id, record_stream_key, segment_path,
- segment_start, duration_seconds, completed_at, storage_tier, object_uri
-FROM {self.database}.recording_segments
-WHERE tenant_id = {{tenant:String}}
-  AND site_id = {{site:String}}
-  AND camera_id = {{camera:String}}
-  AND segment_start >= parseDateTime64BestEffort({{start:String}}, 6, 'UTC')
-  AND segment_start < parseDateTime64BestEffort({{end:String}}, 6, 'UTC')
+ exact_start AS segment_start, duration_seconds, completed_at, storage_tier, object_uri
+FROM
+(
+  SELECT
+{_VERSIONED_SEGMENT_COLUMNS}
+  FROM {self.database}.recording_segments
+  WHERE tenant_id = {{tenant:String}}
+    AND site_id = {{site:String}}
+    AND camera_id = {{camera:String}}
+    AND segment_start >= parseDateTime64BestEffort({{start:String}}, 3, 'UTC') - toIntervalMillisecond(1)
+    AND segment_start < parseDateTime64BestEffort({{end:String}}, 3, 'UTC') + toIntervalMillisecond(1)
+  GROUP BY tenant_id, site_id, camera_id, segment_start, segment_id
+)
+WHERE 1
 {_FINITE_DURATION_SQL}
-  AND {_EXCLUSIVE_SEGMENT_END_SQL} > parseDateTime64BestEffort({{window_start:String}}, 6, 'UTC')
+  AND exact_start < parseDateTime64BestEffort({{end:String}}, 6, 'UTC')
+  AND {_EXACT_END_SQL} > parseDateTime64BestEffort({{window_start:String}}, 6, 'UTC')
 {cursor_clause}
 ORDER BY segment_start ASC, segment_id ASC
 LIMIT 1 BY segment_id
@@ -354,6 +403,8 @@ FORMAT JSONEachRow
         Raises:
             RecordingIndexError: If the timestamp is naive or the recording-index
                 query fails.
+            RecordingIndexRequestError: If `start` is too early to subtract the
+                one-day lookback.
         """
         if start.tzinfo is None:
             raise RecordingIndexError("recording index timestamps require timezone")
@@ -405,7 +456,7 @@ FORMAT JSONEachRow
         cursor,
         batch_limit: int,
     ) -> list[str]:
-        not_before = instant - _MAX_SEGMENT_DURATION
+        not_before = _index_not_before(instant)
         params = {
             "param_tenant": tenant_id,
             "param_site": site_id,
@@ -422,26 +473,34 @@ FORMAT JSONEachRow
             if before_id:
                 params["param_before_segment_id"] = before_id
                 cursor_clause = """
-  AND (segment_start < parseDateTime64BestEffort({before_start:String}, 6, 'UTC')
-    OR (segment_start = parseDateTime64BestEffort({before_start:String}, 6, 'UTC')
+  AND (exact_start < parseDateTime64BestEffort({before_start:String}, 6, 'UTC')
+    OR (exact_start = parseDateTime64BestEffort({before_start:String}, 6, 'UTC')
         AND segment_id < {before_segment_id:String}))
 """
             else:
                 cursor_clause = """
-  AND segment_start < parseDateTime64BestEffort({before_start:String}, 6, 'UTC')
+  AND exact_start < parseDateTime64BestEffort({before_start:String}, 6, 'UTC')
 """
         query = f"""
 SELECT
  segment_id, recording_node_id, record_stream_key, segment_path,
- segment_start, duration_seconds, completed_at, storage_tier, object_uri
-FROM {self.database}.recording_segments
-WHERE tenant_id = {{tenant:String}}
-  AND site_id = {{site:String}}
-  AND camera_id = {{camera:String}}
-  AND segment_start >= parseDateTime64BestEffort({{not_before:String}}, 6, 'UTC')
-  AND segment_start <= parseDateTime64BestEffort({{instant:String}}, 6, 'UTC')
+ exact_start AS segment_start, duration_seconds, completed_at, storage_tier, object_uri
+FROM
+(
+  SELECT
+{_VERSIONED_SEGMENT_COLUMNS}
+  FROM {self.database}.recording_segments
+  WHERE tenant_id = {{tenant:String}}
+    AND site_id = {{site:String}}
+    AND camera_id = {{camera:String}}
+    AND segment_start >= parseDateTime64BestEffort({{not_before:String}}, 3, 'UTC') - toIntervalMillisecond(1)
+    AND segment_start <= parseDateTime64BestEffort({{instant:String}}, 3, 'UTC') + toIntervalMillisecond(1)
+  GROUP BY tenant_id, site_id, camera_id, segment_start, segment_id
+)
+WHERE 1
 {_FINITE_DURATION_SQL}
-  AND {_EXCLUSIVE_SEGMENT_END_SQL} > parseDateTime64BestEffort({{instant:String}}, 6, 'UTC')
+  AND exact_start <= parseDateTime64BestEffort({{instant:String}}, 6, 'UTC')
+  AND {_EXACT_END_SQL} > parseDateTime64BestEffort({{instant:String}}, 6, 'UTC')
 {cursor_clause}
 ORDER BY segment_start DESC, segment_id DESC
 LIMIT 1 BY segment_id
