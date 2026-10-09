@@ -1,5 +1,6 @@
 import asyncio
 import socket
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -70,6 +71,11 @@ class CameraSession:
 
     async def refresh(self, value):
         del value
+
+    def get_bind(self):
+        # delete_camera asks for the dialect before it takes the placement
+        # fence. This double is the SQLite path: no advisory lock.
+        return SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
 
 
 def camera():

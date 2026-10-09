@@ -3096,3 +3096,108 @@ if _postgresql_database_urls():
                 await engine.dispose()
 
         asyncio.run(scenario())
+
+
+    @pytest.mark.parametrize("case_name", ["enabled", "authority_mode"])
+    @pytest.mark.parametrize("database_url", _postgresql_database_urls())
+    def test_recheck_rejects_node_disable_or_authority_already_visible(
+        tmp_path, monkeypatch, caplog, database_url, case_name
+    ):
+        """REV-014-002. A node disable or authority change already committed is not renewed.
+
+        The scan still sees an enabled central_online owner and extends the
+        lease inside this transaction. Before the pre-commit recheck reads,
+        another session commits enabled=false or authority_mode=fenced_degraded.
+        That commit is visible. The recheck predicate must roll the attempt
+        back. A predicate that only compares region_id stores a full new lease.
+        """
+
+        async def scenario():
+            factory, engine = await _open_database(tmp_path, f"visible-{case_name}.db", database_url)
+            try:
+                lease = 60
+                _configure_budget(
+                    monkeypatch,
+                    lease=lease,
+                    interval=10,
+                    scan_batch=10,
+                    renewal_batch=10,
+                    max_assignments=10,
+                    max_run=4,
+                    lock_retry_limit=1,
+                )
+                monkeypatch.setattr(placement, "_RENEWAL_LEASE_WRITE_CHUNK", 2)
+                camera_ids = [f"cam-{index:02d}" for index in range(1, 5)]
+                original_lease = T0
+                await _seed(
+                    factory,
+                    [
+                        _node("node-a", T0, region_id="region-a"),
+                        _node("node-b", T0, region_id="region-a"),
+                        _site_region("site-a", "region-a"),
+                        *[_camera(camera_id) for camera_id in camera_ids],
+                        *[
+                            _assignment(
+                                camera_id,
+                                "node-a",
+                                original_lease,
+                                region_id="region-a",
+                                assignment_id=f"pa-{camera_id}",
+                            )
+                            for camera_id in camera_ids
+                        ],
+                    ],
+                )
+                monkeypatch.setattr(placement, "SessionLocal", factory)
+                monkeypatch.setattr(placement, "datetime", MutableClock)
+                original_recheck = placement._reject_stale_extended_leases
+
+                async def publish_then_recheck(session):
+                    async with factory() as other:
+                        async with other.begin():
+                            await other.execute(text("SELECT set_config('lock_timeout', '2000', true)"))
+                            if case_name == "enabled":
+                                result = await other.execute(
+                                    text(
+                                        "UPDATE infrastructure_nodes SET enabled = false "
+                                        "WHERE id = 'node-a'"
+                                    )
+                                )
+                            else:
+                                result = await other.execute(
+                                    text(
+                                        "UPDATE infrastructure_nodes "
+                                        "SET authority_mode = 'fenced_degraded' "
+                                        "WHERE id = 'node-a'"
+                                    )
+                                )
+                            assert result.rowcount == 1
+                    await original_recheck(session)
+
+                monkeypatch.setattr(placement, "_reject_stale_extended_leases", publish_then_recheck)
+                caplog.set_level(logging.CRITICAL, logger="app.services.placement")
+                MutableClock.instant = T0 + timedelta(seconds=10)
+                await _touch_heartbeat(factory, "node-a", MutableClock.instant)
+                await _touch_heartbeat(factory, "node-b", MutableClock.instant)
+                result = await placement.run_placement_once()
+                assert result["renewed"] == 0, result
+                assert result["renewal_invalidated"] is True, result
+                assert result["moved"] == 0, result
+                assert "placement_renewal_invalidated" in caplog.text
+                stored = {row.camera_id: row for row in await _assignments(factory)}
+                for camera_id in camera_ids:
+                    assert stored[camera_id].node_id == "node-a", camera_id
+                    assert stored[camera_id].generation == 1, camera_id
+                    assert _as_utc(stored[camera_id].lease_expires_at) == original_lease, camera_id
+                async with factory() as check:
+                    node_a = await check.get(InfrastructureNodeEntity, "node-a")
+                    if case_name == "enabled":
+                        assert node_a.enabled is False
+                        assert node_a.authority_mode == "central_online"
+                    else:
+                        assert node_a.enabled is True
+                        assert node_a.authority_mode == "fenced_degraded"
+            finally:
+                await engine.dispose()
+
+        asyncio.run(scenario())

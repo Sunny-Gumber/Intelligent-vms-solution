@@ -908,10 +908,11 @@ async def delete_camera(
 ):
     """Delete an authorized camera after safely removing active media paths.
 
-    When placement execution is enabled, the placement fence is acquired before
-    the camera row lock. The row lock is taken before active manual sessions
-    are stopped, and it is held through the camera delete. Placement execution
-    disabled does not take the fence.
+    The placement fence is acquired before path cleanup and before the camera
+    row lock, whether or not placement execution is enabled. A busy fence
+    returns HTTP 409. The row lock is taken before active manual sessions are
+    stopped, and it is held through the camera delete. Delete does not wait
+    on an assignment row that a fenced renewal already holds.
 
     Args:
         camera_id: Camera identifier to remove.
@@ -926,14 +927,14 @@ async def delete_camera(
             cleanup prevents deletion.
     """
     entity = await authorized_camera(session, camera_id, principal)
+    try:
+        await require_placement_execution_lock(session)
+    except PlacementExecutionBusy as exc:
+        raise HTTPException(
+            409,
+            "Placement ownership is changing; retry camera deletion",
+        ) from exc
     if settings.placement_execution_enabled:
-        try:
-            await require_placement_execution_lock(session)
-        except PlacementExecutionBusy as exc:
-            raise HTTPException(
-                409,
-                "Placement ownership is changing; retry camera deletion",
-            ) from exc
         await _delete_distributed_paths(session, entity)
     else:
         policy = (
