@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os  # CLI tests patch os.replace here; atomic publish uses the same module.
 import stat
+import threading
 import time
 from collections.abc import Awaitable
 from pathlib import Path
@@ -17,10 +18,16 @@ from phase8_benchmark_common import SystemSampler, build_result, utc_iso, write_
 
 LOG = logging.getLogger(__name__)
 _T = TypeVar("_T")
-# How long shutdown waits for a task that was cancelled. A workload that
-# ignores CancelledError fails the run when this elapses. Cooperative
-# attempt() calls return as soon as they are cancelled.
+# How long shutdown waits for a task that was cancelled or is still inside a
+# host sample. A workload that ignores CancelledError, and a sample() that
+# never returns, fail the run when this elapses. Cooperative attempt() calls
+# return as soon as they are cancelled. sample() runs on a daemon thread so a
+# blocked sample cannot freeze this wait or the event loop.
 _SHUTDOWN_JOIN_SECONDS = 5.0
+# How long to wait for a sample thread that has not signalled completion.
+# An instantaneous sample that lost the scheduler race is reaped. A sample
+# that is still inside sample() stays a daemon and does not extend this wait.
+_SAMPLE_THREAD_REAP_SECONDS = 1.0
 
 
 async def attempt(host: str, port: int, timeout: float) -> tuple[bool, float]:
@@ -336,6 +343,72 @@ def _abandon_tasks_that_ignore_cancellation(loop: asyncio.AbstractEventLoop) -> 
         )
 
 
+async def _sample_off_loop(sampler: SystemSampler) -> dict[str, object]:
+    """Collect one sample without blocking the event-loop thread.
+
+    ``SystemSampler.sample`` can block inside host queries. Calling it on the
+    loop would freeze cancellation and the shutdown bound. The sample runs on
+    a daemon thread. A sample that never returns is abandoned when the task is
+    cancelled or the shutdown bound expires. The join after that wait is capped
+    by ``_SAMPLE_THREAD_REAP_SECONDS``, and the daemon thread does not keep the
+    process alive after the run has already failed.
+
+    Args:
+        sampler: Host sampler for this run.
+
+    Returns:
+        The dictionary ``sampler.sample`` returned.
+
+    Raises:
+        Exception: Propagates whatever ``sample`` raises, including
+            ``KeyboardInterrupt`` and ``SystemExit``, on the calling task
+            after the worker thread has stored them.
+        asyncio.CancelledError: The calling task was cancelled while the
+            sample was still running. The thread is left running and is a
+            daemon, so process exit does not wait for it.
+    """
+    loop = asyncio.get_running_loop()
+    finished = asyncio.Event()
+    outcome: dict[str, object] = {}
+
+    def work() -> None:
+        try:
+            outcome["value"] = sampler.sample()
+        except BaseException as exc:
+            outcome["error"] = exc
+
+        def mark() -> None:
+            finished.set()
+
+        try:
+            loop.call_soon_threadsafe(mark)
+        except RuntimeError:
+            # The loop closed during shutdown. The sample is abandoned.
+            return
+
+    worker = threading.Thread(target=work, name="vms-reconnect-sample", daemon=True)
+    worker.start()
+    try:
+        await finished.wait()
+    finally:
+        # Join on this thread. A finished sample has already left sample(), so
+        # the join returns at once and does not freeze the loop. A sample that
+        # never returns is reaped only for _SAMPLE_THREAD_REAP_SECONDS.
+        if finished.is_set():
+            worker.join()
+        else:
+            worker.join(_SAMPLE_THREAD_REAP_SECONDS)
+    if "error" in outcome:
+        error = outcome["error"]
+        if isinstance(error, BaseException):
+            raise error
+        raise RuntimeError("reconnect benchmark sample failed without an exception")
+    value = outcome.get("value")
+    if not isinstance(value, dict):
+        raise RuntimeError("reconnect benchmark sample returned no dictionary")
+    return value
+
+
 async def run(args) -> dict:
     """Run the configured reconnect workload and build benchmark evidence.
 
@@ -363,6 +436,9 @@ async def run(args) -> dict:
             match the attempts that were dequeued or configured, and when a
             cancelled worker or sampler is still running after
             ``_SHUTDOWN_JOIN_SECONDS`` because it ignored cancellation.
+            A ``sample()`` that never returns fails inside that same bound.
+            Sampling runs off the event-loop thread, so the wait itself can
+            finish while that sample is still blocked.
     """
     queue: asyncio.Queue[int | None] = asyncio.Queue(maxsize=max(1, args.concurrency * 4))
     latencies: list[float] = []
@@ -549,7 +625,7 @@ async def run(args) -> dict:
     async def sample_loop() -> BaseException | None:
         try:
             while not stop.is_set():
-                samples.append(sampler.sample())
+                samples.append(await _sample_off_loop(sampler))
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=max(0.1, args.sample_interval))
                 except asyncio.TimeoutError:
@@ -827,7 +903,9 @@ def main():
     argument errors, including ``--attempts`` below 1, still exit from
     ``argparse`` before any file is removed. Shutdown of a workload that
     ignores cancellation is bounded by ``_SHUTDOWN_JOIN_SECONDS`` and fails
-    the run.
+    the run. Resource sampling uses that same bound: ``sample`` runs off the
+    event-loop thread, and a sample that never returns fails the run instead
+    of stalling the loop.
 
     Args:
         None. Arguments are read from the process command line.
