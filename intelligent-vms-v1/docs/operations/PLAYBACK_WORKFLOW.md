@@ -60,6 +60,23 @@ the current node, and one request never crosses a recording-node boundary.
 The server never constructs synthetic continuity across a recording gap or
 recording-node/failover boundary.
 
+## Upstream timeouts
+
+Ordinary playback bounds the recorder connection. The connect timeout defaults
+to 5 seconds (`RECORDING_PLAYBACK_CONNECT_TIMEOUT_SECONDS`) and the read
+timeout defaults to 30 seconds (`RECORDING_PLAYBACK_READ_TIMEOUT_SECONDS`).
+The read timeout is the longest silence allowed while waiting for response
+headers or the next body chunk. That same limit covers write and pool, so no
+phase waits forever. Both values must be finite and greater than zero, and
+neither may exceed 300 seconds.
+
+A recorder that accepts and never answers, or that answers and then stalls
+before the first playback byte, ends as HTTP 504. A stall after bytes have
+started, or a client disconnect, closes the upstream response and client
+instead of leaving the connection open. Export does not use these two
+settings. It still applies `recording_export_io_timeout_seconds` (default 30
+seconds, allowed range 1 through 300) as one timeout for every phase.
+
 The timeline body stays a JSON array. Malformed recording-index rows are
 skipped, counted, and reported with `X-VMS-Partial` and `X-VMS-Skipped-Rows`.
 See [Search and index page contract](../architecture/SEARCH_INDEX_PAGE_CONTRACT.md).
