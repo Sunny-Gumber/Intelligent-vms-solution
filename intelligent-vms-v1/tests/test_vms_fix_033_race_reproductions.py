@@ -1032,7 +1032,6 @@ def test_onvif_known_unsubscribe_error_retries():
     assert not bad, rows
 
 
-@pytest.mark.known_race
 def test_local_event_duplicate_insert_is_idempotent(postgres_url):
     """Concurrent inserts of one id return one success and one False, with no error."""
 
