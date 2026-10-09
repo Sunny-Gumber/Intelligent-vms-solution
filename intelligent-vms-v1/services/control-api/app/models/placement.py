@@ -25,6 +25,10 @@ class InfrastructureNodeEntity(TimestampMixin, Base):
     endpoints_json: Mapped[dict] = mapped_column(JSON, default=dict)
     capacity_json: Mapped[dict] = mapped_column(JSON, default=dict)
     load_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Null means this row has not reported explicit role readiness. Placement
+    # then treats a zero media or recording count as unknown, not as spare
+    # capacity. The column is additive; nothing is dropped to add it.
+    role_readiness_json: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     heartbeat_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
     )

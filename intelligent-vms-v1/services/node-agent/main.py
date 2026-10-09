@@ -1102,7 +1102,8 @@ class NodeAgent:
         """Collect bounded host/media load and authority state for one heartbeat.
 
         Returns:
-            Heartbeat payload containing load, authority mode and observation time.
+            Heartbeat payload containing load, role readiness, authority mode
+            and observation time.
 
         Raises:
             Exception: Media-node telemetry failures not handled internally propagate.
@@ -1112,8 +1113,8 @@ class NodeAgent:
         load = dict(host)
         load.update(mediamtx)
         # Failure, truncation, and an inconsistent catalog are not zero load.
-        # Omitting the measured keys is what placement already treats as
-        # ineligible. Publishing 0 would look like spare capacity.
+        # The published signal is role_readiness unknown. Omitting the counts
+        # keeps a 0 from being read as spare capacity.
         list_untrusted = (
             bool(mediamtx.get("mediamtx_list_truncated"))
             or bool(mediamtx.get("mediamtx_list_inconsistent"))
@@ -1138,9 +1139,17 @@ class NodeAgent:
             # byte-rate source is wired in. Placement treats missing configured
             # dimensions as ineligible rather than zero-load.
         # AI placement load must come from the AI runtime/scheduler; this generic
-        # host agent does not invent ai_mpix_s or active_ai_jobs.
+        # host agent does not invent ai_mpix_s or active_ai_jobs. A failed
+        # media probe must not mark the AI role.
+        readiness_state = "unknown" if list_untrusted else "ready"
+        role_readiness: dict[str, str] = {}
+        if "media" in self.settings.node_roles:
+            role_readiness["media"] = readiness_state
+        if "recording" in self.settings.node_roles:
+            role_readiness["recording"] = readiness_state
         return {
             "load": load,
+            "role_readiness": role_readiness,
             "authority_mode": str(
                 self._fence_state.get("authority_mode") or "fenced_degraded"
             ),

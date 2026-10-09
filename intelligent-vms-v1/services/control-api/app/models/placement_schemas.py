@@ -100,17 +100,25 @@ class NodeUpsert(BaseModel):
         return value
 
 
+_ROLE_READINESS_ROLES = frozenset({"media", "recording", "ai"})
+_ROLE_READINESS_STATES = frozenset({"ready", "not_ready", "unknown"})
+
+
 class NodeHeartbeat(BaseModel):
     """Validate a node heartbeat payload.
 
-    Parameters describe current load, authority mode and observation time.
-    Construction returns a normalized model or raises Pydantic validation errors
-    for unsupported fields, negative load or timezone-naive timestamps.
+    Parameters describe current load, optional explicit role readiness,
+    authority mode and observation time. ``role_readiness`` is optional so an
+    older agent that omits it still validates. Construction returns a
+    normalized model or raises Pydantic validation errors for unsupported
+    fields, negative load, a readiness value that is not ready/not_ready/
+    unknown, or a timezone-naive timestamp.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     load: dict[str, float] = Field(default_factory=dict)
+    role_readiness: dict[str, str] | None = None
     authority_mode: AuthorityMode = "central_online"
     observed_at: datetime
 
@@ -131,6 +139,34 @@ class NodeHeartbeat(BaseModel):
         if any(float(v) < 0 for v in value.values()):
             raise ValueError("load values must be non-negative")
         return value
+
+    @field_validator("role_readiness")
+    @classmethod
+    def explicit_role_readiness(cls, value):
+        """Require role readiness to be ready, not_ready, or unknown.
+
+        Args:
+            value: Optional per-role readiness map.
+
+        Returns:
+            The unchanged map when every key and value is explicit.
+
+        Raises:
+            ValueError: If a role is unknown or a state is not one of the
+                three words. A count, including 0, is not a readiness state.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("role_readiness must be an object")
+        cleaned: dict[str, str] = {}
+        for key, state in value.items():
+            if type(key) is not str or key not in _ROLE_READINESS_ROLES:
+                raise ValueError("role_readiness keys must be media, recording, or ai")
+            if type(state) is not str or state not in _ROLE_READINESS_STATES:
+                raise ValueError("role_readiness values must be ready, not_ready, or unknown")
+            cleaned[key] = state
+        return cleaned
 
     @field_validator("observed_at")
     @classmethod
@@ -155,9 +191,9 @@ class NodeHeartbeat(BaseModel):
 class NodeRead(BaseModel):
     """Serialize infrastructure-node state returned by the control API.
 
-    Fields expose identity, placement metadata, capacity/load, heartbeat,
-    authority mode and generation. Model validation may raise for incompatible
-    input types.
+    Fields expose identity, placement metadata, capacity/load, explicit role
+    readiness, heartbeat, authority mode and generation. Model validation may
+    raise for incompatible input types.
     """
 
     id: str
@@ -169,6 +205,7 @@ class NodeRead(BaseModel):
     endpoints: dict[str, Any]
     capacity: dict[str, Any]
     load: dict[str, Any]
+    role_readiness: dict[str, Any] | None = None
     heartbeat_at: datetime
     authority_mode: AuthorityMode
     generation: int
