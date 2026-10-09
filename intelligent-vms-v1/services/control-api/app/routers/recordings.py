@@ -783,7 +783,6 @@ async def stream_recording_clip(
         raise HTTPException(404, "Recording policy not configured")
 
     playback = None
-    spans: list[RecordingTimespan] = []
     if settings.placement_execution_enabled:
         try:
             rows = await recording_index.segments(
@@ -814,15 +813,9 @@ async def stream_recording_clip(
             items = await playback.list_timespans(policy.record_stream_key, start, end)
         except PlaybackError as exc:
             raise HTTPException(exc.status_code, str(exc)) from exc
-        for item in items:
-            try:
-                span_start = datetime.fromisoformat(str(item["start"]).replace("Z", "+00:00"))
-                span_end = span_start + timedelta(seconds=float(item["duration"]))
-            except (KeyError, TypeError, ValueError):
-                continue
-            clipped_start, clipped_end = max(span_start, start), min(span_end, end)
-            if clipped_end > clipped_start:
-                spans.append(RecordingTimespan(start=clipped_start, duration=(clipped_end-clipped_start).total_seconds(), end=clipped_end))
+        # Same bounded parser as playback. Naive, non-finite, overflowing, and
+        # malformed items are dropped, so a gap stays a gap and does not raise.
+        spans = _playback_timespans(items, start, end)
         if not _coverage_is_continuous(spans, start, end):
             raise HTTPException(409, "Requested clip does not have continuous recording coverage")
 
