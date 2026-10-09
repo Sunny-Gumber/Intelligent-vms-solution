@@ -123,6 +123,28 @@ async def _node_map(session: AsyncSession, rows: list[CameraEntity]) -> dict[str
     return {node.id: node for node in nodes}
 
 
+async def _lock_camera_row(session: AsyncSession, camera_id: str) -> CameraEntity | None:
+    """Lock one camera row until this transaction commits or rolls back.
+
+    Delete calls this after the placement execution fence, when that fence is
+    taken, and before it stops active manual sessions. Manual start calls it
+    before inserting a session. The insert then cannot commit between that
+    stop and the camera delete.
+
+    Args:
+        session: Transaction that will start a manual recording or delete the camera.
+        camera_id: Camera primary key to lock.
+
+    Returns:
+        The locked camera row, or None when that row is already gone.
+    """
+    return (
+        await session.execute(
+            select(CameraEntity).where(CameraEntity.id == camera_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+
+
 async def authorized_camera(
     session: AsyncSession, camera_id: str, principal: Principal
 ) -> CameraEntity:
@@ -886,6 +908,11 @@ async def delete_camera(
 ):
     """Delete an authorized camera after safely removing active media paths.
 
+    When placement execution is enabled, the placement fence is acquired before
+    the camera row lock. The row lock is taken before active manual sessions
+    are stopped, and it is held through the camera delete. Placement execution
+    disabled does not take the fence.
+
     Args:
         camera_id: Camera identifier to remove.
         session: Database session for ownership checks and deletion.
@@ -928,6 +955,7 @@ async def delete_camera(
                 503,
                 {"code": "CAMERA_CLEANUP_FAILED", "message": "Camera paths could not be safely removed"},
             ) from exc
+    await _lock_camera_row(session, entity.id)
     now = datetime.now(timezone.utc)
     await session.execute(
         update(ManualRecordingSessionEntity)

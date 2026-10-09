@@ -1,3 +1,5 @@
+import math
+
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -26,6 +28,44 @@ def playback_record_path_accepted(record_path: str) -> bool:
     if not (has_epoch or has_calendar):
         return False
     return "%f" in record_path
+
+
+# Ordinary /play connect and read ceilings. Export keeps its own field.
+_PLAYBACK_UPSTREAM_TIMEOUT_MAX_SECONDS = 300.0
+
+
+def _positive_finite_timeout(value: object, *, maximum: float) -> float:
+    """Return a playback timeout that is finite and inside (0, maximum].
+
+    Args:
+        value: Raw settings value, including environment strings.
+        maximum: Inclusive ceiling in seconds.
+
+    Returns:
+        The timeout in seconds.
+
+    Raises:
+        ValueError: If the value is not a finite duration greater than zero
+            and at most ``maximum``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(
+            "playback upstream timeout must be finite, greater than 0, "
+            f"and at most {maximum:g} seconds"
+        )
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "playback upstream timeout must be finite, greater than 0, "
+            f"and at most {maximum:g} seconds"
+        ) from exc
+    if not math.isfinite(number) or number <= 0 or number > maximum:
+        raise ValueError(
+            "playback upstream timeout must be finite, greater than 0, "
+            f"and at most {maximum:g} seconds"
+        )
+    return number
 
 
 class Settings(BaseSettings):
@@ -100,6 +140,16 @@ class Settings(BaseSettings):
     recording_export_max_duration_seconds: int = Field(default=900, ge=1, le=14400)
     recording_export_max_concurrent_per_process: int = Field(default=4, ge=1, le=64)
     recording_export_io_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    # Ordinary /play upstream bounds (VMS-FIX-018). Export does not use these.
+    # It still passes recording_export_io_timeout_seconds as one timeout for
+    # every httpx phase. Connect is the TCP handshake
+    # (RECORDING_PLAYBACK_CONNECT_TIMEOUT_SECONDS, default 5). Read is the
+    # longest silence while waiting for response headers or the next body
+    # chunk (RECORDING_PLAYBACK_READ_TIMEOUT_SECONDS, default 30) and is also
+    # applied to write and pool so no phase is left unbounded. Both must be
+    # finite and greater than zero, with the same 300 second ceiling as export.
+    recording_playback_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=300.0)
+    recording_playback_read_timeout_seconds: float = Field(default=30.0, gt=0, le=300.0)
     observability_recording_gap_min_seconds: int = Field(default=120, ge=60, le=86400)
     observability_recording_gap_segment_multiplier: float = Field(
         default=2.0,
@@ -217,6 +267,15 @@ class Settings(BaseSettings):
                 "recordPath rules: %path, %f, and either %s or %Y %m %d %H %M %S"
             )
         return value
+
+    @field_validator(
+        "recording_playback_connect_timeout_seconds",
+        "recording_playback_read_timeout_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _playback_upstream_timeouts_are_positive_and_finite(cls, value: object) -> float:
+        return _positive_finite_timeout(value, maximum=_PLAYBACK_UPSTREAM_TIMEOUT_MAX_SECONDS)
 
     @model_validator(mode="after")
     def reject_unsatisfiable_placement_renewal_budget(self) -> "Settings":
