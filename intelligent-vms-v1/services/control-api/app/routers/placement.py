@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import (
@@ -129,9 +129,11 @@ async def heartbeat_node(
     """Update node load, role readiness, authority mode and heartbeat freshness.
 
     The write is one conditional update. The clamped observation must be
-    strictly newer than the stored heartbeat. An older or equal observation
-    leaves load, role readiness, authority mode and heartbeat_at unchanged.
-    The stored row is returned in both cases.
+    strictly newer than the stored heartbeat. A SQL NULL heartbeat is older
+    than any observation, so the first observation is stored when that column
+    is null. An older or equal observation leaves load, role readiness,
+    authority mode and heartbeat_at unchanged. The stored row is returned in
+    both cases.
 
     Args:
         node_id: Infrastructure node sending the heartbeat.
@@ -159,12 +161,18 @@ async def heartbeat_node(
     # Do not assign the loaded ORM fields. A dirty object is flushed on commit
     # and would replace this predicate with the stale observation. Readiness
     # is in the same UPDATE as load and heartbeat_at (FIX-042).
+    # NULL heartbeat_at is older than any observation. The column is NOT NULL
+    # in the schema; the predicate still matches NULL so dropping that
+    # constraint cannot drop the first observation (FIX-042 residual).
     clamped = min(observed_at, now)
     await session.execute(
         update(InfrastructureNodeEntity)
         .where(
             InfrastructureNodeEntity.id == node_id,
-            InfrastructureNodeEntity.heartbeat_at < clamped,
+            or_(
+                InfrastructureNodeEntity.heartbeat_at < clamped,
+                InfrastructureNodeEntity.heartbeat_at.is_(None),
+            ),
         )
         .values(
             load_json=dict(payload.load),
