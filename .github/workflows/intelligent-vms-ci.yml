@@ -250,3 +250,20 @@ jobs:
           cp .env.example .env
           docker compose build control-api event-writer mediamtx onvif-event-worker alarm-worker placement-controller node-agent regional-spool
           docker build -f services/web/Dockerfile -t intelligent-vms-web:ci .
+
+  vms-windows-atomic-publish:
+    runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: intelligent-vms-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Atomic publish Windows residuals
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest==8.4.1
+          python -m pytest -q -p no:cacheprovider tests/test_vms_fix_150_atomic_publish_residuals.py

@@ -59,6 +59,10 @@ python tools/phase8_reconnect_benchmark.py \
   --output-json benchmarks/results/reconnect.json
 ```
 
+Resource samples are collected off the event-loop thread. A sample that never
+returns fails the run after the same shutdown bound as a workload that ignores
+cancellation. The stuck sample does not keep that wait from finishing.
+
 ### RTSP source/viewer workload manifest
 
 Requires ffmpeg on load-generator hosts:
@@ -119,6 +123,12 @@ leftover temporary file by hand if you need the disk space.
 The storage benchmark also removes a regular file at the legacy `<name>.partial` path once
 during that startup pass. A symlink there is left alone. Both benchmarks fail before
 deleting anything when `--output-json` or that legacy path is a directory.
+
+A directory, FIFO, socket, or device at the JSON or CSV destination is refused
+before either file is replaced. A symlink at the destination is replaced and is
+not followed. On Windows, where `os.fchmod` does not exist, the temporary file's
+inherited DACL is replaced with a current-user read/write/delete ACE before the
+payload is written, and the destination directory is flushed with backup semantics.
 
 `tcp-reconnect-storm` is not a hardware-qualification workload. The storage tool measures a
 write baseline only.

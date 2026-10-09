@@ -40,7 +40,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r tests/requirements.txt
-          python -m pytest -q tests/test_windows_field_test_release.py tests/test_recording_phase3.py tests/test_field_test_browser_session.py
+          python -m pytest -q tests/test_windows_field_test_release.py tests/test_recording_phase3.py tests/test_field_test_browser_session.py tests/test_vms_fix_150_atomic_publish_residuals.py
 
       - name: Preflight native Windows runner
         shell: pwsh

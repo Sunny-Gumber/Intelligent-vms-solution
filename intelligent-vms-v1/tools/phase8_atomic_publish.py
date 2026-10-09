@@ -14,6 +14,12 @@ A process killed with ``SIGKILL`` while the temporary file is open never runs
 the cleanup handler. The next invocation does not search the directory or
 delete arbitrary files to remove that leftover. The operator can delete the
 named temporary file by hand.
+
+A directory, FIFO, socket, or device at either destination is refused before
+any file is replaced. A symlink is replaced and is not followed. Unix forces
+mode ``0600`` with ``os.fchmod`` on the temporary descriptor. Windows has no
+``fchmod``; the temporary file's inherited DACL is replaced with one ACE for
+the current user before any payload byte is written.
 """
 
 from __future__ import annotations
@@ -30,9 +36,27 @@ from typing import Any
 
 LOG = logging.getLogger(__name__)
 
-# Owner read/write. mkstemp requests this mode, and fchmod applies it again so
-# a non-zero umask cannot leave the evidence file group- or world-readable.
+# Owner read/write. mkstemp requests this mode. Where os.fchmod exists it is
+# applied again on the open descriptor. Windows has no fchmod; a current-user
+# DACL is applied instead so the inherited directory ACL cannot widen the file.
 EVIDENCE_FILE_MODE = 0o600
+
+# Win32 constants for the no-fchmod permission and directory-flush paths.
+_WIN_TOKEN_QUERY = 0x0008
+_WIN_TOKEN_USER = 1
+_WIN_ERROR_INSUFFICIENT_BUFFER = 122
+_WIN_ACL_REVISION = 2
+_WIN_SE_FILE_OBJECT = 1
+_WIN_DACL_SECURITY_INFORMATION = 0x4
+_WIN_PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
+_WIN_FILE_GENERIC_READ = 0x120089
+_WIN_FILE_GENERIC_WRITE = 0x120116
+_WIN_DELETE = 0x00010000
+_WIN_FILE_SHARE_READ_WRITE_DELETE = 0x1 | 0x2 | 0x4
+_WIN_OPEN_EXISTING = 3
+_WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WIN_GENERIC_READ = 0x80000000
+_WIN_INVALID_HANDLE = 0xFFFFFFFFFFFFFFFF
 
 # Stable CSV column order. Dict insertion order is not the contract; writers
 # emit these names from left to right on every row.
@@ -76,6 +100,37 @@ def is_real_directory(path: Path) -> bool:
     except FileNotFoundError:
         return False
     return stat.S_ISDIR(info.st_mode)
+
+
+def _require_replaceable_destination(path: Path) -> None:
+    """Refuse a destination that must not be replaced or that can block on open.
+
+    A missing path is replaceable. A symlink is replaceable because
+    ``os.replace`` swaps the link and does not follow it. A regular file is
+    replaceable. A directory, FIFO, socket, or device is not. Opening a FIFO
+    to read an existing CSV can block after the JSON file is already committed,
+    and replacing a device would remove that device node.
+
+    Args:
+        path: JSON or CSV destination to inspect.
+
+    Returns:
+        None when the path is missing, a symlink, or a regular file.
+
+    Raises:
+        RuntimeError: The path is a directory or another non-regular file.
+            Nothing is removed.
+        OSError: ``lstat`` failed for a reason other than a missing path.
+    """
+    if is_real_directory(path):
+        raise RuntimeError(f"benchmark output path is a directory: {path}")
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode) or stat.S_ISREG(info.st_mode):
+        return
+    raise RuntimeError(f"benchmark output path is not a regular file: {path}")
 
 
 def benchmark_csv_row(result: dict[str, Any]) -> dict[str, Any]:
@@ -155,7 +210,8 @@ def publish_file(destination: Path, write_staging: Callable[[Path], None]) -> No
     directory. It does not write ``destination`` again after the replace.
 
     Args:
-        destination: Final path. A real directory is refused and left in place.
+        destination: Final path. A real directory, FIFO, socket, or device is
+            refused and left in place. A symlink is replaced and not followed.
         write_staging: Callback that writes the complete payload to the
             temporary path. It must not replace ``destination`` itself.
 
@@ -163,7 +219,8 @@ def publish_file(destination: Path, write_staging: Callable[[Path], None]) -> No
         None after ``destination`` names the temporary file's inode.
 
     Raises:
-        RuntimeError: ``destination`` is a real directory. Nothing is removed.
+        RuntimeError: ``destination`` is a real directory or another
+            non-regular, non-symlink file. Nothing is removed.
         OSError: The temporary file could not be created, written, fsynced, or
             replaced. The original error propagates. When the temporary file
             could not be unlinked, that cleanup error is logged and noted on
@@ -171,8 +228,7 @@ def publish_file(destination: Path, write_staging: Callable[[Path], None]) -> No
         Exception: Propagates any other error from ``write_staging`` after the
             same temporary-file cleanup.
     """
-    if is_real_directory(destination):
-        raise RuntimeError(f"benchmark output path is a directory: {destination}")
+    _require_replaceable_destination(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
     try:
@@ -202,10 +258,14 @@ def publish_benchmark_evidence(
 ) -> None:
     """Publish benchmark JSON, then the optional CSV, without rewriting JSON.
 
-    The JSON document is written to its own temporary file and replaced first.
-    When ``csv_path`` is set, the CSV document is built from the bytes already
-    at that path plus one row, written to a second temporary file, and replaced
-    second. Neither replace is followed by a write to that destination. A CSV
+    Both destinations are inspected before the JSON replace. A directory, FIFO,
+    socket, or device at either path is refused and neither file is replaced.
+    The JSON document is then written to its own temporary file and replaced
+    first. When ``csv_path`` is set, the CSV document is built from the bytes
+    already at that path plus one row, written to a second temporary file, and
+    replaced second. The existing CSV is opened with ``O_NONBLOCK`` where the
+    platform has it, so a FIFO that appears in that window cannot block the
+    process. Neither replace is followed by a write to that destination. A CSV
     failure after the JSON replace leaves the JSON file in place.
 
     Args:
@@ -220,20 +280,24 @@ def publish_benchmark_evidence(
         None after the requested files have been replaced.
 
     Raises:
-        RuntimeError: A destination is a real directory.
+        RuntimeError: A destination is a real directory, FIFO, socket, device,
+            or other non-regular file. A symlink is allowed and is not followed.
         OSError: A temporary file could not be published. Cleanup does not mask
             this error and does not unlink a file that ``os.replace`` already
             committed.
         Exception: Validation or writer failures from ``write_result``.
     """
+    csv_destination = Path(csv_path) if csv_path else None
+    _require_replaceable_destination(json_path)
+    if csv_destination is not None:
+        _require_replaceable_destination(csv_destination)
 
     def write_json(staging: Path) -> None:
         write_result(result, json_path=str(staging), csv_path=None)
 
     publish_file(json_path, write_json)
-    if not csv_path:
+    if csv_destination is None:
         return
-    csv_destination = Path(csv_path)
 
     def write_csv(staging: Path) -> None:
         existing = _read_text_if_file(csv_destination)
@@ -245,7 +309,11 @@ def publish_benchmark_evidence(
 
 
 def _create_private_temp(destination: Path) -> Path:
-    """Create an exclusive mode-``0600`` temporary file beside ``destination``.
+    """Create an exclusive owner-only temporary file beside ``destination``.
+
+    Unix creates the file at mode ``0600`` and ``fchmod`` repeats that mode.
+    Windows replaces the inherited DACL with a current-user ACE before the
+    caller writes a payload.
 
     Args:
         destination: Final path whose parent directory receives the temp file.
@@ -256,9 +324,9 @@ def _create_private_temp(destination: Path) -> Path:
         The new file path. The caller owns it until ``os.replace`` or unlink.
 
     Raises:
-        OSError: The file could not be created exclusively or its mode could
-            not be set. A file created before the mode change is unlinked when
-            that unlink succeeds.
+        OSError: The file could not be created exclusively or its mode or
+            Windows DACL could not be set. A file created before that change
+            is unlinked when that unlink succeeds.
     """
     descriptor, name = tempfile.mkstemp(
         dir=destination.parent,
@@ -267,7 +335,7 @@ def _create_private_temp(destination: Path) -> Path:
     )
     temp_path = Path(name)
     try:
-        os.fchmod(descriptor, EVIDENCE_FILE_MODE)
+        _force_private_permissions(descriptor, temp_path)
     except BaseException:
         os.close(descriptor)
         _discard_private_temp(temp_path)
@@ -298,15 +366,22 @@ def _fsync_file(path: Path) -> None:
 def _fsync_directory(directory: Path) -> None:
     """Fsync a directory so the replaced directory entry itself is durable.
 
+    Unix opens the directory and calls ``os.fsync``. Windows cannot open a
+    directory that way; it opens the directory with backup semantics and
+    flushes that handle.
+
     Args:
         directory: Directory that contains the replaced evidence file.
 
     Returns:
-        None after ``os.fsync`` returns.
+        None after the directory flush returns.
 
     Raises:
         OSError: The directory could not be opened or fsynced.
     """
+    if os.name == "nt":
+        _fsync_directory_windows(directory)
+        return
     flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
@@ -329,15 +404,242 @@ def _read_text_if_file(path: Path) -> str:
         the link target must stay unchanged.
 
     Raises:
-        RuntimeError: ``path`` is a real directory.
+        RuntimeError: ``path`` is a directory, FIFO, socket, device, or other
+            non-regular file, including one that would block a normal open.
         OSError: A regular file could not be read.
         UnicodeError: The file is not valid UTF-8.
     """
-    if is_real_directory(path):
-        raise RuntimeError(f"benchmark output path is a directory: {path}")
-    if path.is_symlink() or not path.exists():
+    _require_replaceable_destination(path)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
         return ""
-    return path.read_text(encoding="utf-8")
+    if stat.S_ISLNK(info.st_mode):
+        return ""
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"benchmark output path is not a regular file: {path}")
+    return _read_regular_file_text(path)
+
+
+def _read_regular_file_text(path: Path) -> str:
+    """Read a regular file without blocking on a FIFO that raced into the path.
+
+    Args:
+        path: Path that ``lstat`` just reported as a regular file.
+
+    Returns:
+        The file's UTF-8 text. Bytes are not newline-translated.
+
+    Raises:
+        RuntimeError: The opened inode is no longer a regular file, or a
+            non-blocking read would have waited.
+        OSError: The file could not be opened or read.
+        UnicodeError: The file is not valid UTF-8.
+    """
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    descriptor = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError(f"benchmark output path is not a regular file: {path}")
+        chunks: list[bytes] = []
+        while True:
+            try:
+                block = os.read(descriptor, 1024 * 1024)
+            except InterruptedError:
+                continue
+            except BlockingIOError as exc:
+                raise RuntimeError(f"benchmark output path is not a regular file: {path}") from exc
+            if not block:
+                break
+            chunks.append(block)
+    finally:
+        os.close(descriptor)
+    return b"".join(chunks).decode("utf-8")
+
+
+def _force_private_permissions(descriptor: int, path: Path) -> None:
+    """Restrict a temporary evidence file to the current user.
+
+    Unix calls ``os.fchmod`` on the open descriptor. Platforms without
+    ``fchmod`` use ``os.chmod`` on the path ``mkstemp`` just created, except
+    Windows, which replaces the inherited DACL. The descriptor stays open so
+    the caller can close it after this returns.
+
+    Args:
+        descriptor: Open descriptor from ``tempfile.mkstemp``.
+        path: Path of that same temporary file.
+
+    Returns:
+        None after the restriction is applied.
+
+    Raises:
+        OSError: The mode or DACL could not be set.
+    """
+    if hasattr(os, "fchmod"):
+        os.fchmod(descriptor, EVIDENCE_FILE_MODE)
+        return
+    if os.name == "nt":
+        _restrict_windows_dacl(path)
+        return
+    os.chmod(path, EVIDENCE_FILE_MODE)
+
+
+def _restrict_windows_dacl(path: Path) -> None:
+    """Replace a Windows file's DACL with one current-user read/write/delete ACE.
+
+    ``mkstemp`` ignores the Unix mode on Windows and leaves the directory's
+    inherited ACL. This runs before any payload byte is written. The DACL is
+    protected so the parent directory cannot add inherited ACEs back.
+
+    Args:
+        path: Temporary file this helper still owns.
+
+    Returns:
+        None after ``SetNamedSecurityInfoW`` succeeds.
+
+    Raises:
+        OSError: The process token or the file DACL could not be updated.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    )
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_ulong,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.GetLengthSid.argtypes = (ctypes.c_void_p,)
+    advapi32.GetLengthSid.restype = wintypes.DWORD
+    advapi32.CopySid.argtypes = (wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p)
+    advapi32.CopySid.restype = wintypes.BOOL
+    advapi32.InitializeAcl.argtypes = (ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD)
+    advapi32.InitializeAcl.restype = wintypes.BOOL
+    advapi32.AddAccessAllowedAce.argtypes = (
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    )
+    advapi32.AddAccessAllowedAce.restype = wintypes.BOOL
+    advapi32.SetNamedSecurityInfoW.argtypes = (
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    )
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), _WIN_TOKEN_QUERY, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        needed = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, _WIN_TOKEN_USER, None, 0, ctypes.byref(needed))
+        if ctypes.get_last_error() != _WIN_ERROR_INSUFFICIENT_BUFFER:
+            raise ctypes.WinError(ctypes.get_last_error())
+        raw = ctypes.create_string_buffer(needed.value)
+        if not advapi32.GetTokenInformation(token, _WIN_TOKEN_USER, raw, needed, ctypes.byref(needed)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        sid_ptr = ctypes.cast(raw, ctypes.POINTER(ctypes.c_void_p))[0]
+        sid_length = advapi32.GetLengthSid(sid_ptr)
+        sid = ctypes.create_string_buffer(sid_length)
+        if not advapi32.CopySid(sid_length, sid, sid_ptr):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(token)
+
+    # ACL header plus one access-allowed ACE. Extra bytes keep the ACE aligned.
+    acl_size = 16 + sid_length + 32
+    acl = ctypes.create_string_buffer(acl_size)
+    if not advapi32.InitializeAcl(acl, acl_size, _WIN_ACL_REVISION):
+        raise ctypes.WinError(ctypes.get_last_error())
+    access = _WIN_FILE_GENERIC_READ | _WIN_FILE_GENERIC_WRITE | _WIN_DELETE
+    if not advapi32.AddAccessAllowedAce(acl, _WIN_ACL_REVISION, access, sid):
+        raise ctypes.WinError(ctypes.get_last_error())
+    status = advapi32.SetNamedSecurityInfoW(
+        os.fspath(path),
+        _WIN_SE_FILE_OBJECT,
+        _WIN_PROTECTED_DACL_SECURITY_INFORMATION | _WIN_DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        acl,
+        None,
+    )
+    if status != 0:
+        raise ctypes.WinError(status)
+
+
+def _fsync_directory_windows(directory: Path) -> None:
+    """Flush a directory handle on Windows after ``os.replace``.
+
+    Args:
+        directory: Directory that contains the replaced evidence file.
+
+    Returns:
+        None after ``FlushFileBuffers`` returns.
+
+    Raises:
+        OSError: The directory could not be opened or flushed.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.FlushFileBuffers.argtypes = (wintypes.HANDLE,)
+    kernel32.FlushFileBuffers.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        os.fspath(directory),
+        _WIN_GENERIC_READ,
+        _WIN_FILE_SHARE_READ_WRITE_DELETE,
+        None,
+        _WIN_OPEN_EXISTING,
+        _WIN_FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    )
+    if handle is None or handle == _WIN_INVALID_HANDLE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not kernel32.FlushFileBuffers(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _discard_private_temp(path: Path | None) -> OSError | None:
