@@ -26,6 +26,8 @@ REQUIRED_POSTGRES_CASES: tuple[tuple[str, int, str], ...] = (
     ("test_out_of_order_heartbeat_does_not_regress", 1, ""),
     ("test_recording_health_completion_is_monotonic", 1, ""),
     ("test_camera_delete_leaves_no_active_manual_recording", 1, ""),
+    ("test_local_event_duplicate_insert_is_idempotent", 1, ""),
+    ("test_duplicate_local_event_keeps_postgres_transaction", 1, ""),
     ("test_closed_alarm_survives_stale_acknowledge", 1, ""),
     ("test_older_or_equal_heartbeat_does_not_overwrite_newer_node_state", 1, ""),
     ("test_first_insert_older_completion_does_not_overwrite_newer", 1, ""),

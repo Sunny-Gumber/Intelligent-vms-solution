@@ -332,9 +332,11 @@ jobs:
           VMS_TEST_POSTGRES_URL: postgresql+asyncpg://vms:vms@127.0.0.1:5432/vms_ci
         run: |
           set -euo pipefail
+          # FIX-038's Postgres case lives on main and is present in the pull_request merge.
           pytest -q -ra --tb=short \
             --junitxml=/tmp/vms-postgres-race.xml \
             tests/test_vms_fix_033_race_reproductions.py \
+            tests/test_vms_fix_038_local_event_duplicate.py \
             tests/test_vms_fix_040_alarm_ack_close.py \
             tests/test_vms_fix_042_heartbeat_order.py \
             tests/test_vms_fix_043_recording_health_monotonic.py \

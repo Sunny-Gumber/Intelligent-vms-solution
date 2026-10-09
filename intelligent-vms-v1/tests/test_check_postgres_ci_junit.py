@@ -45,12 +45,14 @@ def test_required_cases_name_the_tests_the_unit_job_skips():
     names = [item[0] for item in REQUIRED_POSTGRES_CASES]
     assert names.count("test_delete_during_manual_start_leaves_no_active_session") == 1
     assert names.count("test_recording_health_completion_is_monotonic") == 1
+    assert names.count("test_local_event_duplicate_insert_is_idempotent") == 1
+    assert names.count("test_duplicate_local_event_keeps_postgres_transaction") == 1
     assert names.count("test_closed_alarm_survives_stale_acknowledge") == 1
     assert names.count("test_recheck_window_cannot_commit_changed_authority") == 1
     assert names.count("test_later_chunk_invalidation_rolls_the_earlier_chunk_back") == 1
     lease = [item for item in REQUIRED_POSTGRES_CASES if item[2] == LEASE_PROBE_URL]
     assert sum(item[1] for item in lease) == 10
-    assert sum(item[1] for item in REQUIRED_POSTGRES_CASES if not item[2]) == 10
+    assert sum(item[1] for item in REQUIRED_POSTGRES_CASES if not item[2]) == 12
     assert "vms:vms@127.0.0.1:5432/vms_fix_014" in LEASE_PROBE_URL
 
 
@@ -66,7 +68,7 @@ def test_complete_reports_pass_with_zero_skips(tmp_path: Path):
     )
     assert report.violations == []
     assert report.summary == (
-        "POSTGRES_CI_SUMMARY race_passed=10 lease_postgres_passed=10 "
+        "POSTGRES_CI_SUMMARY race_passed=12 lease_postgres_passed=10 "
         "skipped=0 failed=0 errors=0"
     )
 
