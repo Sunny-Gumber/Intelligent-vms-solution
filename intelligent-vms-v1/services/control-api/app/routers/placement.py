@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import (
@@ -117,6 +117,11 @@ async def heartbeat_node(
 ):
     """Update node load, authority mode and bounded heartbeat freshness.
 
+    The write is one conditional update. The clamped observation must be
+    strictly newer than the stored heartbeat. An older or equal observation
+    leaves load, authority mode and heartbeat_at unchanged. The stored row
+    is returned in both cases.
+
     Args:
         node_id: Infrastructure node sending the heartbeat.
         payload: Validated load/authority/observation payload.
@@ -124,7 +129,7 @@ async def heartbeat_node(
         principal: Global administrator, or the service identity bound to this node.
 
     Returns:
-        Updated NodeRead.
+        Stored NodeRead after the conditional update.
 
     Raises:
         HTTPException: If node identity/scope is invalid or the node is unregistered.
@@ -134,13 +139,27 @@ async def heartbeat_node(
     row = await session.get(InfrastructureNodeEntity, node_id)
     if not row:
         raise HTTPException(404, "Infrastructure node not registered")
-    row.load_json = dict(payload.load)
-    row.authority_mode = payload.authority_mode
     now = datetime.now(timezone.utc)
     observed_at = payload.observed_at.astimezone(timezone.utc)
     # Delayed regional-spool delivery must not make stale telemetry look fresh.
     # Future node clocks are clamped so they cannot extend placement freshness.
-    row.heartbeat_at = min(observed_at, now)
+    # Do not assign the loaded ORM fields. A dirty object is flushed on commit
+    # and would replace this predicate with the stale observation.
+    clamped = min(observed_at, now)
+    await session.execute(
+        update(InfrastructureNodeEntity)
+        .where(
+            InfrastructureNodeEntity.id == node_id,
+            InfrastructureNodeEntity.heartbeat_at < clamped,
+        )
+        .values(
+            load_json=dict(payload.load),
+            authority_mode=payload.authority_mode,
+            heartbeat_at=clamped,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    session.expire(row)
     await session.commit()
     await session.refresh(row)
     return node_read(row)

@@ -439,6 +439,19 @@ class HeartbeatSession:
     async def get(self, _model, _row_id):
         return self.row
 
+    async def execute(self, statement):
+        """Apply the conditional heartbeat UPDATE against the in-memory row."""
+        params = statement.compile().params
+        clamped = params["heartbeat_at"]
+        if self.row.heartbeat_at < clamped:
+            self.row.load_json = params["load_json"]
+            self.row.authority_mode = params["authority_mode"]
+            self.row.heartbeat_at = clamped
+        return None
+
+    def expire(self, _row):
+        return None
+
     async def commit(self):
         return None
 
@@ -458,7 +471,9 @@ def test_delayed_spooled_heartbeat_preserves_observation_freshness():
         endpoints_json={},
         capacity_json={"max_sources": 100},
         load_json={},
-        heartbeat_at=FIXED_NOW,
+        # Older than the delayed observation, so that observation is still the
+        # newest heartbeat and must be stored at observed_at rather than now.
+        heartbeat_at=FIXED_NOW - timedelta(minutes=10),
         authority_mode="central_online",
         generation=1,
     )
