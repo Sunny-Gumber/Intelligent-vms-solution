@@ -4,10 +4,8 @@
 # intelligent-vms-v1/ resolves it.
 -r ../services/control-api/requirements.txt
 
-pytest==8.4.1
-defusedxml==0.7.1
-httpx==0.28.1
-pydantic-settings==2.10.1
+# Test-only runner. 9.1.1 is >= 9.0.3, which fixes PYSEC-2026-1845.
+pytest==9.1.1
 
 psutil==7.1.0
 ruff==0.16.9
