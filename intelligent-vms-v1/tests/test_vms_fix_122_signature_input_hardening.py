@@ -373,6 +373,122 @@ def test_powershell_replacement_fails_closed(tmp_path, monkeypatch, capsys):
     assert payload["status"] != "UNSIGNED_EXPECTED"
 
 
+def _literal_path(command: str) -> Path:
+    """Return the single-quoted LiteralPath from a synthetic PowerShell command."""
+    marker = "-LiteralPath '"
+    start = command.index(marker) + len(marker)
+    end = command.index("'", start)
+    return Path(command[start:end])
+
+
+@pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="procfs status is linux")
+def test_proc_status_is_not_the_empty_placeholder(monkeypatch, capsys):
+    """A size-0 proc file with content is not the unsigned placeholder."""
+    code, payload = _cli(monkeypatch, capsys, Path("/proc/self/status"))
+    assert code == 1
+    assert payload == {"status": "FAIL", "detail": "NOT_A_PE_FILE"}
+
+
+@pytest.mark.skipif(not Path("/proc/self/environ").exists(), reason="procfs environ is linux")
+def test_proc_environ_is_not_the_empty_placeholder(monkeypatch, capsys):
+    """Environ content must not become UNSIGNED_EXPECTED and must not be printed."""
+    code, payload = _cli(monkeypatch, capsys, Path("/proc/self/environ"))
+    assert code == 1
+    assert payload == {"status": "FAIL", "detail": "NOT_A_PE_FILE"}
+    assert "SHELL=" not in payload["detail"]
+
+
+@pytest.mark.skipif(not Path("/proc/self/mem").exists(), reason="procfs mem is linux")
+def test_proc_mem_is_not_the_empty_placeholder(monkeypatch, capsys):
+    """/proc/self/mem reports size 0. A failed or non-PE read must not exit 0."""
+    code, payload = _cli(monkeypatch, capsys, Path("/proc/self/mem"))
+    assert code == 1
+    assert payload["status"] == "FAIL"
+    assert payload["detail"] == "ARTIFACT_UNREADABLE:EIO"
+    assert payload["status"] != "UNSIGNED_EXPECTED"
+
+
+def test_unix_socket_is_not_a_regular_file(tmp_path, monkeypatch, capsys):
+    """A Unix socket is ARTIFACT_NOT_REGULAR_FILE even when open fails."""
+    import socket
+
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX is not supported")
+    sock_path = tmp_path / "artifact.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(str(sock_path))
+    except OSError:
+        listener.close()
+        pytest.skip("cannot bind a unix socket")
+    try:
+        code, payload = _cli(monkeypatch, capsys, sock_path)
+    finally:
+        listener.close()
+    assert code == 1
+    assert payload == {"status": "FAIL", "detail": "ARTIFACT_NOT_REGULAR_FILE"}
+
+
+def test_restored_private_copy_fails_closed(tmp_path, monkeypatch, capsys):
+    """Restoring the private copy before the post-cmdlet hash is still ARTIFACT_CHANGED."""
+    artifact = tmp_path / "signed.exe"
+    _write_pe(artifact, 32)
+
+    def fake_run(args, **kwargs):
+        target = _literal_path(args[4])
+        original = target.read_bytes()
+        target.chmod(0o600)
+        target.write_bytes(b"this is now text")
+        target.write_bytes(original)
+        stdout = json.dumps({"Status": "NotSigned"})
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(q, "_authenticode_verification_available", lambda: True, raising=False)
+    monkeypatch.setattr(q.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["qualify.py", "verify-signature", "--artifact", str(artifact), "--expect-unsigned"],
+    )
+    code = q.main()
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    payload = json.loads(captured.out)
+    assert code == 1
+    assert payload == {"status": "FAIL", "detail": "ARTIFACT_CHANGED"}
+
+
+def test_restored_private_copy_with_mtime_fails_closed(tmp_path, monkeypatch, capsys):
+    """Restoring bytes and st_mtime_ns still fails closed when the watch sees the write."""
+    artifact = tmp_path / "signed.exe"
+    _write_pe(artifact, 32)
+
+    def fake_run(args, **kwargs):
+        target = _literal_path(args[4])
+        original = target.read_bytes()
+        before = target.stat()
+        target.chmod(0o600)
+        target.write_bytes(b"this is now text")
+        target.write_bytes(original)
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        stdout = json.dumps({"Status": "NotSigned"})
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(q, "_authenticode_verification_available", lambda: True, raising=False)
+    monkeypatch.setattr(q.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["qualify.py", "verify-signature", "--artifact", str(artifact), "--expect-unsigned"],
+    )
+    code = q.main()
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    payload = json.loads(captured.out)
+    assert code == 1
+    assert payload == {"status": "FAIL", "detail": "ARTIFACT_CHANGED"}
+
+
 def test_signed_valid_and_linux_not_run_exit_zero(tmp_path, monkeypatch, capsys):
     """Valid exits 0 as SIGNED_VALID. The same file on Linux exits 0 as NOT_RUN."""
     artifact = tmp_path / "captured.exe"

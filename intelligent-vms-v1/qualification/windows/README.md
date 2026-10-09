@@ -24,7 +24,7 @@ Boss default pending signing ADR owner confirmation.
 
 `UNSIGNED_EXPECTED` under `--expect-unsigned` is only:
 
-- a regular file (`stat.S_ISREG`) of length 0, or a symlink that resolves to one (the field-test `unsigned.bin` placeholder), detail `PE has no Authenticode certificate table`; or
+- a regular file (`stat.S_ISREG`) of length 0, or a symlink that resolves to one (the field-test `unsigned.bin` placeholder), and only when a bounded read returns no bytes, detail `PE has no Authenticode certificate table`. `st_size` 0 with content (procfs, sysfs, other pseudo-files) is not this case; or
 - a well-formed PE32/PE32+ whose security directory is exactly `(0, 0)`, same detail; or
 - an in-file certificate table whose private-copy status is `NotSigned` (`2`, `"2"`, or `"NotSigned"`).
 
@@ -37,9 +37,9 @@ Reason codes for exit 1:
 - `PE_MALFORMED:<reason>` — truncated or inconsistent DOS/PE/optional header, unknown magic, misaligned table, a directory that is neither `(0, 0)` nor an in-file certificate, or `header_exceeds_parse_window` when header fields would exceed 1 MiB (1048576 bytes).
 - `SIGNATURE_STATUS_REJECTED:<Name>`, `SIGNATURE_STATUS_UNPARSED`, `SIGNATURE_STATUS_EMPTY`, `SIGNATURE_STATUS_MISSING`, `SIGNATURE_STATUS_AMBIGUOUS` — certificate table was readable and the status is not an accepted `NotSigned`.
 - `ARTIFACT_UNREADABLE:<errno-name>` — missing path (`ENOENT`), dangling symlink (`ENOENT`), permission denied (`EACCES`), symlink loop (`ELOOP`), or directory (`EISDIR`). No traceback.
-- `ARTIFACT_NOT_REGULAR_FILE` — the opened file is not a regular file. A zero `st_size` on a device or FIFO does not count.
+- `ARTIFACT_NOT_REGULAR_FILE` — the opened file is not a regular file, or `open` fails and `stat` shows a socket, FIFO, or device. A Unix socket (`ENXIO` from `open`) uses this code. A zero `st_size` on a device or FIFO does not count.
 - `ARTIFACT_TOO_LARGE` — `st_size` is above 512 MiB (536870912 bytes). The file is not read.
-- `ARTIFACT_CHANGED` — the private copy PowerShell verified does not match the classified bytes. The copy is streamed in 1 MiB (1048576 bytes) chunks, hashed before and after the cmdlet, and rejected on a mismatch.
+- `ARTIFACT_CHANGED` — the private copy the cmdlet verified does not match the classified bytes. The copy is streamed in 1 MiB (1048576 bytes) chunks. An fd stays open across the cmdlet; `st_dev`, `st_ino`, `st_size`, `st_mtime_ns`, and the SHA-256 must still match, and on Linux the inotify watch must stay quiet. Residual: without that watch, restoring both the bytes and `st_mtime_ns` is not detected.
 
 `UnknownError` exits 1. A 415-byte PE whose directory says the certificate ends at byte 416 is out of range, not unsigned. The same file at 416 bytes is checked as a signature. Without `--expect-unsigned`, a zero-length regular file and a `(0, 0)` directory are `FAIL`; `SIGNED_VALID` and Linux `NOT_RUN` still exit 0. A zero exit is not a signed release and does not check publisher or timestamp. Classification reads header fields only and does not load the certificate blob.
 
