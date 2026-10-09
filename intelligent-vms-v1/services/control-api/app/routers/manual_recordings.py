@@ -42,13 +42,45 @@ def _can_manage(row: ManualRecordingSessionEntity, principal: Principal) -> bool
     )
 
 
+def _session_lock_order(rows: list[ManualRecordingSessionEntity]) -> list[ManualRecordingSessionEntity]:
+    """Return sessions in primary-key order before taking row locks.
+
+    The active list displays oldest-first and the recent list displays
+    newest-first. Finalizing in those display orders would lock the same
+    sessions from opposite ends.
+    """
+    return sorted(rows, key=lambda row: row.id)
+
+
 async def _finalize_if_expired(session: AsyncSession, row: ManualRecordingSessionEntity, now: datetime) -> bool:
-    if row.state == "ACTIVE" and _max_stop(row) <= now:
-        row.state = "STOPPED"
-        row.stopped_at = _max_stop(row)
-        await session.flush()
-        return True
-    return False
+    """Stop an expired session only when a locked re-read is still ACTIVE.
+
+    List selects return before an explicit stop commits. ``FOR UPDATE``
+    re-reads that commit, and ``stopped_at`` is assigned only while the
+    locked row is still ``ACTIVE``. The stale list object is not assigned,
+    so flush cannot replace the earlier stop with ``max_stop_at``.
+
+    The lock is this session row only. Manual start already holds the camera
+    row, and camera delete already holds the placement fence and then the
+    camera row. This function does not acquire either of those locks, so it
+    cannot invert that order. SQLite has no ``FOR UPDATE`` clause; the same
+    re-read runs without it.
+    """
+    if row.state != "ACTIVE" or _max_stop(row) > now:
+        return False
+    locked = await session.get(
+        ManualRecordingSessionEntity,
+        row.id,
+        populate_existing=True,
+        with_for_update=session.get_bind().dialect.name == "postgresql",
+    )
+    if locked is None or locked.state != "ACTIVE" or _max_stop(locked) > now:
+        return False
+    row = locked
+    row.state = "STOPPED"
+    row.stopped_at = _max_stop(row)
+    await session.flush()
+    return True
 
 
 async def _owned_session(session: AsyncSession, session_id: str, principal: Principal, *, lock: bool = False):
@@ -130,7 +162,20 @@ async def active_manual_recordings(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_roles("admin", "operator")),
 ):
-    """Return currently active manual intents visible to this principal."""
+    """Return currently active manual intents visible to this principal.
+
+    Expiry goes through ``_finalize_if_expired``, which locks each session row
+    and writes ``stopped_at`` only while that locked row is still ``ACTIVE``.
+    An earlier explicit stop keeps its timestamp. Session locks are taken in
+    id order and do not include the camera row or the placement fence.
+
+    Args:
+        session: Database session for this request.
+        principal: Admin or operator whose tenant, site, and ownership filter the list.
+
+    Returns:
+        Sessions that are still ``ACTIVE`` after expiry, oldest start first.
+    """
     stmt = select(ManualRecordingSessionEntity).where(ManualRecordingSessionEntity.state == "ACTIVE")
     if principal.tenant_id != "*":
         stmt = stmt.where(ManualRecordingSessionEntity.tenant_id == principal.tenant_id)
@@ -141,7 +186,7 @@ async def active_manual_recordings(
     rows = list((await session.execute(stmt.order_by(ManualRecordingSessionEntity.started_at))).scalars())
     now = datetime.now(timezone.utc)
     changed = False
-    for row in rows:
+    for row in _session_lock_order(rows):
         changed = await _finalize_if_expired(session, row, now) or changed
     if changed:
         await session.commit()
@@ -154,7 +199,19 @@ async def recent_manual_recordings(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_roles("admin", "operator")),
 ):
-    """Return a bounded recent manual-session history for recovery and retry."""
+    """Return a bounded recent manual-session history for recovery and retry.
+
+    The same expiry guard as the active list re-reads each overdue session
+    under its row lock and keeps an earlier committed ``stopped_at``.
+
+    Args:
+        limit: Maximum number of sessions to return, newest start first.
+        session: Database session for this request.
+        principal: Admin or operator whose tenant, site, and ownership filter the list.
+
+    Returns:
+        Recent sessions after expiry, newest start first.
+    """
     stmt = select(ManualRecordingSessionEntity)
     if principal.tenant_id != "*":
         stmt = stmt.where(ManualRecordingSessionEntity.tenant_id == principal.tenant_id)
@@ -169,7 +226,7 @@ async def recent_manual_recordings(
     )
     now = datetime.now(timezone.utc)
     changed = False
-    for row in rows:
+    for row in _session_lock_order(rows):
         changed = await _finalize_if_expired(session, row, now) or changed
     if changed:
         await session.commit()
