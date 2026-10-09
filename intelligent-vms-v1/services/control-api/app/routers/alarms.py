@@ -480,6 +480,12 @@ async def acknowledge_alarm(
 ):
     """Acknowledge an open alarm for the authorized scope.
 
+    The load takes ``session.get(..., with_for_update=True)``. The transition
+    is ``SET state='acknowledged' WHERE id=:id AND state='open'``, including
+    the acknowledgement actor and timestamp. Zero rows are re-read; an already
+    closed alarm returns HTTP 409. The loaded ORM object is not assigned, so a
+    stale snapshot cannot overwrite close.
+
     Args:
         alarm_id: Alarm instance identifier.
         session: Database session used for lookup, scope check and persistence.
@@ -491,18 +497,39 @@ async def acknowledge_alarm(
     Raises:
         HTTPException: If alarm is absent/out of scope or already closed.
     """
-    row = await session.get(AlarmInstanceEntity, alarm_id)
+    # REV-033-101 / QA-033-101: the reproduction barrier hooks session.get.
+    # session.execute(select(...).with_for_update()) does not take this lock.
+    row = await session.get(AlarmInstanceEntity, alarm_id, with_for_update=True)
     if not row:
         raise HTTPException(404, "Alarm not found")
     require_scope(principal, row.tenant_id, row.site_id)
     if row.state == "closed":
         raise HTTPException(409, "Closed alarm cannot be acknowledged")
     if row.state != "acknowledged":
-        row.state = "acknowledged"
-        row.acknowledged_at = datetime.now(timezone.utc)
-        row.acknowledged_by = principal.subject
-        await session.commit()
-        await session.refresh(row)
+        acknowledged_at = datetime.now(timezone.utc)
+        updated_id = (
+            await session.execute(
+                update(AlarmInstanceEntity)
+                .where(
+                    AlarmInstanceEntity.id == alarm_id,
+                    AlarmInstanceEntity.state == "open",
+                )
+                .values(
+                    state="acknowledged",
+                    acknowledged_at=acknowledged_at,
+                    acknowledged_by=principal.subject,
+                )
+                .returning(AlarmInstanceEntity.id)
+                .execution_options(synchronize_session=False)
+            )
+        ).scalar_one_or_none()
+        if updated_id is None:
+            await session.refresh(row)
+            if row.state == "closed":
+                raise HTTPException(409, "Closed alarm cannot be acknowledged")
+        else:
+            await session.refresh(row)
+            await session.commit()
     return instance_read(row)
 
 
@@ -513,6 +540,10 @@ async def close_alarm(
     principal: Principal = Depends(require_roles("admin", "operator")),
 ):
     """Close an alarm instance within the authorized scope.
+
+    The load takes ``session.get(..., with_for_update=True)`` so this terminal
+    write is serialized with acknowledge. Close still assigns ``closed`` after
+    the lock and commits that state.
 
     Args:
         alarm_id: Alarm instance identifier.
@@ -525,7 +556,8 @@ async def close_alarm(
     Raises:
         HTTPException: If the alarm is absent or outside caller scope.
     """
-    row = await session.get(AlarmInstanceEntity, alarm_id)
+    # REV-033-101 / QA-033-101: same session.get lock as acknowledge.
+    row = await session.get(AlarmInstanceEntity, alarm_id, with_for_update=True)
     if not row:
         raise HTTPException(404, "Alarm not found")
     require_scope(principal, row.tenant_id, row.site_id)
