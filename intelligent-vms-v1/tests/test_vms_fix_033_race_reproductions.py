@@ -4,13 +4,17 @@ PostgreSQL cases use the migrated schema (Alembic head 0019) and two sessions.
 ``SHOW transaction_isolation`` is reported with each failure. Every barrier wait
 is bounded. If the other transaction blocks on a row lock, the harness releases
 the holder so that transaction can commit, then lets the blocked side continue.
-That blocked-then-serialised order is a correct outcome. Open races still fail
-on the lost-update handlers. The assertions are the correct outcome.
+That blocked-then-serialised order is a correct outcome. Unfixed reproductions
+still fail on the lost-update code. Open races still fail on the lost-update
+handlers. The assertions are the correct outcome. The alarm
+acknowledge-versus-close reproduction is fixed by VMS-FIX-040.
 
 Accepted fix shapes are documented in
 ``docs/qualification/VMS_FIX_033_RACE_REPRODUCTION_REPORT.md``. Races that are
 still open are marked ``known_race`` and deselected from the default suite.
-They are not xfailed. ``test_out_of_order_heartbeat_does_not_regress`` is the
+They are not xfailed. ``test_alarm_close_is_not_overwritten_by_stale_acknowledge``
+is the VMS-FIX-040 fix and runs as a normal PostgreSQL test; without a Postgres
+URL its fixture skips. ``test_out_of_order_heartbeat_does_not_regress`` is the
 VMS-FIX-042 fix: its marker is removed so it runs as a normal PostgreSQL test,
 and its assertion is unchanged.
 
@@ -1053,7 +1057,6 @@ def test_onvif_unexpected_unsubscribe_keeps_camera_supervised():
     )
 
 
-@pytest.mark.known_race
 def test_alarm_close_is_not_overwritten_by_stale_acknowledge(postgres_url):
     """A close that committed, or that runs after acknowledge, stays closed."""
 
