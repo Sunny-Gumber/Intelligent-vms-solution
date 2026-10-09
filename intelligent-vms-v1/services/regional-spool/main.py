@@ -54,6 +54,52 @@ SPOOL_BACKOFF_MAX_SECONDS = max(
 SPOOL_REQUEST_TIMEOUT_SECONDS = max(
     1.0, float(os.getenv("SPOOL_REQUEST_TIMEOUT_SECONDS", "5"))
 )
+# sqlite3.connect waits 5 seconds by default. Ordinary spool reads and writes
+# keep that budget. Schema upgrade waits longer so a second opener can block in
+# BEGIN IMMEDIATE until the peer commits, instead of raising "database is locked"
+# while both try to migrate a legacy spool file at startup.
+SPOOL_SQLITE_BUSY_TIMEOUT_MS = 5_000
+SPOOL_SCHEMA_BUSY_TIMEOUT_MS = 30_000
+# Each statement is idempotent. They run inside one immediate transaction so a
+# second opener can repeat them after the first commits, and an interrupt rolls
+# every statement back together. CREATE TABLE IF NOT EXISTS does not add
+# revision to a legacy spool_items table; _ensure_spool_revision does that.
+_SPOOL_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS spool_items (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at REAL NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_spool_due
+        ON spool_items(next_attempt_at, created_at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS dead_letters (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        status_code INTEGER,
+        reason TEXT,
+        created_at REAL NOT NULL,
+        failed_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS spool_revision_marks (
+        id TEXT PRIMARY KEY,
+        high_revision INTEGER NOT NULL
+    )
+    """,
+)
 INITIAL_SPOOL_REVISION = 1
 SPOOL_REVISION_MAX = 2**63 - 1
 
@@ -120,47 +166,40 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init()
 
-    def _connect(self):
-        conn = sqlite3.connect(self.path)
+    def _connect(self, *, busy_timeout_ms: int = SPOOL_SQLITE_BUSY_TIMEOUT_MS):
+        """Open the spool database with WAL, full sync, and a busy timeout.
+
+        Args:
+            busy_timeout_ms: Milliseconds SQLite retries while another
+                connection holds the write lock. Schema upgrade passes a longer
+                value than ordinary queue operations.
+
+        Returns:
+            An open connection with sqlite3.Row rows.
+
+        Raises:
+            sqlite3.Error: If the file or the connection pragmas cannot be set.
+        """
+        conn = sqlite3.connect(self.path, timeout=busy_timeout_ms / 1000)
         conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=FULL")
         return conn
 
     def _init(self):
-        with self._connect() as db:
-            db.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS spool_items (
-                    id TEXT PRIMARY KEY,
-                    kind TEXT NOT NULL,
-                    body_json TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    next_attempt_at REAL NOT NULL DEFAULT 0,
-                    last_error TEXT,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    revision INTEGER NOT NULL DEFAULT 1
-                );
-                CREATE INDEX IF NOT EXISTS ix_spool_due
-                    ON spool_items(next_attempt_at, created_at);
-
-                CREATE TABLE IF NOT EXISTS dead_letters (
-                    id TEXT PRIMARY KEY,
-                    kind TEXT NOT NULL,
-                    body_json TEXT NOT NULL,
-                    status_code INTEGER,
-                    reason TEXT,
-                    created_at REAL NOT NULL,
-                    failed_at REAL NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS spool_revision_marks (
-                    id TEXT PRIMARY KEY,
-                    high_revision INTEGER NOT NULL
-                );
-                """
-            )
+        # executescript() commits before it runs, so it cannot stay inside the
+        # write transaction. Concurrent openers then overlap: one holds
+        # BEGIN IMMEDIATE while the other's DDL hits "database is locked" once
+        # the busy timeout expires. One immediate transaction covers every
+        # idempotent statement. The waiter blocks in BEGIN IMMEDIATE without a
+        # shared lock, then runs the same statements after the peer commits.
+        # A crash before commit rolls the whole upgrade back, including the
+        # index and revision-mark table, and leaves existing spool rows in place.
+        with self._connect(busy_timeout_ms=SPOOL_SCHEMA_BUSY_TIMEOUT_MS) as db:
+            db.execute("BEGIN IMMEDIATE")
+            for statement in _SPOOL_SCHEMA_STATEMENTS:
+                db.execute(statement)
             self._ensure_spool_revision(db)
 
     def _ensure_spool_revision(self, db) -> None:
@@ -169,9 +208,13 @@ class Store:
         CREATE TABLE IF NOT EXISTS does not change a table that already exists.
         Existing rows keep their bodies, retry state, and row ids. They receive
         revision 1 so a later acknowledgement can name the body that was read.
+        The caller holds the immediate write transaction for the whole upgrade.
+        This method must not issue BEGIN: a nested BEGIN IMMEDIATE raises
+        "cannot start a transaction within a transaction" and would roll the
+        upgrade back.
 
         Args:
-            db: Open SQLite connection for this spool file.
+            db: Open SQLite connection that already holds the immediate write lock.
 
         Returns:
             None after the column is present and each current row has a
@@ -180,9 +223,6 @@ class Store:
         Raises:
             sqlite3.Error: If the table cannot be altered.
         """
-        # Serialize the check and ALTER. Two openers otherwise both observe the
-        # missing column and the second ALTER fails with "duplicate column name".
-        db.execute("BEGIN IMMEDIATE")
         if not self._has_revision_column(db):
             try:
                 db.execute(
