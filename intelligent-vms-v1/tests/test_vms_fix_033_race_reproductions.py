@@ -1032,7 +1032,6 @@ def test_onvif_known_unsubscribe_error_retries():
     assert not bad, rows
 
 
-@pytest.mark.known_race
 def test_local_event_duplicate_insert_is_idempotent(postgres_url):
     """Concurrent inserts of one id return one success and one False, with no error."""
 
@@ -1068,7 +1067,6 @@ def test_alarm_close_is_not_overwritten_by_stale_acknowledge(postgres_url):
     _fail("alarm acknowledge versus close", isolation, rows)
 
 
-@pytest.mark.known_race
 def test_manual_list_expiry_preserves_earlier_stop(postgres_url):
     """A committed explicit stop keeps its stopped_at. A lock may expire first."""
 

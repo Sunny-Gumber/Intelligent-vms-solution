@@ -94,10 +94,20 @@ accepts. The indexed range is `t - 1 day <= segment_start <= t`, which the
 ORDER BY (tenant_id, site_id, camera_id, segment_start, segment_id)
 ```
 
-No extra index migration is required. The table remains `DateTime64(3)`; widening
-that key to microseconds would be a column-type change and is not part of this
-lookup fix. The query expression still uses microsecond precision, and Python
-re-checks the returned timestamps at microsecond resolution.
+The sort key stays `DateTime64(3)`. Widening that key is not a metadata-only
+change, so it is not altered. Segment names carry microseconds (`%f`). Those
+are stored in `segment_start_exact`, a nullable `DateTime64(6)` column that is
+not part of the key. The event writer adds the column when an existing table
+lacks it and does not drop it. Old parts read NULL and fall back to the
+millisecond key. New rows store the full `%f` value. The lookup projects that
+value as `segment_start`, and Python re-checks it at microsecond resolution.
+The key range is padded by one millisecond so rounding into `DateTime64(3)`
+cannot hide a segment.
+
+Unmerged `ReplacingMergeTree` versions are collapsed with `argMax(..., indexed_at)`
+on the key-range candidate set before the duration and overlap predicates. A
+replaced longer row therefore cannot cover an instant the current version does
+not cover.
 
 When a placement move leaves two completed segments over the same instant, the
 winner is the greatest `segment_start`, then the greatest `segment_id`. The
@@ -111,8 +121,10 @@ Timeline and export use `segments()`. That query also applies the overlap
 predicate before `LIMIT`, then walks oldest first by `(segment_start, segment_id)`.
 Callers page with `after_segment_start` and `after_segment_id`. The HTTP timeline
 and export routes take one page, capped by `recording_query_max_segments`, and
-do not expose the cursor. That cap is not the malformed-row partial flag. Export
-still rejects a range the returned page does not cover continuously.
+do not expose the cursor. When that timeline page is not exhausted, the response
+sets `X-VMS-Partial: true`. `X-VMS-Skipped-Rows` still counts only malformed
+rows. Export does not turn the cap into a short clip: a page that does not cover
+the requested interval continuously is still rejected.
 
 ## Secure playback
 
