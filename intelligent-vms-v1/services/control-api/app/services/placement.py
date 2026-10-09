@@ -70,6 +70,8 @@ _LEASE_UPDATE = text(
       AND EXISTS (
           SELECT 1 FROM infrastructure_nodes AS n
           WHERE n.id = observed.node_id
+            AND n.enabled IS TRUE
+            AND n.authority_mode = 'central_online'
             AND n.region_id = COALESCE(
                 (
                     SELECT sr.region_id
@@ -556,8 +558,9 @@ def _policy_view(enabled: bool | None):
 def _lease_authority_clauses(camera_id: str, role: str, node_id: str) -> list:
     """SQL predicates that repeat the keep rule inside the lease UPDATE.
 
-    PostgreSQL evaluates these against the latest commit. A site move or a
-    disabled policy that landed after the Python read then matches no row.
+    PostgreSQL evaluates these against the latest commit. A site move, a
+    disabled policy, a disabled node, or an authority mode other than
+    central_online that landed after the Python read then matches no row.
     """
     site_region = (
         select(SiteRegionEntity.region_id)
@@ -576,6 +579,8 @@ def _lease_authority_clauses(camera_id: str, role: str, node_id: str) -> list:
         exists(
             select(InfrastructureNodeEntity.id).where(
                 InfrastructureNodeEntity.id == node_id,
+                InfrastructureNodeEntity.enabled.is_(True),
+                InfrastructureNodeEntity.authority_mode == "central_online",
                 InfrastructureNodeEntity.region_id
                 == func.coalesce(site_region, literal(settings.placement_default_region)),
             )
@@ -1065,8 +1070,9 @@ async def _apply_renewal_candidates(
     Every candidate, including a camera the scan page did not load, is judged
     from a new session's committed site region and policy flags. A camera on
     the scan page must also pass the scan's own maps, so the two reads cannot
-    disagree and still extend. The lease UPDATE repeats the site and policy
-    check. The advisory lock is still held by the caller.
+    disagree and still extend. The lease UPDATE repeats the site, policy,
+    node-enabled, and central_online checks. The advisory lock is still held
+    by the caller.
 
     Args:
         session: Open placement transaction that already holds the execution lock.
@@ -1308,11 +1314,12 @@ async def _lock_extended_authority(session, assignment_ids: list[str]) -> None:
 
     The locks are taken after the chunk updates and before commit, in a fixed
     order: site region, recording policy, AI policy, then the owner node, each
-    by primary key. A site move, a policy disable, or a node region change that
-    has not committed yet waits. One that already committed is visible to the
-    stale check that follows. Taking the locks before the chunks would make a
-    between-chunk change wait and then land after a successful renewal, which
-    is the split this attempt rolls back.
+    by primary key. A site move, a policy disable, or a node change that has
+    not committed yet waits. One that already committed is visible to the
+    stale check that follows. The node share lock covers region_id, enabled,
+    and authority_mode because they are the same row. Taking the locks before
+    the chunks would make a between-chunk change wait and then land after a
+    successful renewal, which is the split this attempt rolls back.
 
     Assignment rows this attempt updated are already locked by those updates.
     A generation or owner change of those rows waits on that lock. The
@@ -1342,17 +1349,19 @@ async def _reject_stale_extended_leases(session) -> None:
 
     The check locks the site, policy, and node rows it depends on, then reads
     them. Those locks are held until this transaction commits or rolls back, so
-    a site move, a policy change, or a node region change cannot commit in the
-    gap after this check returns.
-    A change that committed before the lock is visible here. A later chunk that
-    does not extend every owner raises before this check. Raising aborts the
-    transaction, so an earlier chunk is not committed.
+    a site move, a policy change, or a node region, enabled, or authority-mode
+    change cannot commit in the gap after this check returns.
+    A change that committed before the lock is visible here. A disabled node
+    or an authority mode other than central_online fails the same keep rule
+    as node_eligible. A later chunk that does not extend every owner raises
+    before this check. Raising aborts the transaction, so an earlier chunk is
+    not committed.
 
     A lease that commits while these locks are held was granted under the
     authority they protected. A move or a disable that was waiting then commits
     after that lease. The owner keeps it until lease end plus fence grace.
-    Later runs do not extend an owner the new site or policy rejects. They
-    defer until that deadline, then fail over. They do not renew the stale
+    Later runs do not extend an owner the new site, policy, or node rejects.
+    They defer until that deadline, then fail over. They do not renew the stale
     owner again, and the deferral is that one lease term, not an open wait.
 
     Args:
@@ -1360,7 +1369,8 @@ async def _reject_stale_extended_leases(session) -> None:
 
     Raises:
         PlacementRenewalInvalidated: At least one extended row fails the same
-            site, policy, and active-owner predicates the lease UPDATE uses.
+            site, policy, node-enabled, authority-mode, and active-owner
+            predicates the lease UPDATE uses.
         PlacementRenewalRunExceeded: The check would start after max run.
     """
     found = _EXTENDED_LEASE_IDS.get()
@@ -1386,6 +1396,8 @@ async def _reject_stale_extended_leases(session) -> None:
     node_matches = exists(
         select(InfrastructureNodeEntity.id).where(
             InfrastructureNodeEntity.id == PlacementAssignmentEntity.node_id,
+            InfrastructureNodeEntity.enabled.is_(True),
+            InfrastructureNodeEntity.authority_mode == "central_online",
             InfrastructureNodeEntity.region_id
             == func.coalesce(site_region, literal(settings.placement_default_region)),
         )
@@ -1418,7 +1430,7 @@ async def _reject_stale_extended_leases(session) -> None:
     if stale:
         raise PlacementRenewalInvalidated(
             "placement renewal invalidated: "
-            f"{len(stale)} extended leases no longer match site or policy state"
+            f"{len(stale)} extended leases no longer match site, policy, or node authority"
         )
 
 
