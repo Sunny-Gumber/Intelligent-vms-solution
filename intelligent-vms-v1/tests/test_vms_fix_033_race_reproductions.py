@@ -12,7 +12,9 @@ Accepted fix shapes are documented in
 still open are marked ``known_race`` and deselected from the default suite.
 They are not xfailed. ``test_out_of_order_heartbeat_does_not_regress`` is the
 VMS-FIX-042 fix: its marker is removed so it runs as a normal PostgreSQL test,
-and its assertion is unchanged.
+and its assertion is unchanged. ``test_recording_health_completion_is_monotonic``
+is the VMS-FIX-043 fix: its marker is removed for the same reason, and its
+assertion is unchanged.
 
 Run the reproductions::
 
@@ -1119,7 +1121,6 @@ def test_out_of_order_heartbeat_does_not_regress(postgres_url):
     )
 
 
-@pytest.mark.known_race
 def test_recording_health_completion_is_monotonic(postgres_url):
     """An older segment completion must not overwrite a newer one."""
 

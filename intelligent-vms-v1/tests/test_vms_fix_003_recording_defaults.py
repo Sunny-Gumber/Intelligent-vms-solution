@@ -7,9 +7,11 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, settings
-from app.models.entities import RecordingHealthStateEntity, RecordingPolicyEntity
+from app.db.base import Base
+from app.models.entities import RecordingPolicyEntity
 from app.models.placement import PlacementAssignmentEntity, PlacementRevocationEntity
 from app.routers import recordings
 from app.services import recording_health
@@ -177,18 +179,6 @@ def test_duration_rejects_non_finite_negative_and_unbounded(value):
         recordings._parse_duration(value)
 
 
-class _HealthSession:
-    def __init__(self):
-        self.row = None
-
-    async def get(self, model, _key):
-        assert model is RecordingHealthStateEntity
-        return self.row
-
-    def add(self, row):
-        self.row = row
-
-
 def _policy():
     return RecordingPolicyEntity(
         id="policy-1",
@@ -204,34 +194,46 @@ def _policy():
     )
 
 
-def test_health_does_not_regress_for_one_microsecond_older_completion():
+async def _two_completions(database: Path, policy, first: dict, second: dict):
+    engine = create_async_engine("sqlite+aiosqlite:///" + database.as_posix())
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            await recording_health.record_segment_completion(session, policy, **first)
+            row = await recording_health.record_segment_completion(session, policy, **second)
+            await session.commit()
+            return row
+    finally:
+        await engine.dispose()
+
+
+def test_health_does_not_regress_for_one_microsecond_older_completion(tmp_path):
     """One microsecond earlier is older evidence and must not move health backward."""
     newer_at = _completed(NEWER_SEGMENT, "60")
     older_at = _completed(OLDER_SEGMENT, "60")
     assert newer_at - older_at == timedelta(microseconds=1)
-    session = _HealthSession()
     policy = _policy()
 
-    asyncio.run(
-        recording_health.record_segment_completion(
-            session,
-            policy,
-            segment_id="newer-segment",
-            completed_at=newer_at,
-            recording_node_id="record-b",
-            assignment_generation=7,
-            observed_at=newer_at,
-        )
-    )
     row = asyncio.run(
-        recording_health.record_segment_completion(
-            session,
+        _two_completions(
+            tmp_path / "older.db",
             policy,
-            segment_id="older-segment",
-            completed_at=older_at,
-            recording_node_id="record-a",
-            assignment_generation=6,
-            observed_at=newer_at,
+            {
+                "segment_id": "newer-segment",
+                "completed_at": newer_at,
+                "recording_node_id": "record-b",
+                "assignment_generation": 7,
+                "observed_at": newer_at,
+            },
+            {
+                "segment_id": "older-segment",
+                "completed_at": older_at,
+                "recording_node_id": "record-a",
+                "assignment_generation": 6,
+                "observed_at": newer_at,
+            },
         )
     )
 
@@ -239,7 +241,7 @@ def test_health_does_not_regress_for_one_microsecond_older_completion():
     assert row.last_segment_completed_at == newer_at
 
 
-def test_health_equal_microsecond_completion_is_not_older():
+def test_health_equal_microsecond_completion_is_not_older(tmp_path):
     """An equal completion timestamp is the boundary that still advances health."""
     # 0 microseconds + 1s and 500000 microseconds + 0.5s are the same instant.
     # 0.5 is exact in binary floating point, so the comparison is not rounded away.
@@ -249,29 +251,26 @@ def test_health_equal_microsecond_completion_is_not_older():
         "0.5",
     )
     assert first_at == second_at
-    session = _HealthSession()
     policy = _policy()
 
-    asyncio.run(
-        recording_health.record_segment_completion(
-            session,
-            policy,
-            segment_id="boundary-newer",
-            completed_at=first_at,
-            recording_node_id="record-b",
-            assignment_generation=7,
-            observed_at=first_at,
-        )
-    )
     row = asyncio.run(
-        recording_health.record_segment_completion(
-            session,
+        _two_completions(
+            tmp_path / "equal.db",
             policy,
-            segment_id="boundary-equal",
-            completed_at=second_at,
-            recording_node_id="record-a",
-            assignment_generation=8,
-            observed_at=second_at,
+            {
+                "segment_id": "boundary-newer",
+                "completed_at": first_at,
+                "recording_node_id": "record-b",
+                "assignment_generation": 7,
+                "observed_at": first_at,
+            },
+            {
+                "segment_id": "boundary-equal",
+                "completed_at": second_at,
+                "recording_node_id": "record-a",
+                "assignment_generation": 8,
+                "observed_at": second_at,
+            },
         )
     )
 

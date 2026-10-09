@@ -1,6 +1,9 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.db.base import Base
 from app.models.entities import RecordingHealthStateEntity, RecordingPolicyEntity
 from app.services import recording_health
 
@@ -82,7 +85,7 @@ def test_enabling_continuous_recording_initializes_startup_grace(monkeypatch):
     assert row.last_segment_completed_at is None
 
 
-def test_segment_completion_advances_health_and_older_hook_cannot_regress(monkeypatch):
+def test_segment_completion_advances_health_and_older_hook_cannot_regress(monkeypatch, tmp_path):
     """Advance from accepted segment evidence and ignore older delayed completions."""
     monkeypatch.setattr(
         recording_health.settings,
@@ -94,40 +97,46 @@ def test_segment_completion_advances_health_and_older_hook_cannot_regress(monkey
         "observability_recording_gap_segment_multiplier",
         2.0,
     )
-    session = _Session()
     policy = _policy()
     completed = FIXED_NOW + timedelta(minutes=15)
 
-    first = asyncio.run(
-        recording_health.record_segment_completion(
-            session,
-            policy,
-            segment_id="newer-segment",
-            completed_at=completed,
-            recording_node_id="record-b",
-            assignment_generation=7,
-            observed_at=completed,
-        )
-    )
+    async def scenario():
+        engine = create_async_engine("sqlite+aiosqlite:///" + (tmp_path / "health.db").as_posix())
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            async with factory() as session:
+                first_row = await recording_health.record_segment_completion(
+                    session,
+                    policy,
+                    segment_id="newer-segment",
+                    completed_at=completed,
+                    recording_node_id="record-b",
+                    assignment_generation=7,
+                    observed_at=completed,
+                )
+                older_row = await recording_health.record_segment_completion(
+                    session,
+                    policy,
+                    segment_id="older-segment",
+                    completed_at=completed - timedelta(minutes=5),
+                    recording_node_id="record-a",
+                    assignment_generation=6,
+                    observed_at=completed + timedelta(seconds=1),
+                )
+                await session.commit()
+            return first_row, older_row
+        finally:
+            await engine.dispose()
+
+    first, older = asyncio.run(scenario())
 
     assert first.last_segment_id == "newer-segment"
     assert first.last_segment_completed_at == completed
     assert first.gap_deadline_at == completed + timedelta(seconds=1800)
     assert first.recording_node_id == "record-b"
     assert first.assignment_generation == 7
-
-    older = asyncio.run(
-        recording_health.record_segment_completion(
-            session,
-            policy,
-            segment_id="older-segment",
-            completed_at=completed - timedelta(minutes=5),
-            recording_node_id="record-a",
-            assignment_generation=6,
-            observed_at=completed + timedelta(seconds=1),
-        )
-    )
-
     assert older.last_segment_id == "newer-segment"
     assert older.last_segment_completed_at == completed
     assert older.recording_node_id == "record-b"
