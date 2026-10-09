@@ -591,8 +591,9 @@ def test_real_storage_driver_repeats_still_qualify(tmp_path):
     """Three disposable storage runs must still qualify from their own numbers.
 
     Duration and resource floors are relaxed because these are short local
-    writes, not a production capacity run. The qualified capacity is the
-    minimum aggregate_write_mbps the driver wrote.
+    writes, not a production capacity run. Dispersion limits match the report
+    call above, which already sets them to 1.0 for these disposable writes.
+    The qualified capacity is the minimum aggregate_write_mbps the driver wrote.
     """
     runs = []
     data = tmp_path / "storage-data"
@@ -645,6 +646,9 @@ def test_real_storage_driver_repeats_still_qualify(tmp_path):
         min_warmup_seconds=0,
         max_cpu_p95_pct=100.0,
         max_ram_p95_pct=100.0,
+        max_capacity_cv=1.0,
+        max_p95_latency_cv=1.0,
+        max_capacity_relative_range=1.0,
     )
     role = output["profiles"][0]["roles"]["storage"]
     observed = min(capacities)

@@ -93,6 +93,7 @@ Every qualified row includes benchmark IDs, commit SHA, hardware fingerprint, co
 - Duplicate JSON keys are rejected. The rejection names the path, for example `duplicate JSON key: result.failure_rate`.
 - Nesting deeper than 32 names the path of the container that crosses the limit.
 - A direct `build_matrix` call does not qualify a record that failed the reproducibility percentile-order or thermal-limit check.
+- A direct `build_matrix` call applies the reproducibility group verdict. Capacity coefficient of variation above 10%, capacity relative range above 20%, and p95 latency coefficient of variation above 15% stay `UNQUALIFIED`. Passing approved fingerprints does not bypass that verdict.
 
 ## Required measured fields
 

@@ -251,7 +251,9 @@ def _reproducibility_hard_reasons(
     Percentile order and an observed thermal limit fail the reproducibility
     group. A direct build_matrix call has to apply those same failures, or a
     finite record that failed reproducibility can still become
-    QUALIFIED_FROM_MEASURED_EVIDENCE.
+    QUALIFIED_FROM_MEASURED_EVIDENCE. Capacity CV, capacity relative range,
+    and p95 latency CV are group checks. build_matrix applies those through
+    the reproducibility verdict before it can qualify a row.
 
     Args:
         result: Parsed benchmark source.
@@ -476,6 +478,100 @@ def grouped_qualified_evidence(
     return best
 
 
+def _reproducibility_blocking_reasons(
+    results: list[dict[str, Any]],
+    *,
+    min_repeats: int,
+    min_duration_seconds: float,
+    min_warmup_seconds: float,
+    max_failure_rate: float,
+    max_capacity_cv: float,
+    max_p95_latency_cv: float,
+    max_capacity_relative_range: float,
+    require_thermal: bool,
+) -> dict[str, tuple[str, ...]]:
+    """Return reproducibility failures that must not become qualified evidence.
+
+    The matrix calls the same group review as the reproducibility report. A
+    repeat-count shortfall stays on the matrix repeat minimum. Every other
+    group failure blocks those benchmark ids, including capacity CV, capacity
+    relative range, and p95 latency CV. Approved fingerprints do not bypass it.
+
+    Args:
+        results: Benchmark results still under consideration.
+        min_repeats: Minimum repeat count passed to the group review.
+        min_duration_seconds: Minimum duration passed to the group review.
+        min_warmup_seconds: Minimum warmup passed to the group review.
+        max_failure_rate: Maximum failure rate passed to the group review.
+        max_capacity_cv: Maximum allowed capacity coefficient of variation.
+        max_p95_latency_cv: Maximum allowed p95-latency coefficient of variation.
+        max_capacity_relative_range: Maximum allowed capacity relative range.
+        require_thermal: Whether missing thermal evidence fails the group.
+
+    Returns:
+        Benchmark ids mapped to the blocking reasons from their failed group.
+        Ids whose group failed only for repeat_count are omitted.
+    """
+    from phase8_reproducibility import build_report
+
+    report = build_report(
+        results=results,
+        min_repeats=min_repeats,
+        min_duration_seconds=min_duration_seconds,
+        min_warmup_seconds=min_warmup_seconds,
+        max_failure_rate=max_failure_rate,
+        max_capacity_cv=max_capacity_cv,
+        max_p95_latency_cv=max_p95_latency_cv,
+        max_capacity_relative_range=max_capacity_relative_range,
+        require_thermal=require_thermal,
+    )
+    blocked: dict[str, tuple[str, ...]] = {}
+    for group in report["groups"]:
+        if group.get("status") != "FAIL":
+            continue
+        reasons = tuple(
+            str(reason)
+            for reason in group.get("reasons", [])
+            if not str(reason).startswith("repeat_count ")
+        )
+        if not reasons:
+            continue
+        for benchmark_id in group.get("benchmark_ids", []):
+            blocked[str(benchmark_id)] = reasons
+    return blocked
+
+
+def _role_reproducibility_reason(
+    evidence: list[Evidence],
+    blocked: dict[str, tuple[str, ...]],
+    *,
+    role: str,
+    dimension: str,
+) -> str | None:
+    """Return the group-failure text for one demanded role, when one exists.
+
+    Args:
+        evidence: Extracted rows, including individually qualified rows.
+        blocked: Benchmark ids that failed a reproducibility group check.
+        role: Capacity role being qualified.
+        dimension: Capacity dimension required for that role.
+
+    Returns:
+        Joined blocking reasons for qualified rows of this role, or None when
+        the role has no blocked qualified row.
+    """
+    reasons: list[str] = []
+    for item in evidence:
+        if not item.qualified or item.role != role or item.dimension != dimension:
+            continue
+        for reason in blocked.get(item.benchmark_id, ()):
+            if reason not in reasons:
+                reasons.append(reason)
+    if not reasons:
+        return None
+    return "; ".join(reasons)
+
+
 def build_matrix(
     *,
     results: list[dict[str, Any]],
@@ -486,6 +582,10 @@ def build_matrix(
     max_failure_rate: float = 0.001,
     max_cpu_p95_pct: float = 70.0,
     max_ram_p95_pct: float = 75.0,
+    max_capacity_cv: float = 0.10,
+    max_p95_latency_cv: float = 0.15,
+    max_capacity_relative_range: float = 0.20,
+    require_thermal: bool = False,
     design_headroom_fraction: float = 0.80,
     n_plus_one: bool = True,
     approved_benchmark_fingerprints: dict[str, str] | None = None,
@@ -496,8 +596,12 @@ def build_matrix(
     are not independent repeats and cannot produce QUALIFIED_FROM_MEASURED_EVIDENCE.
     That uniqueness is enforced in this function, including when no reproducibility
     report is supplied. A direct call also refuses a record that failed the
-    reproducibility percentile-order or thermal-limit check. repeat_count is the
-    number of unique content fingerprints.
+    reproducibility percentile-order or thermal-limit check. The same call
+    applies the reproducibility group verdict: capacity CV, capacity relative
+    range, and p95 latency CV use the reproducibility defaults. A failed group
+    cannot become QUALIFIED_FROM_MEASURED_EVIDENCE, including when approved
+    fingerprints are passed in. repeat_count is the number of unique content
+    fingerprints.
     The fingerprint omits descriptive hardware text, notes, timestamps, and
     volatile host state such as storage_free_bytes. That text is part of the
     shared hardware key instead. Byte-identical aggregated measurements fail
@@ -512,6 +616,10 @@ def build_matrix(
         max_failure_rate: Maximum accepted failure rate.
         max_cpu_p95_pct: Maximum accepted CPU p95 utilization.
         max_ram_p95_pct: Maximum accepted RAM p95 utilization.
+        max_capacity_cv: Maximum allowed capacity coefficient of variation.
+        max_p95_latency_cv: Maximum allowed p95-latency coefficient of variation.
+        max_capacity_relative_range: Maximum allowed capacity relative range.
+        require_thermal: Whether missing thermal evidence fails the group.
         design_headroom_fraction: Fraction of observed capacity usable for design.
         n_plus_one: Whether one spare node is added to required nonzero roles.
         approved_benchmark_fingerprints: Optional reproducibility-approved IDs/fingerprints.
@@ -563,7 +671,23 @@ def build_matrix(
         )
         is not None
     ]
-    qualified = grouped_qualified_evidence(evidence, min_repeats=min_repeats)
+    blocked = _reproducibility_blocking_reasons(
+        results,
+        min_repeats=min_repeats,
+        min_duration_seconds=min_duration_seconds,
+        min_warmup_seconds=min_warmup_seconds,
+        max_failure_rate=max_failure_rate,
+        max_capacity_cv=max_capacity_cv,
+        max_p95_latency_cv=max_p95_latency_cv,
+        max_capacity_relative_range=max_capacity_relative_range,
+        require_thermal=require_thermal,
+    )
+    eligible = [
+        item
+        for item in evidence
+        if item.qualified and item.benchmark_id not in blocked
+    ]
+    qualified = grouped_qualified_evidence(eligible, min_repeats=min_repeats)
 
     profiles = []
     required_roles = demand.get(
@@ -607,11 +731,18 @@ def build_matrix(
                     role=role,
                     dimension=dimension,
                 )
+                group_reason = _role_reproducibility_reason(
+                    evidence,
+                    blocked,
+                    role=role,
+                    dimension=dimension,
+                )
                 roles[role] = {
                     "status": "UNQUALIFIED",
                     "dimension": dimension,
                     "demand": requested,
                     "reason": duplicate_reason
+                    or group_reason
                     or f"no evidence with >= {min_repeats} qualified repeats",
                 }
                 continue
@@ -641,18 +772,25 @@ def build_matrix(
             }
         )
 
-    rejected = [
-        {
-            "benchmark_id": item.benchmark_id,
-            "role": item.role,
-            "dimension": item.dimension,
-            "commit_sha": item.commit_sha,
-            "hardware_key": item.hardware_key,
-            "reasons": list(item.reasons),
-        }
-        for item in evidence
-        if not item.qualified
-    ]
+    rejected = []
+    for item in evidence:
+        group_reasons = blocked.get(item.benchmark_id, ())
+        if item.qualified and not group_reasons:
+            continue
+        reasons = list(item.reasons)
+        for reason in group_reasons:
+            if reason not in reasons:
+                reasons.append(reason)
+        rejected.append(
+            {
+                "benchmark_id": item.benchmark_id,
+                "role": item.role,
+                "dimension": item.dimension,
+                "commit_sha": item.commit_sha,
+                "hardware_key": item.hardware_key,
+                "reasons": reasons,
+            }
+        )
 
     return {
         "matrix_version": MATRIX_VERSION,
@@ -664,6 +802,10 @@ def build_matrix(
             "max_failure_rate": max_failure_rate,
             "max_cpu_p95_pct": max_cpu_p95_pct,
             "max_ram_p95_pct": max_ram_p95_pct,
+            "max_capacity_cv": max_capacity_cv,
+            "max_p95_latency_cv": max_p95_latency_cv,
+            "max_capacity_relative_range": max_capacity_relative_range,
+            "require_thermal": require_thermal,
             "design_headroom_fraction": design_headroom_fraction,
             "n_plus_one": n_plus_one,
         },
@@ -756,6 +898,10 @@ def main():
     parser.add_argument("--max-failure-rate", type=float, default=0.001)
     parser.add_argument("--max-cpu-p95-pct", type=float, default=70)
     parser.add_argument("--max-ram-p95-pct", type=float, default=75)
+    parser.add_argument("--max-capacity-cv", type=float, default=0.10)
+    parser.add_argument("--max-p95-latency-cv", type=float, default=0.15)
+    parser.add_argument("--max-capacity-relative-range", type=float, default=0.20)
+    parser.add_argument("--require-thermal", action="store_true")
     parser.add_argument("--design-headroom-fraction", type=float, default=0.80)
     parser.add_argument("--no-n-plus-one", action="store_true")
     args = parser.parse_args()
@@ -777,6 +923,10 @@ def main():
             max_failure_rate=args.max_failure_rate,
             max_cpu_p95_pct=args.max_cpu_p95_pct,
             max_ram_p95_pct=args.max_ram_p95_pct,
+            max_capacity_cv=args.max_capacity_cv,
+            max_p95_latency_cv=args.max_p95_latency_cv,
+            max_capacity_relative_range=args.max_capacity_relative_range,
+            require_thermal=args.require_thermal,
             design_headroom_fraction=args.design_headroom_fraction,
             n_plus_one=not args.no_n_plus_one,
         )

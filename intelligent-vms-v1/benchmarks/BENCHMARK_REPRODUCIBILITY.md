@@ -76,7 +76,7 @@ python tools/phase8_reproducibility.py \
 
 ## Hardware matrix handoff
 
-The hardware matrix CLI requires the reproducibility report and considers only benchmark IDs belonging to PASS groups:
+The hardware matrix CLI requires the reproducibility report and considers only benchmark IDs belonging to PASS groups. `build_matrix` also applies that group verdict itself, including on a direct call and when approved fingerprints are supplied. The default limits match this policy: capacity CV <= 10%, capacity relative range <= 20%, and p95 latency CV <= 15%. A failed group cannot become `QUALIFIED_FROM_MEASURED_EVIDENCE`.
 
 ```bash
 python tools/phase8_hardware_matrix.py \
