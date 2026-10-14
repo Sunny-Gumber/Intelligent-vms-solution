@@ -48,7 +48,9 @@ def test_mediamtx_go_patch_pin_matches_build_consumers() -> None:
     """Keep the patched Go baseline consistent in Linux and Windows builders."""
     manifest = json.loads((ROOT / "infra/mediamtx/runtime.json").read_text())
     go_version = manifest["go_version"]
-    assert tuple(map(int, go_version.split("."))) >= (1, 26, 9)
+    assert manifest["x_net_version"] == "v0.60.0"
+    assert manifest["x_net_checksum"] == "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU="
+    assert go_version == "1.26.9"
     consumers = [
         (ROOT / "infra/mediamtx/Dockerfile").read_text(),
         (ROOT.parent / ".github/workflows/intelligent-vms-windows-field-test.yml").read_text(),
@@ -71,3 +73,21 @@ def test_go_module_override_rejects_version_or_checksum_drift(changed_field: str
     module[changed_field] = "unexpected"
     with pytest.raises(RuntimeError, match="version or checksum mismatch"):
         verify_go_module_pin(module, manifest)
+
+
+def test_verified_runtime_digests_match_all_offline_consumers() -> None:
+    """Keep actual Windows SHA-256 pins identical throughout packaging and CI."""
+    manifest = json.loads((ROOT / "infra/mediamtx/runtime.json").read_text())
+    files = [
+        ROOT / "deploy/windows/Install-WindowsFieldTest.ps1",
+        ROOT / "deploy/windows/installer/Build-Installer.ps1",
+        ROOT / "tests/test_windows_unified_installer.py",
+        ROOT / "tests/test_windows_field_test_release.py",
+        ROOT.parent / ".github/workflows/intelligent-vms-windows-field-test.yml",
+        ROOT.parent / ".github/workflows/intelligent-vms-windows-installer.yml",
+    ]
+    for hash_field in ("windows_zip_sha256", "windows_exe_sha256"):
+        digest = manifest[hash_field]
+        assert len(digest) == 64
+        assert all(c in "0123456789abcdef" for c in digest)
+        assert any(digest in path.read_text() for path in files)

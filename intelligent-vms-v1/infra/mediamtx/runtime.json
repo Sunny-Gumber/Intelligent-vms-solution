@@ -5,8 +5,8 @@
   "go_version": "1.26.9",
   "hls_asset_sha256": "a12e7ee1cd64a69dcdb314157e45dafcba705bfb0b1440b7935cb265d374423e",
   "runtime_version": "1.21.1-vms.1",
-  "windows_zip_sha256": "4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046",
-  "windows_exe_sha256": "bde9af1cdf4d0d662dc93d881ea4e62c3e8b35c019b62bf68de5df9b442561ed",
+  "windows_zip_sha256": "dd3a3378dd0bb3ca7a3c5f72736a662fed7c1e3c22dca7e52711350ca50ccdbd",
+  "windows_exe_sha256": "af146b297d46e10d27cc8e9ff18cdc42162514cf8629e342825b4bde842ee7e2",
   "policy": "RTSP/RTSPS source redirects disabled before credential forwarding",
   "x_net_version": "v0.60.0",
   "x_net_checksum": "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU="

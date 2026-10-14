@@ -442,7 +442,7 @@ jobs:
           $after=(Get-FileHash "$env:ProgramData\IntelligentVMS\config\vms.env").Hash
           if($before -ne $after){throw "Upgrade replaced protected configuration"}
           $installedMedia="$env:ProgramData\IntelligentVMS\runtime\mediamtx\mediamtx.exe"
-          if((Get-FileHash -Algorithm SHA256 $installedMedia).Hash.ToLowerInvariant() -ne "bde9af1cdf4d0d662dc93d881ea4e62c3e8b35c019b62bf68de5df9b442561ed"){throw "Upgrade did not replace the accepted-baseline media runtime"}
+          if((Get-FileHash -Algorithm SHA256 $installedMedia).Hash.ToLowerInvariant() -ne "af146b297d46e10d27cc8e9ff18cdc42162514cf8629e342825b4bde842ee7e2"){throw "Upgrade did not replace the accepted-baseline media runtime"}
           if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Upgrade lost recording data"}
           & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Health
           if(-not $?){throw "Upgrade server health failed"}

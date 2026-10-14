@@ -144,7 +144,7 @@ def test_v021_postgres_discovery_is_systemic_and_validated():
 
 def test_v021_mediamtx_is_bundled_and_install_path_is_offline():
     assert '$mediaName="mediamtx_v$($mediaVersion)_windows_amd64.zip"' in BUILD
-    assert "4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046" in BUILD
+    assert "dd3a3378dd0bb3ca7a3c5f72736a662fed7c1e3c22dca7e52711350ca50ccdbd" in BUILD
     assert "build-inputs" in BUILD
     assert "tools\\build_mediamtx.py" in BUILD
     assert "github.com/bluenviron/mediamtx/releases" not in BUILD

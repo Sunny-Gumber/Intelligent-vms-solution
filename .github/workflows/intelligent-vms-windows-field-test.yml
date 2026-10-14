@@ -64,7 +64,7 @@ jobs:
           python tools/build_mediamtx.py --work "$env:RUNNER_TEMP/mediamtx-source" --output $zip --target-os windows
           if($LASTEXITCODE -ne 0){throw "Pinned MediaMTX source build failed"}
           $hash=(Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-          if($hash -ne "4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046"){throw "Pinned MediaMTX direct-script fixture hash mismatch"}
+          if($hash -ne "dd3a3378dd0bb3ca7a3c5f72736a662fed7c1e3c22dca7e52711350ca50ccdbd"){throw "Pinned MediaMTX direct-script fixture hash mismatch"}
           python -m pip install -r services/control-api/requirements.txt
           Expand-Archive -LiteralPath $zip -DestinationPath "$env:RUNNER_TEMP/media-transport-check" -Force
           python tools/check_camera_transport_runtime.py --binary "$env:RUNNER_TEMP/media-transport-check/mediamtx.exe"

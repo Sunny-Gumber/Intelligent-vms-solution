@@ -58,7 +58,8 @@ redirects must be configured using their final validated endpoint. This confines
 RTSP and RTSPS sources equally without a proxy or transcoding.
 
 Linux and Windows use the same checksum-pinned source and patch. The builder pins
-Go 1.26.9, verifies generated HLS assets, and produces reproducible Windows ZIPs
+Go 1.26.9 and the checksummed golang.org/x/net v0.60.0 HTTP/2 security update,
+verifies generated HLS assets, and produces reproducible Windows ZIPs
 with fixed timestamps and pinned ZIP/executable SHA-256. Windows installs remain
 offline; upgrade/repair replaces an older media executable after services stop.
 Linux Docker builds the patched runtime. Distributed nodes must deploy this VMS
