@@ -54,7 +54,7 @@ jobs:
           architecture: 'x64'
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.8'
+          go-version: '1.26.9'
           cache: false
       - name: Install pinned NSIS compiler
         shell: pwsh

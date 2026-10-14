@@ -62,6 +62,32 @@ def prepare_source(work: Path) -> Path:
     return source
 
 
+def verify_windows_artifact_hashes(output: Path, executable: Path, manifest: dict) -> str:
+    """Verify both offline installer artifacts against their pinned SHA-256 values.
+
+    Args:
+        output: Deterministic MediaMTX ZIP archive.
+        executable: MediaMTX Windows executable placed inside that archive.
+        manifest: Pinned checksums from the VMS runtime manifest.
+
+    Returns:
+        Verified ZIP SHA-256 hash.
+
+    Raises:
+        RuntimeError: If the archive or executable differs from the approved hash.
+    """
+    zip_hash = hashlib.sha256(output.read_bytes()).hexdigest()
+    exe_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
+    if (zip_hash != manifest['windows_zip_sha256']
+            or exe_hash != manifest['windows_exe_sha256']):
+        raise RuntimeError(
+            'MediaMTX Windows artifact checksum mismatch: '
+            f'zip_sha256={zip_hash} exe_sha256={exe_hash}. '
+            'Do not change manifest checksums without verifying the build outputs.'
+        )
+    return zip_hash
+
+
 def build(work: Path, output: Path, target_os: str) -> None:
     """Build a static runtime and checksummed Windows package from verified source.
 
@@ -97,9 +123,8 @@ def build(work: Path, output: Path, target_os: str) -> None:
                 entry.create_system = 3
                 entry.external_attr = 0o644 << 16
                 archive.writestr(entry, path.read_bytes())
-        output.with_suffix(output.suffix + '.sha256').write_text(hashlib.sha256(output.read_bytes()).hexdigest())
-        if hashlib.sha256(output.read_bytes()).hexdigest() != manifest['windows_zip_sha256']:
-            raise RuntimeError('MediaMTX reproducible Windows package checksum mismatch')
+        verified_zip_hash = verify_windows_artifact_hashes(output, executable, manifest)
+        output.with_suffix(output.suffix + '.sha256').write_text(verified_zip_hash)
     print('mediamtx_build_ok version=' + manifest['runtime_version'])
 
 

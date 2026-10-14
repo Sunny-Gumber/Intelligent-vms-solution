@@ -58,14 +58,14 @@ redirects must be configured using their final validated endpoint. This confines
 RTSP and RTSPS sources equally without a proxy or transcoding.
 
 Linux and Windows use the same checksum-pinned source and patch. The builder pins
-Go 1.26.8, verifies generated HLS assets, and produces reproducible Windows ZIPs
+Go 1.26.9, verifies generated HLS assets, and produces reproducible Windows ZIPs
 with fixed timestamps and pinned ZIP/executable SHA-256. Windows installs remain
 offline; upgrade/repair replaces an older media executable after services stop.
 Linux Docker builds the patched runtime. Distributed nodes must deploy this VMS
 media image/runtime too; an unpatched external MediaMTX binary does not satisfy
 the source confinement contract. Helm uses operator-supplied immutable VMS images.
 
-For a source build: install pinned Go 1.26.8 and Python 3.12, then use
+For a source build: install pinned Go 1.26.9 and Python 3.12, then use
 `python tools/build_mediamtx.py --work <build-directory> --output <binary-or-windows-zip> --target-os linux|windows`.
 Build manifest: `infra/mediamtx/runtime.json`. No camera secrets enter the build.
 
