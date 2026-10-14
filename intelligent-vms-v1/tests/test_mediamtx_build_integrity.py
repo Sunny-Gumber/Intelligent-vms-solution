@@ -56,3 +56,18 @@ def test_mediamtx_go_patch_pin_matches_build_consumers() -> None:
     ]
     assert f"golang:{go_version}-alpine" in consumers[0]
     assert all(f"go-version: '{go_version}'" in content for content in consumers[1:])
+
+@pytest.mark.parametrize("changed_field", ["Version", "Sum"])
+def test_go_module_override_rejects_version_or_checksum_drift(changed_field: str) -> None:
+    """Check that transitive x/net cannot roll back or change without detection."""
+    from tools.build_mediamtx import verify_go_module_pin
+
+    manifest = {
+        "x_net_version": "v0.60.0",
+        "x_net_checksum": "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU=",
+    }
+    module = {"Version": manifest["x_net_version"], "Sum": manifest["x_net_checksum"]}
+    verify_go_module_pin(module, manifest)
+    module[changed_field] = "unexpected"
+    with pytest.raises(RuntimeError, match="version or checksum mismatch"):
+        verify_go_module_pin(module, manifest)

@@ -62,6 +62,21 @@ def prepare_source(work: Path) -> Path:
     return source
 
 
+def verify_go_module_pin(module: dict, manifest: dict) -> None:
+    """Reject a transitive Go module inconsistent with the approved pin and sum.
+
+    Args:
+        module: JSON metadata produced by Go for the resolved module.
+        manifest: Trusted module version and Go checksum pins.
+
+    Raises:
+        RuntimeError: If the resolved version or cryptographic sum differs.
+    """
+    if (module.get('Version') != manifest['x_net_version']
+            or module.get('Sum') != manifest['x_net_checksum']):
+        raise RuntimeError('MediaMTX golang.org/x/net version or checksum mismatch')
+
+
 def verify_windows_artifact_hashes(output: Path, executable: Path, manifest: dict) -> str:
     """Verify both offline installer artifacts against their pinned SHA-256 values.
 
@@ -106,6 +121,14 @@ def build(work: Path, output: Path, target_os: str) -> None:
         raise RuntimeError('MediaMTX requires the pinned Go compiler')
     source = prepare_source(work)
     env = {**os.environ, 'CGO_ENABLED': '0', 'GOTOOLCHAIN': 'local'}
+    # Pinned upstream still requires x/net v0.59.0 (HIGH CVE-2026-78669).
+    # Go's checksum database plus our immutable h1: pin protect the override.
+    subprocess.run(['go', 'get', 'golang.org/x/net@' + manifest['x_net_version']],
+                   cwd=source, env=env, check=True, timeout=300)
+    module = json.loads(subprocess.check_output(
+        ['go', 'list', '-m', '-json', 'golang.org/x/net'],
+        cwd=source, env=env, text=True, timeout=120))
+    verify_go_module_pin(module, manifest)
     subprocess.run(['go', 'generate', './...'], cwd=source, env=env, check=True, timeout=600)
     hls_asset = source / 'internal/servers/hls/hls.min.js'
     if hashlib.sha256(hls_asset.read_bytes()).hexdigest() != manifest['hls_asset_sha256']:
