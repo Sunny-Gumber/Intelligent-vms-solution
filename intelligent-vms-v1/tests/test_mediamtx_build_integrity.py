@@ -163,34 +163,134 @@ def _powershell_references(source: str, kind: str, selector: str) -> list[dict]:
     return json.loads(result.stdout)
 
 
+# These existing substring checks are not digests. Everything else against the
+# selected text is a pin candidate, including malformed strings and expressions.
+# Keep this explicit rather than guessing whether an invalid value looks like hex.
+_NON_PIN_LITERALS = {
+    "BUILD": frozenset({
+        '$mediaName="mediamtx_v$($mediaVersion)_windows_amd64.zip"', "build-inputs",
+        r"tools\build_mediamtx.py", "github.com/bluenviron/mediamtx/releases", r"deploy\windows\runtime",
+    }),
+    "INSTALL": frozenset({
+        "function Get-Sha256Hex", "[Security.Cryptography.SHA256]::Create()", "$actual = Get-Sha256Hex $mediaZip",
+        "UNC/network recording storage is not supported", "icacls.exe", '"-m","alembic"',
+        '$roleFound=@($roleResult.Lines|ForEach-Object{$_.Trim()}) -contains "1"',
+        '$databaseFound=@($dbResult.Lines|ForEach-Object{$_.Trim()}) -contains "1"',
+        'Invoke-Bounded (Join-Path $pgBin "psql.exe")', '([string]$roleExists).Trim()',
+        '([string]$dbExists).Trim()', "Get-FileHash -Algorithm SHA256 -LiteralPath $mediaZip",
+    }),
+}
+
+
+def _reject_python_binding_side_effects(nodes: list[ast.AST], protected: set[str]) -> None:
+    """Reject references capable of hiding binding/skip mutations in initializers or definition metadata."""
+    dynamic = {"globals", "locals", "vars", "eval", "exec", "setattr", "delattr"}
+    for expression in nodes:
+        assert not any(isinstance(node, ast.Name) and node.id in protected | dynamic
+                       for node in ast.walk(expression)), "Missing MediaMTX checksum assignment: binding side effect"
+        assert not any(isinstance(node, ast.NamedExpr) for node in ast.walk(expression))
+
+
+def _required_python_functions(tree: ast.Module, consumer: _PinConsumer) -> list[ast.FunctionDef]:
+    """Accept unique undecorated bindings in a module without flow, rebinding or pytest disabling metadata."""
+    names = set(consumer.functions)
+    protected = names | {"pytestmark", "__test__"}
+    functions = []
+    for statement in tree.body:
+        if isinstance(statement, ast.FunctionDef):
+            metadata = statement.decorator_list + statement.args.defaults + [
+                value for value in statement.args.kw_defaults if value is not None
+            ]
+            metadata += [argument.annotation for argument in
+                         statement.args.posonlyargs + statement.args.args + statement.args.kwonlyargs
+                         if argument.annotation is not None]
+            if statement.returns is not None:
+                metadata.append(statement.returns)
+            _reject_python_binding_side_effects(metadata, protected)
+            if statement.name in names:
+                assert not statement.decorator_list, "Missing MediaMTX checksum assignment: decorated test"
+                assert statement.returns is None, "Missing MediaMTX checksum assignment: annotated test"
+                assert not statement.args.args and not statement.args.kwonlyargs and not statement.args.posonlyargs
+                assert statement.args.vararg is None and statement.args.kwarg is None
+                functions.append(statement)
+        elif isinstance(statement, (ast.Import, ast.ImportFrom)):
+            assert all((alias.asname or alias.name.split(".")[0]) not in protected for alias in statement.names)
+            assert all(alias.name != "*" for alias in statement.names)
+            assert all(alias.name not in {"globals", "locals", "vars", "eval", "exec", "setattr", "delattr"}
+                       for alias in statement.names)
+        elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            assert all(isinstance(target, ast.Name) and target.id not in protected for target in targets), (
+                "Missing MediaMTX checksum assignment: rebound test or disabling metadata"
+            )
+            if statement.value is not None:
+                _reject_python_binding_side_effects([statement.value], protected)
+                for node in ast.walk(statement.value):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    supported = (isinstance(node.func, ast.Name) and node.func.id == "Path") or (
+                        isinstance(node.func, ast.Attribute) and (
+                            node.func.attr == "read_text" or
+                            isinstance(node.func.value, ast.Name) and
+                            (node.func.value.id, node.func.attr) in {("json", "loads"), ("yaml", "safe_load")}
+                        )
+                    )
+                    assert supported, "Missing MediaMTX checksum assignment: unsupported module initialization"
+        else:
+            assert isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant), (
+                "Missing MediaMTX checksum assignment: unsupported module flow or binding"
+            )
+    assert sorted(function.name for function in functions) == sorted(names), (
+        "Missing MediaMTX checksum assignment: duplicate or absent required function"
+    )
+    return functions
+
+
+def _python_pin_candidate(assertion: ast.Assert, selector: str) -> ast.Compare | None:
+    """Identify comparisons before digest validation; reject compound or unsupported uses of selected text."""
+    candidates = [node for node in ast.walk(assertion.test) if isinstance(node, ast.Compare) and
+                  any(isinstance(value, ast.Name) and value.id == selector for value in node.comparators)]
+    if not candidates:
+        assert not any(isinstance(node, ast.Name) and node.id == selector for node in ast.walk(assertion.test)), (
+            "Stale or conflicting MediaMTX checksum assignment: unsupported pin assertion"
+        )
+        return None
+    assert len(candidates) == 1 and candidates[0] is assertion.test, (
+        "Stale or conflicting MediaMTX checksum assignment: compound pin assertion"
+    )
+    candidate = candidates[0]
+    assert len(candidate.ops) == 1
+    value = candidate.left.value if isinstance(candidate.left, ast.Constant) else None
+    if isinstance(value, str) and value in _NON_PIN_LITERALS[selector]:
+        return None
+    assert isinstance(candidate.ops[0], ast.In), "Stale or conflicting MediaMTX checksum assignment: inverted pin"
+    return candidate
+
+
 def _python_references(source: str, consumer: _PinConsumer) -> list[dict]:
-    """Inspect SHA-256 assertions in named pytest functions, excluding strings and nested definitions."""
+    """Require straight-line collected-test contracts; never credit returns, skipped tests or old definitions."""
     references = []
-    for function in ast.parse(source).body:
-        if not isinstance(function, ast.FunctionDef) or function.name not in consumer.functions:
-            continue
-        parents = {child: parent for parent in ast.walk(function) for child in ast.iter_child_nodes(parent)}
-        for node in ast.walk(function):
-            if not isinstance(node, ast.Assert) or not isinstance(node.test, ast.Compare):
+    for function in _required_python_functions(ast.parse(source), consumer):
+        for statement in function.body:
+            # W1's sole existing setup statement is a read-only lower-case view.
+            if isinstance(statement, ast.Assign):
+                assert consumer.selector == "INSTALL", "Missing MediaMTX checksum assignment: unsupported test setup"
+                assert ast.dump(statement, include_attributes=False) == ast.dump(ast.parse(
+                    "lower = INSTALL.lower()"
+                ).body[0], include_attributes=False), "Missing MediaMTX checksum assignment: unsupported test setup"
                 continue
-            comparison = node.test
-            if (len(comparison.ops) != 1 or not isinstance(comparison.ops[0], ast.In)
-                    or not isinstance(comparison.comparators[0], ast.Name)
-                    or comparison.comparators[0].id != consumer.selector
-                    or not isinstance(comparison.left, ast.Constant)
-                    or not isinstance(comparison.left.value, str)
-                    or not re.fullmatch(r"[0-9a-f]{64}", comparison.left.value)):
+            if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
                 continue
-            parent = parents[node]
-            while parent is not function and not isinstance(
-                parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-            ):
-                parent = parents[parent]
-            if parent is function:
+            assert isinstance(statement, ast.Assert), "Missing MediaMTX checksum assignment: unsupported test flow"
+            candidate = _python_pin_candidate(statement, consumer.selector)
+            if candidate is not None:
+                value = candidate.left.value if isinstance(candidate.left, ast.Constant) else None
                 references.append({
-                    "value": comparison.left.value, "statement": ast.get_source_segment(source, node),
-                    "direct": node in function.body, "scope": function.name,
+                    "value": value, "statement": ast.get_source_segment(source, statement),
+                    "direct": True, "scope": function.name,
                 })
+            assert not any(isinstance(node, (ast.Call, ast.NamedExpr, ast.Await, ast.Yield, ast.YieldFrom))
+                           for node in ast.walk(statement)), "Missing MediaMTX checksum assignment: dynamic assertion"
     return references
 
 
@@ -201,6 +301,9 @@ def _workflow_script(source: str, consumer: _PinConsumer) -> str:
     assert len(steps) == 1, "Missing or duplicate MediaMTX checksum workflow step"
     step = steps[0]
     assert step.get("shell") == "pwsh" and "if" not in step and "if" not in job
+    assert all(scope.get("continue-on-error", False) is False for scope in (step, job)), (
+        "Failure-tolerant MediaMTX checksum workflow job or step"
+    )
     return step["run"]
 
 
