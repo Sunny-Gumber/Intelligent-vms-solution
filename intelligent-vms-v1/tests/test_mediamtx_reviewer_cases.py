@@ -4,6 +4,7 @@ import ast
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -335,3 +336,129 @@ def test_native_powershell_guard_must_reach_its_throw(
     step["run"] = guard
     with pytest.raises(AssertionError, match="Missing"):
         _check_source(tmp_path, monkeypatch, consumer, yaml.safe_dump(workflow))
+
+
+_ASSIGNMENT_BYPASSES = (
+    "typed-write", "invoke-expression", "variable-provider", "dynamic-set-variable", "session-state",
+    "conditional-return", "conditional-exit",
+)
+_GUARD_BYPASSES = ("trap-before", "trap-after", "conditional-return", "conditional-exit")
+
+
+def _powershell_bypass_source(consumer, mutation: str) -> str:
+    """Build trusted, finite native witnesses for the reported control-flow and variable-write misses."""
+    expected = json.loads((integrity.ROOT / "infra/mediamtx/runtime.json").read_text())[consumer.hash_field]
+    stale = "1" * 64
+    if consumer.kind == "workflow":
+        guard = f'if ({consumer.selector} -ne "{expected}") {{ throw "checksum mismatch" }}\n'
+        if mutation.startswith("trap-"):
+            return "trap { continue }\n" + guard if mutation == "trap-before" else guard + "trap { continue }\n"
+        return f'if ($true) {{ {mutation.split("-")[1]} }}\n' + guard
+    variable = consumer.selector
+    base = f'${variable} = "{expected}"\n'
+    writes = {
+        "typed-write": f'[string]${variable} = "{stale}"\n',
+        "invoke-expression": f'Invoke-Expression \'${variable} = "{stale}"\'\n',
+        "variable-provider": f'Set-Item -Path variable:{variable} -Value "{stale}"\n',
+        "dynamic-set-variable": f'& ("Set"+"-Variable") {variable} "{stale}"\n',
+        "session-state": f'$ExecutionContext.SessionState.PSVariable.Set("{variable}", "{stale}")\n',
+    }
+    if mutation.startswith("conditional-"):
+        return f'if ($true) {{ {mutation.split("-")[1]} }}\n' + base
+    return base + writes[mutation]
+
+
+def _check_powershell_script(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer, source: str) -> None:
+    """Route a native snippet through the real consumer entry, preserving the workflow envelope when required."""
+    if consumer.kind == "workflow":
+        workflow = yaml.safe_load(integrity._consumer_file(consumer.path).read_text())
+        step = next(step for step in workflow["jobs"][consumer.job]["steps"] if step.get("name") == consumer.step)
+        step["run"] = source
+        source = yaml.safe_dump(workflow)
+    _check_source(tmp_path, monkeypatch, consumer, source)
+
+
+_NATIVE_BYPASSES = [
+    pytest.param(parameter.values[0], mutation, id=f"{parameter.id}-{mutation}")
+    for parameter in integrity._CONSUMER_PINS if parameter.values[0].kind != "python"
+    for mutation in (_GUARD_BYPASSES if parameter.values[0].kind == "workflow" else _ASSIGNMENT_BYPASSES)
+]
+
+
+@pytest.mark.parametrize("consumer,mutation", _NATIVE_BYPASSES)
+def test_reported_native_bypasses_fail_real_consumer_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer, mutation: str
+) -> None:
+    """Reject every reported native false accept through the public ZIP/EXE consumer test entry."""
+    source = _powershell_bypass_source(consumer, mutation)
+    with pytest.raises(AssertionError, match="Missing|Stale or conflicting"):
+        _check_powershell_script(tmp_path, monkeypatch, consumer, source)
+
+
+@pytest.mark.parametrize("consumer,mutation", _NATIVE_BYPASSES)
+def test_native_wrong_hash_witnesses_demonstrate_why_bypasses_are_rejected(
+    tmp_path: Path, consumer, mutation: str
+) -> None:
+    """Execute only the trusted synthetic fixtures: stale writes or skipped/suppressed guards exit successfully."""
+    source = _powershell_bypass_source(consumer, mutation)
+    prefix = 'Write-Output "WITNESS_STARTED"\n'
+    if consumer.kind == "workflow":
+        if consumer.selector == "$hash":
+            prefix += '$hash="' + "1" * 64 + '"\n'
+        else:
+            prefix += ('function Get-FileHash { [pscustomobject]@{Hash="' + "1" * 64 +
+                       '"} }\n$installedMedia="fixture"\n')
+        suffix = 'Write-Output "GUARD_COMPLETED"\n'
+    else:
+        suffix = f'Write-Output ("PIN=" + ${consumer.selector})\n'
+    fixture = tmp_path / "native-witness.ps1"
+    fixture.write_text(prefix + source + suffix, encoding="utf-8")
+    executable = shutil.which("pwsh")
+    assert executable, "Native PowerShell witnesses require pwsh; do not skip this gate"
+    process = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(fixture)],
+                             text=True, capture_output=True, timeout=30)
+    assert process.returncode == 0 and "WITNESS_STARTED" in process.stdout, process.stderr
+    if mutation.startswith("conditional-"):
+        assert "PIN=" not in process.stdout and "GUARD_COMPLETED" not in process.stdout
+    elif consumer.kind == "workflow":
+        assert "GUARD_COMPLETED" in process.stdout
+    else:
+        assert "PIN=" + "1" * 64 in process.stdout
+
+
+@pytest.mark.parametrize("consumer", [parameter for parameter in integrity._CONSUMER_PINS
+                                     if parameter.values[0].kind == "workflow"])
+def test_native_valid_guard_rejects_wrong_observed_hash(tmp_path: Path, consumer) -> None:
+    """Control both native selectors: a real stale digest reaches throw and fails the PowerShell process."""
+    expected = json.loads((integrity.ROOT / "infra/mediamtx/runtime.json").read_text())[consumer.hash_field]
+    if consumer.selector == "$hash":
+        prefix = '$hash="' + "1" * 64 + '"\n'
+    else:
+        prefix = ('function Get-FileHash { [pscustomobject]@{Hash="' + "1" * 64 +
+                  '"} }\n$installedMedia="fixture"\n')
+    fixture = tmp_path / "valid-guard.ps1"
+    fixture.write_text(prefix + f'if ({consumer.selector} -ne "{expected}") {{ throw "CHECKSUM_REJECTED" }}\n'
+                       + 'Write-Output "GUARD_COMPLETED"\n', encoding="utf-8")
+    executable = shutil.which("pwsh")
+    assert executable, "Native PowerShell witnesses require pwsh; do not skip this gate"
+    process = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(fixture)],
+                             text=True, capture_output=True, timeout=30)
+    assert process.returncode != 0 and "CHECKSUM_REJECTED" in process.stderr
+    assert "GUARD_COMPLETED" not in process.stdout
+
+
+@pytest.mark.parametrize("consumer", [parameter for parameter in integrity._CONSUMER_PINS
+                                     if parameter.values[0].kind != "python"])
+def test_native_contract_preserves_preflight_throws_and_unrelated_operations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer
+) -> None:
+    """Accept legitimate preflight throws, literal contents, unused functions and unrelated filesystem setup."""
+    expected = json.loads((integrity.ROOT / "infra/mediamtx/runtime.json").read_text())[consumer.hash_field]
+    source = ('if ($false) { throw "preflight failure" }\n'
+              '# trap { continue }; if ($true) { return }\n'
+              'function Unused { trap { continue }; return }\n'
+              '[string]$unrelated = "value"\n'
+              'New-Item -ItemType Directory -Path "fixture-directory"\n')
+    source += (f'if ({consumer.selector} -ne "{expected}") {{ throw "checksum mismatch" }}\n'
+               if consumer.kind == "workflow" else f'${consumer.selector} = "{expected}"\n')
+    _check_powershell_script(tmp_path, monkeypatch, consumer, source)
