@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Force -Path $server|Out-Null
 
 # MediaMTX is a pinned installer build input. Installation itself is offline.
 $mediaVersion="1.21.1-vms.1"
-$mediaSha="4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046"
+$mediaSha="dd3a3378dd0bb3ca7a3c5f72736a662fed7c1e3c22dca7e52711350ca50ccdbd"
 $mediaName="mediamtx_v$($mediaVersion)_windows_amd64.zip"
 if(-not $MediaMTXZip){
   $cache=Join-Path $OutputRoot "build-inputs"

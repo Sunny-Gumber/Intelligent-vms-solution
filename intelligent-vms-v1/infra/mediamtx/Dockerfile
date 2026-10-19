@@ -1,4 +1,4 @@
-FROM golang:1.26.8-alpine AS mediamtx
+FROM golang:1.26.9-alpine AS mediamtx
 RUN apk add --no-cache python3 git
 WORKDIR /vms
 COPY infra/mediamtx/runtime.json infra/mediamtx/runtime.json
