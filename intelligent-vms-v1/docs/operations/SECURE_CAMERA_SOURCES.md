@@ -58,14 +58,50 @@ redirects must be configured using their final validated endpoint. This confines
 RTSP and RTSPS sources equally without a proxy or transcoding.
 
 Linux and Windows use the same checksum-pinned source and patch. The builder pins
-Go 1.26.8, verifies generated HLS assets, and produces reproducible Windows ZIPs
-with fixed timestamps and pinned ZIP/executable SHA-256. Windows installs remain
-offline; upgrade/repair replaces an older media executable after services stop.
+Go 1.26.9 and the checksummed golang.org/x/net v0.60.0 HTTP/2 security update,
+verifies generated HLS assets, and produces reproducible Windows ZIPs
+with fixed timestamps and pinned ZIP/executable SHA-256. The MediaMTX
+runtime itself installs from a verified bundled ZIP without a network download;
+the full Windows server installer still obtains Python dependencies and requires
+separately provisioned prerequisites. Upgrade/repair replaces a mismatched media
+executable after services stop.
 Linux Docker builds the patched runtime. Distributed nodes must deploy this VMS
 media image/runtime too; an unpatched external MediaMTX binary does not satisfy
 the source confinement contract. Helm uses operator-supplied immutable VMS images.
 
-For a source build: install pinned Go 1.26.8 and Python 3.12, then use
+### Security rebuild identity and cached Windows build inputs — issue #173
+
+The Go 1.26.9 / x/net v0.60.0 patch retains the VMS runtime suffix
+`1.21.1-vms.1` intentionally. This suffix identifies the upstream VMS patch
+line, **not** one uniquely compiled security build. Accept an actual runtime
+using the reviewed repository commit and the SHA-256 pins in
+`infra/mediamtx/runtime.json`; Windows installation checks both the bundled
+ZIP and its extracted EXE. Qualification records must include the observed
+artifact digest (rather than relying on a version-only stamp). Do not treat a
+`sha256_status: NOT_PROVIDED` qualification entry as artifact evidence.
+
+When reusing an existing `Build-Installer.ps1 -OutputRoot`, an old cached
+`build-inputs/mediamtx_v1.21.1-vms.1_windows_amd64.zip` may retain the same
+name but the previous Go compiler's bytes. The packaging hash gate rejects this
+old file rather than silently accepting it. After verifying the stale-hash
+error, delete **only that cached build input** or use a fresh OutputRoot; then
+rebuild from the pinned verified sources. For example, in PowerShell with your
+actual build output directory assigned to `$OutputRoot`:
+
+```powershell
+$oldMediaZip = Join-Path $OutputRoot "build-inputs/mediamtx_v1.21.1-vms.1_windows_amd64.zip"
+Remove-Item -LiteralPath $oldMediaZip -Force
+```
+
+Never delete installed recording/configuration directories to clear a build
+cache. Retire/disallow obsolete installer artifacts in the distribution channel.
+Product version 0.2.1 can be treated as repair for an equally numbered older
+installer, so product-version comparison alone is not an anti-downgrade control:
+select approved builds by the full installer checksum plus the reviewed commit.
+A future public release/version increment is a separate signed-release decision;
+it must not reuse stale ZIP/EXE digests.
+
+For a source build: install pinned Go 1.26.9 and Python 3.12, then use
 `python tools/build_mediamtx.py --work <build-directory> --output <binary-or-windows-zip> --target-os linux|windows`.
 Build manifest: `infra/mediamtx/runtime.json`. No camera secrets enter the build.
 
