@@ -59,6 +59,25 @@ function Get-ConstantCommandText($Expression) {
     return $null
 }
 
+function Test-LiteralThrow($Statement) {
+    # A ThrowStatementAst can contain return/exit in its operand; its AST type alone
+    # does not prove failure on checksum mismatch. Do not evaluate consumer source.
+    if ($Statement -isnot [Management.Automation.Language.ThrowStatementAst]) {
+        return $false
+    }
+    $message = Get-PipelineExpression $Statement.Pipeline
+    if ($message -isnot [Management.Automation.Language.StringConstantExpressionAst]) {
+        return $false
+    }
+    if ($message.StringConstantType -notin @(
+        [Management.Automation.Language.StringConstantType]::SingleQuoted,
+        [Management.Automation.Language.StringConstantType]::DoubleQuoted
+    )) {
+        return $false
+    }
+    return (-not [string]::IsNullOrWhiteSpace($message.Value))
+}
+
 function Test-IndirectVariableWrite($Node) {
     if ($Node -is [Management.Automation.Language.InvokeMemberExpressionAst]) {
         return $Node.Member.Extent.Text -imatch '^(Set|Remove)$' -and
@@ -164,7 +183,7 @@ $references = @($executableNodes | Where-Object {
                     $body = $clause.Item2.Statements
                     $direct = $direct -and -not $hasTrap -and
                         $node.Clauses.Count -eq 1 -and $body.Count -eq 1 -and
-                        $body[0] -is [Management.Automation.Language.ThrowStatementAst]
+                        (Test-LiteralThrow $body[0])
                     if ($condition.Operator -eq "Ine") { $literal = $condition.Right }
                 }
             }

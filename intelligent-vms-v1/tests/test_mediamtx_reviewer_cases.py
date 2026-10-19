@@ -462,3 +462,85 @@ def test_native_contract_preserves_preflight_throws_and_unrelated_operations(
     source += (f'if ({consumer.selector} -ne "{expected}") {{ throw "checksum mismatch" }}\n'
                if consumer.kind == "workflow" else f'${consumer.selector} = "{expected}"\n')
     _check_powershell_script(tmp_path, monkeypatch, consumer, source)
+
+
+# F1: checksum guards must throw a constant string, not evaluate an operand
+# that can return/exit before the exception is raised.
+_WORKFLOW_GUARD_CONSUMERS = [
+    parameter.values[0] for parameter in integrity._CONSUMER_PINS
+    if parameter.values[0].kind == "workflow"
+]
+
+
+def _current_workflow_checksum_guard(consumer):
+    """Read the real CI guard without executing it or trusting a synthetic replacement."""
+    source = integrity._consumer_file(consumer.path).read_text(encoding="utf-8")
+    workflow = yaml.safe_load(source)
+    step = next(item for item in workflow["jobs"][consumer.job]["steps"]
+                if item.get("name") == consumer.step)
+    digest = json.loads((integrity.ROOT / "infra/mediamtx/runtime.json").read_text())[
+        consumer.hash_field]
+    candidates = [line.strip() for line in step["run"].splitlines()
+                  if digest in line and "{throw " in line]
+    assert len(candidates) == 1, "Expected exactly one currently enforced checksum guard"
+    return workflow, step, candidates[0]
+
+
+def _wrong_digest_prefix(consumer):
+    """Use a synthetic wrong digest; never touch a real installer or certificate."""
+    stale = "1" * 64
+    if consumer.selector == "$hash":
+        return f'$hash="{stale}"\n'
+    return ('function Get-FileHash { [pscustomobject]@{Hash="' + stale +
+            '"} }\n$installedMedia="synthetic-fixture"\n')
+
+
+@pytest.mark.parametrize("consumer", _WORKFLOW_GUARD_CONSUMERS, ids=["zip", "exe"])
+@pytest.mark.parametrize("exit_form", ["return", "exit 0"], ids=["return", "exit-zero"])
+def test_f1_nested_exit_is_rejected_through_actual_workflow_consumer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer, exit_form: str
+) -> None:
+    """Four independently constructed PR #174 public-entry mutations must fail closed."""
+    workflow, step, original = _current_workflow_checksum_guard(consumer)
+    before, separator, _ = original.partition("{throw ")
+    assert separator and original.endswith("}")
+    mutated = before + "{throw $(" + exit_form + ")}"
+    assert step["run"].count(original) == 1
+    step["run"] = step["run"].replace(original, mutated, 1)
+    with pytest.raises(AssertionError, match="Missing MediaMTX checksum assignment"):
+        _check_source(tmp_path, monkeypatch, consumer, yaml.safe_dump(workflow))
+
+
+@pytest.mark.parametrize("consumer", _WORKFLOW_GUARD_CONSUMERS, ids=["zip", "exe"])
+@pytest.mark.parametrize("exit_form", ["return", "exit 0"], ids=["return", "exit-zero"])
+def test_f1_nested_exit_native_wrong_digest_witness(
+    tmp_path: Path, consumer, exit_form: str
+) -> None:
+    """Execute trusted finite PowerShell snippets to prove both nested exits bypass throw."""
+    _, _, original = _current_workflow_checksum_guard(consumer)
+    mutated = original.partition("{throw ")[0] + "{throw $(" + exit_form + ")}"
+    fixture = tmp_path / "f1-native-witness.ps1"
+    fixture.write_text('Write-Output "WITNESS_STARTED"\n' +
+                       _wrong_digest_prefix(consumer) + mutated + '\n' +
+                       'Write-Output "GUARD_COMPLETED"\n', encoding="utf-8")
+    executable = shutil.which("pwsh")
+    assert executable, "Native PowerShell is mandatory for F1 verification"
+    process = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive",
+                              "-File", str(fixture)], text=True, capture_output=True, timeout=30)
+    assert process.returncode == 0 and "WITNESS_STARTED" in process.stdout, process.stderr
+    assert "GUARD_COMPLETED" not in process.stdout
+
+
+@pytest.mark.parametrize("consumer", _WORKFLOW_GUARD_CONSUMERS, ids=["zip", "exe"])
+def test_f1_real_unmodified_guard_fails_on_wrong_digest(tmp_path: Path, consumer) -> None:
+    """The two original workflow guard statements must actually fail the native process."""
+    _, _, original = _current_workflow_checksum_guard(consumer)
+    fixture = tmp_path / "f1-original-guard.ps1"
+    fixture.write_text(_wrong_digest_prefix(consumer) + original + '\n' +
+                       'Write-Output "GUARD_COMPLETED"\n', encoding="utf-8")
+    executable = shutil.which("pwsh")
+    assert executable, "Native PowerShell is mandatory for F1 verification"
+    process = subprocess.run([executable, "-NoLogo", "-NoProfile", "-NonInteractive",
+                              "-File", str(fixture)], text=True, capture_output=True, timeout=30)
+    assert process.returncode != 0, process.stdout + process.stderr
+    assert "GUARD_COMPLETED" not in process.stdout
