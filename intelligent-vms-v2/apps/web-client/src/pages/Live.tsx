@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import VideoTile from '../components/VideoTile';
+import { VideoTile } from '../components/VideoTile';
 import { api } from '../lib/api';
 import type { Camera } from '../lib/types';
 
@@ -60,13 +60,15 @@ export default function Live() {
                  onDragOver={(e) => e.preventDefault()}
                  onDrop={(e) => assign(index, e.dataTransfer.getData('text/camera-id'))}>
               {cameraId && camera ? (
-                <VideoTile camera={camera} tileWidth={tileSize.width}
-                           tileHeight={tileSize.height}
-                           onClose={() => setAssignments((p) => {
+                <>
+                <VideoTile cameraId={camera.id} cameraName={camera.name}
+                           width={tileSize.width} height={tileSize.height} />
+                <button aria-label={`Close ${camera.name}`} onClick={() => setAssignments((p) => {
                              const next = { ...p };
                              delete next[index];
                              return next;
-                           })} />
+                           })}>Close</button>
+                </>
               ) : (
                 <div className="error" style={{ color: 'var(--muted)' }}>
                   Drag a camera here

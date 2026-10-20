@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Http;
+using IntelligentVms.Client.Models;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -95,6 +97,17 @@ public sealed class ApiClient : IDisposable
 
     public Task<T> DeleteAsync<T>(string path, CancellationToken cancellationToken = default)
         => SendAsync<T>(HttpMethod.Delete, path, null, cancellationToken);
+
+    public Task<CameraPage> ListCamerasAsync() => GetAsync<CameraPage>("cameras?limit=500");
+
+    public Task<LiveSession> OpenLiveSessionAsync(string cameraId, int tileWidth, int tileHeight) =>
+        PostAsync<LiveSession>("live/sessions", new { camera_id = cameraId, tile_width = tileWidth, tile_height = tileHeight });
+
+    public Task<LiveSession> KeepAliveAsync(string sessionId) =>
+        PostAsync<LiveSession>($"live/sessions/{Uri.EscapeDataString(sessionId)}/keepalive");
+
+    public Task<JsonElement> CloseLiveSessionAsync(string sessionId) =>
+        DeleteAsync<JsonElement>($"live/sessions/{Uri.EscapeDataString(sessionId)}");
 
     private async Task<T> SendAsync<T>(HttpMethod method, string path, object? body,
                                        CancellationToken cancellationToken)

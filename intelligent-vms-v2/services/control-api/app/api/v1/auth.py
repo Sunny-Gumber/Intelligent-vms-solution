@@ -7,7 +7,6 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-
 from vms_contracts.dto import LoginRequest, TokenPair, UserOut
 
 from app.core import audit, mfa

@@ -44,8 +44,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services" / "control-api"))
 sys.path.insert(0, str(ROOT / "packages" / "shared-contracts"))
 
-from app.config import Settings, get_settings  # noqa: E402
-from app.version import REQUIRED_SCHEMA_REVISION, VERSION  # noqa: E402
+from app.config import Settings, get_settings
+from app.version import REQUIRED_SCHEMA_REVISION, VERSION
 
 MANIFEST_NAME = "manifest.json"
 KEY_WARNING = (
@@ -90,14 +90,13 @@ def dump_database(settings: Settings, destination: Path) -> dict:
 
 def collect_inventory(settings: Settings) -> dict:
     """A human-readable summary so an operator can verify a backup at a glance."""
-    from sqlalchemy import func, select
-
     from app.db import session as db
     from app.db.models import Camera, Role, Site, StorageVolume, User
+    from sqlalchemy import func, select
 
     db.get_engine(settings)
     with db.session_scope() as session:
-        def count(model):  # noqa: ANN001
+        def count(model):
             return int(session.execute(select(func.count()).select_from(model)).scalar_one())
 
         cameras = session.execute(select(Camera)).scalars().all()
@@ -118,7 +117,7 @@ def collect_inventory(settings: Settings) -> dict:
 
 def backup(settings: Settings, output_dir: Path, include_keys: bool = False) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     archive_path = output_dir / f"vms-backup-{stamp}.zip"
 
     with tempfile.TemporaryDirectory() as workspace:
@@ -135,7 +134,7 @@ def backup(settings: Settings, output_dir: Path, include_keys: bool = False) -> 
             "product": "Intelligent VMS",
             "version": VERSION,
             "schema_revision": REQUIRED_SCHEMA_REVISION,
-            "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "created_at": dt.datetime.now(dt.UTC).isoformat(),
             "database": database_info,
             "includes_master_key": include_keys,
             "includes_recordings": False,
@@ -223,12 +222,12 @@ def restore(settings: Settings, archive_path: Path, *, force: bool = False) -> i
                 os.chmod(key_path, 0o600)
             print(f"master key restored to {key_path}")
         else:
-            print("")
+            print()
             print("WARNING: this archive contains no master key.")
             print("         Stored camera credentials CANNOT be decrypted.")
             print("         Re-enter the password for every camera after starting up.")
 
-    print("")
+    print()
     print("Next: run database migrations, then start the services.")
     print("  cd database && alembic upgrade head")
     return 0

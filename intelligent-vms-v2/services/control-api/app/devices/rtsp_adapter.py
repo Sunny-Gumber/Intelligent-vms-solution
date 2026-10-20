@@ -17,8 +17,14 @@ from vms_contracts.enums import StreamRole
 
 from app.core.timeutil import utcnow
 from app.devices.base import (
-    Capabilities, Credentials, DeviceAdapter, DeviceEndpoint, DeviceError, DeviceInfo,
-    DeviceUnauthorized, StreamProfile,
+    Capabilities,
+    Credentials,
+    DeviceAdapter,
+    DeviceEndpoint,
+    DeviceError,
+    DeviceInfo,
+    DeviceUnauthorized,
+    StreamProfile,
 )
 from app.logging_setup import get_logger, redact_text
 
@@ -151,7 +157,7 @@ async def probe_stream(url: str, *, ffprobe_path: str = "ffprobe",
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(),
                                                 timeout=timeout_s + 5)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         process.kill()
         await process.wait()
         return ProbeResult(ok=False, error=f"probe timed out after {timeout_s:.0f}s")

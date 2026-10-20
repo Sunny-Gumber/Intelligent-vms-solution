@@ -19,7 +19,6 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import AnalyticsClass, AnalyticsSource, EventSeverity, EventType
 
 from app.core.errors import ValidationError

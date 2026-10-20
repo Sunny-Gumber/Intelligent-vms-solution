@@ -22,7 +22,6 @@ from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import SegmentState
 
 from app.config import Settings, get_settings
@@ -44,7 +43,7 @@ class RetentionResult:
     errors: list[str] = field(default_factory=list)
     emergency: bool = False
 
-    def merge(self, other: "RetentionResult") -> "RetentionResult":
+    def merge(self, other: RetentionResult) -> RetentionResult:
         self.examined += other.examined
         self.deleted += other.deleted
         self.bytes_reclaimed += other.bytes_reclaimed

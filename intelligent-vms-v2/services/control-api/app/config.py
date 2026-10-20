@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     database_connect_backoff_s: float = 1.5
 
     # ---------------- security ----------------
-    secret_key: str = "dev-insecure-change-me"
+    secret_key: str = "dev-insecure-change-me"  # noqa: S105 - development-only sentinel rejected in production
     access_token_ttl_s: int = 900
     refresh_token_ttl_s: int = 7 * 24 * 3600
     play_token_ttl_s: int = 60
@@ -235,7 +235,7 @@ class Settings(BaseSettings):
     def _production_safety(self) -> Settings:
         if self.environment == "production":
             problems = []
-            if self.secret_key == "dev-insecure-change-me" or len(self.secret_key) < 32:
+            if self.secret_key == "dev-insecure-change-me" or len(self.secret_key) < 32:  # noqa: S105 - reject the insecure development sentinel in production
                 problems.append("VMS_SECRET_KEY must be unique and at least 32 characters")
             if self.database_url.startswith("sqlite"):
                 problems.append("SQLite is not supported in production; configure PostgreSQL")

@@ -42,7 +42,7 @@ class Detector(abc.ABC):
         """True only when this detector can genuinely run inference."""
 
     @abc.abstractmethod
-    def detect(self, frame, *, min_confidence: float = 0.5) -> list[Detection]:  # noqa: ANN001
+    def detect(self, frame, *, min_confidence: float = 0.5) -> list[Detection]:
         """Run inference on one decoded frame (HWC, BGR, uint8)."""
 
     def warmup(self) -> None:
@@ -69,6 +69,6 @@ class NullDetector(Detector):
     def available(self) -> bool:
         return False
 
-    def detect(self, frame, *, min_confidence: float = 0.5) -> list[Detection]:  # noqa: ANN001
+    def detect(self, frame, *, min_confidence: float = 0.5) -> list[Detection]:
         raise RuntimeError(
             f"server-side inference is not available: {self.reason}")

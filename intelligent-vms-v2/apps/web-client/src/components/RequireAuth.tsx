@@ -10,7 +10,7 @@ import { api } from '../lib/api';
  */
 export default function RequireAuth({ children }: { children: ReactNode }) {
   const location = useLocation();
-  if (!api.isAuthenticated()) {
+  if (!api.isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
   return <>{children}</>;

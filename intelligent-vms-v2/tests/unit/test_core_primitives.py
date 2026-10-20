@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-
 from app.core import mfa
 from app.core.backoff import BackoffPolicy, RetryExhausted, retry_async
 from app.core.circuit import BreakerState, CircuitBreaker
@@ -93,7 +92,7 @@ def test_access_token_round_trip(settings):
     class FakeUser:
         id = "u1"
         username = "op"
-        roles = [FakeLink()]
+        roles = (FakeLink(),)
 
     token, claims = create_access_token(FakeUser(), ["live.view"], settings)
     decoded = decode_access_token(token, settings)
@@ -109,7 +108,7 @@ def test_access_token_rejects_tampering(settings):
     class FakeUser:
         id = "u1"
         username = "op"
-        roles = []
+        roles = ()
 
     token, _ = create_access_token(FakeUser(), [], settings)
     head, body, signature = token.split(".")
@@ -270,7 +269,7 @@ def test_totp_rejects_malformed_code():
 
 # -- time ------------------------------------------------------------------
 def test_ensure_utc_and_clamp():
-    assert ensure_utc(dt.datetime(2026, 1, 1, 12, 0)).tzinfo is dt.timezone.utc
+    assert ensure_utc(dt.datetime(2026, 1, 1, 12, 0)).tzinfo is dt.UTC
     start = utcnow()
     _, end, clamped = clamp_range(start, start + dt.timedelta(hours=48), 3600)
     assert clamped and (end - start).total_seconds() == 3600

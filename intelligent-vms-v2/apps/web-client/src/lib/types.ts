@@ -71,3 +71,36 @@ export interface Problem {
   correlation_id: string | null;
   [key: string]: unknown;
 }
+
+
+export interface TimelineBucket {
+  start: string;
+  end: string;
+  recorded_s: number;
+  event_count: number;
+  has_gap: boolean;
+}
+
+export interface PlaybackManifest {
+  camera_id: string;
+  message: string | null;
+  gaps: { start: string; end: string; duration_s: number; cause: string }[];
+  segments: {
+    id: string;
+    started_at: string;
+    duration_s: number | null;
+    size_bytes: number | null;
+    has_gap_before: boolean;
+  }[];
+}
+
+export interface Volume {
+  id: string;
+  name: string;
+  path: string;
+  state: string;
+  total_bytes: number | null;
+  free_bytes: number | null;
+  camera_count: number;
+  raid_status: string | null;
+}

@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
-
 from vms_contracts.dto import ExportCreate, ExportOut
 from vms_contracts.enums import ExportFormat, ExportState, Permission
 
@@ -15,6 +14,7 @@ from app.core.errors import ConflictError, NotFoundError
 from app.core.paths import resolve_within
 from app.db.models import ExportJob
 from app.exports.evidence import build_evidence, coverage_shortfall
+from app.logging_setup import get_logger
 
 router = APIRouter(prefix="/exports", tags=["exports"])
 
@@ -33,7 +33,7 @@ async def _run_export(container, job_id: str) -> None:  # noqa: ANN001
     try:
         await container.exports.run(job_id)
     except Exception:  # noqa: BLE001 - the failure is already recorded on the job
-        pass
+        get_logger("api.exports").warning("export.background_failed", job_id=job_id)
 
 
 def _load_job(session, principal, export_id: str) -> ExportJob:  # noqa: ANN001

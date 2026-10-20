@@ -6,7 +6,6 @@ import datetime as dt
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
-
 from vms_contracts.dto import PlaybackManifest
 from vms_contracts.enums import Permission, StreamRole
 
@@ -72,7 +71,7 @@ def availability(camera_id: str, month: str, session: DbSession,
                  principal: CurrentPrincipal) -> dict:
     load_camera(session, principal, camera_id, Permission.PLAYBACK_VIEW)
     try:
-        start = dt.datetime.strptime(month, "%Y-%m").replace(tzinfo=dt.timezone.utc)
+        start = dt.datetime.strptime(month, "%Y-%m").replace(tzinfo=dt.UTC)
     except ValueError as exc:
         raise ValidationError("month must be formatted YYYY-MM",
                               code="invalid_month") from exc

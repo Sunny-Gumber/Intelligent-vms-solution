@@ -7,35 +7,36 @@
  * overwriting their decision.
  */
 import { useEffect, useState } from "react";
-import { Alarm, api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
+import type { Alarm } from "../lib/types";
 
 export function AlarmsPage() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
   async function load() {
-    setAlarms((await api.listAlarms({ state: ["new", "active", "acknowledged"] })).items);
+    try {
+      setAlarms((await api.get<{ items: Alarm[] }>("/alarms?state=new&state=active&state=acknowledged")).items);
+    } catch (error) { setNotice(String(error)); }
   }
 
   useEffect(() => {
     load();
-    const stream = api.openEventStream();
-    // Any inbound event may change alarm state; refresh rather than guess.
-    stream.onmessage = () => load();
-    return () => stream.close();
+    const stream = api.openEventStream(() => { void load(); });
+    return () => stream?.close();
   }, []);
 
   async function acknowledge(alarm: Alarm) {
     try {
-      await api.acknowledgeAlarm(alarm.id, alarm.version);
+      await api.post(`/alarms/${encodeURIComponent(alarm.id)}/acknowledge`, { version: alarm.version });
       setNotice(null);
-    } catch (e: any) {
-      if (e?.code === "stale_version") {
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "stale_version") {
         setNotice(
-          `${alarm.title} was already handled by another operator (now ${e.current_state}).`,
+          `${alarm.title} was already handled by another operator.`,
         );
       } else {
-        setNotice(e?.detail ?? "Could not acknowledge the alarm");
+        setNotice(e instanceof Error ? e.message : "Could not acknowledge the alarm");
       }
     } finally {
       load();

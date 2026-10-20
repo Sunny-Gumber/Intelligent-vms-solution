@@ -93,7 +93,7 @@ def estimate(workload: Workload) -> CapacityEstimate:
         storage_bytes_for_retention=bytes_retention,
         retention_days=workload.retention_days,
         cpu_cores_recommended=cores,
-        ram_gb_recommended=int(round(ram_gb + 0.5)),
+        ram_gb_recommended=round(ram_gb + 0.5),
         nic_gbps_recommended=max(1.0, nic_gbps),
         assumptions={
             "bits_per_pixel_per_frame": BPP,

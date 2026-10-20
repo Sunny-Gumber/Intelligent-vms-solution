@@ -11,7 +11,6 @@ import datetime as dt
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import EventSeverity, EventType, RecordingMode, RecordingState
 
 from app.core.timeutil import utcnow

@@ -69,7 +69,7 @@ async def event_stream(websocket: WebSocket, token: str = Query(...)) -> None:
         while True:
             try:
                 message = await asyncio.wait_for(queue.get(), timeout=20.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await websocket.send_json({"type": "heartbeat"})
                 continue
             await websocket.send_json({"type": "event", "data": message})

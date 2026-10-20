@@ -6,7 +6,8 @@
  * not as verified UI behaviour.
  */
 import { useEffect, useMemo, useState } from "react";
-import { api, Camera } from "../lib/api";
+import { api } from "../lib/api";
+import type { Camera } from "../lib/types";
 
 const STATE_STYLE: Record<string, string> = {
   online: "badge badge--ok",
@@ -26,7 +27,7 @@ export function CamerasPage() {
   async function load() {
     setBusy(true);
     try {
-      setCameras((await api.listCameras({ search })).items);
+      setCameras((await api.get<{ items: Camera[] }>(`/cameras?${new URLSearchParams({ search })}`)).items);
       setError(null);
     } catch (e: any) {
       // The API returns RFC 7807 problem documents; `code` is stable, `detail`

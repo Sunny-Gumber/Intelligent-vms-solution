@@ -18,7 +18,6 @@ import datetime as dt
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import AlarmState, EventSeverity
 
 from app.core.errors import ConflictError, NotFoundError, StaleVersionError, ValidationError

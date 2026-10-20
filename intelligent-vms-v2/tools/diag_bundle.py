@@ -36,9 +36,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services" / "control-api"))
 sys.path.insert(0, str(ROOT / "packages" / "shared-contracts"))
 
-from app.config import Settings, get_settings  # noqa: E402
-from app.logging_setup import redact_text  # noqa: E402
-from app.version import version_info  # noqa: E402
+from app.config import Settings, get_settings
+from app.logging_setup import redact_text
+from app.version import version_info
 
 SECRET_FIELDS = {
     "secret_key", "bootstrap_admin_password", "smtp_password", "smtp_user",
@@ -80,9 +80,9 @@ def platform_facts() -> dict:
         facts["memory_total_mb"] = round(memory.total / 1e6, 1)
         facts["memory_percent"] = memory.percent
         facts["boot_time"] = dt.datetime.fromtimestamp(
-            psutil.boot_time(), tz=dt.timezone.utc).isoformat()
-    except Exception:  # noqa: BLE001
-        pass
+            psutil.boot_time(), tz=dt.UTC).isoformat()
+    except Exception as exc:  # noqa: BLE001
+        facts["metrics_error"] = type(exc).__name__
     return facts
 
 
@@ -102,19 +102,26 @@ def dependency_versions() -> dict:
 
 
 def database_snapshot(settings: Settings) -> dict:
-    from sqlalchemy import func, select
-
     from app.db import session as db
     from app.db.models import (
-        Alarm, AnalyticsEvent, AuditEntry, Camera, Event, ExportJob,
-        RecordingSegment, StorageVolume, User, WorkerHeartbeat,
+        Alarm,
+        AnalyticsEvent,
+        AuditEntry,
+        Camera,
+        Event,
+        ExportJob,
+        RecordingSegment,
+        StorageVolume,
+        User,
+        WorkerHeartbeat,
     )
     from app.storage import diagnostics as storage_diagnostics
+    from sqlalchemy import func, select
 
     db.get_engine(settings)
     snapshot: dict = {}
     with db.session_scope() as session:
-        def count(model):  # noqa: ANN001
+        def count(model):
             return int(session.execute(
                 select(func.count()).select_from(model)).scalar_one())
 
@@ -186,12 +193,12 @@ def tail_logs(settings: Settings, max_lines: int = 2000) -> dict[str, str]:
 
 def build(settings: Settings, output_dir: Path, log_lines: int = 2000) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     archive_path = output_dir / f"vms-diagnostics-{stamp}.zip"
 
     sections: dict[str, object] = {
         "version": version_info(),
-        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "generated_at": dt.datetime.now(dt.UTC).isoformat(),
         "platform": platform_facts(),
         "dependencies": dependency_versions(),
         "configuration": redact_settings(settings),

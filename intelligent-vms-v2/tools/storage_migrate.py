@@ -34,16 +34,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services" / "control-api"))
 sys.path.insert(0, str(ROOT / "packages" / "shared-contracts"))
 
-from sqlalchemy import select  # noqa: E402
-
-from vms_contracts.enums import SegmentState  # noqa: E402
-
-from app.config import get_settings  # noqa: E402
-from app.core.crypto import sha256_file  # noqa: E402
-from app.core.paths import resolve_within  # noqa: E402
-from app.core.timeutil import utcnow  # noqa: E402
-from app.db import session as db  # noqa: E402
-from app.db.models import RecordingSegment, StorageVolume  # noqa: E402
+from app.config import get_settings
+from app.core.crypto import sha256_file
+from app.core.paths import resolve_within
+from app.core.timeutil import utcnow
+from app.db import session as db
+from app.db.models import RecordingSegment, StorageVolume
+from sqlalchemy import select
+from vms_contracts.enums import SegmentState
 
 
 @dataclass
@@ -61,7 +59,7 @@ class MigrationResult:
                 f"moved={self.bytes_moved / 1e6:.1f} MB")
 
 
-def find_volume(session, name_or_id: str) -> StorageVolume:  # noqa: ANN001
+def find_volume(session, name_or_id: str) -> StorageVolume:
     volume = session.execute(
         select(StorageVolume).where(StorageVolume.name == name_or_id)
     ).scalar_one_or_none()
@@ -72,7 +70,7 @@ def find_volume(session, name_or_id: str) -> StorageVolume:  # noqa: ANN001
     return volume
 
 
-def migrate(session, source: StorageVolume, destination: StorageVolume, *,  # noqa: ANN001
+def migrate(session, source: StorageVolume, destination: StorageVolume, *,
             older_than_days: int | None, camera_id: str | None,
             limit: int, dry_run: bool) -> MigrationResult:
     result = MigrationResult()
@@ -141,7 +139,7 @@ def migrate(session, source: StorageVolume, destination: StorageVolume, *,  # no
     return result
 
 
-def clean_orphans(session, volume: StorageVolume, *, dry_run: bool) -> int:  # noqa: ANN001
+def clean_orphans(session, volume: StorageVolume, *, dry_run: bool) -> int:
     """Remove files on a volume that the index no longer references."""
     indexed = {
         row for row in session.execute(

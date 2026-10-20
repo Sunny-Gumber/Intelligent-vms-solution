@@ -23,7 +23,6 @@ from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import SegmentState
 
 from app.core.timeutil import utcnow
@@ -153,6 +152,6 @@ def run_startup_recovery(session: Session) -> RecoveryReport:
 
 def _mtime(path: Path) -> dt.datetime:
     try:
-        return dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.timezone.utc)
+        return dt.datetime.fromtimestamp(path.stat().st_mtime, tz=dt.UTC)
     except OSError:
         return utcnow()

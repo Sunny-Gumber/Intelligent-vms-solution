@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-UTC = dt.timezone.utc
+UTC = dt.UTC
 
 
 def utcnow() -> dt.datetime:

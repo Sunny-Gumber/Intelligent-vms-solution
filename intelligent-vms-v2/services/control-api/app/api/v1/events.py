@@ -7,7 +7,6 @@ import datetime as dt
 from fastapi import APIRouter, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-
 from vms_contracts.dto import AlarmAck, AlarmOut, EventOut
 from vms_contracts.enums import AlarmState, EventSeverity, EventType, Permission
 

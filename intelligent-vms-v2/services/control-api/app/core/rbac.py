@@ -19,13 +19,13 @@ controls, but that is cosmetic only.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
-from vms_contracts.enums import Permission, Role as RoleName
+from vms_contracts.enums import Permission
+from vms_contracts.enums import Role as RoleName
 
 from app.core.errors import PermissionDeniedError
 from app.db.models import Camera, Role, Site, User

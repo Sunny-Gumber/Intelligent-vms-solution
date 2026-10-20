@@ -20,14 +20,16 @@ from dataclasses import dataclass
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
-
 from vms_contracts.dto import LiveSessionOut
 from vms_contracts.enums import StreamRole
 
 from app.config import Settings, get_settings
 from app.core.crypto import hash_token, new_opaque_token
 from app.core.errors import (
-    CapacityError, DependencyUnavailableError, MediaUnavailableError, NotFoundError,
+    CapacityError,
+    DependencyUnavailableError,
+    MediaUnavailableError,
+    NotFoundError,
     ValidationError,
 )
 from app.core.timeutil import utcnow

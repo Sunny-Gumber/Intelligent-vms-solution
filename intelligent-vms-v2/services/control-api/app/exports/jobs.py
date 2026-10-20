@@ -23,7 +23,6 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import ExportFormat, ExportState, StreamRole
 
 from app.config import Settings, get_settings
@@ -266,8 +265,8 @@ class ExportService:
 
     async def _finish_cancelled(self, job_id: str, output: Path) -> None:
         try:
-            if output.is_file():
-                output.unlink()
+            if await asyncio.to_thread(output.is_file):
+                await asyncio.to_thread(output.unlink)
         except OSError:
             pass
         with session_scope() as session:

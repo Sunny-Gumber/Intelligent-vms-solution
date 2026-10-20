@@ -12,8 +12,8 @@ resolution-independent and survivable across stream-profile changes.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 Point = tuple[float, float]
 

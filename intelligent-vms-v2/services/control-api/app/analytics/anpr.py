@@ -17,7 +17,6 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import AnalyticsClass
 
 from app.core.timeutil import ensure_utc

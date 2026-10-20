@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-
 from vms_contracts.dto import LicenseStatus
 from vms_contracts.enums import Edition, FeatureFlag
 

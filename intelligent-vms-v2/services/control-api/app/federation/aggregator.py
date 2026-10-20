@@ -92,7 +92,7 @@ class FederationAggregator:
         if not nodes:
             return []
         summaries = await asyncio.gather(*(self.poll_node(node) for node in nodes))
-        for node, summary in zip(nodes, summaries):
+        for node, summary in zip(nodes, summaries, strict=True):
             if summary.reachable:
                 node.last_contact_at = utcnow()
             node.state = "online" if summary.reachable else "unreachable"

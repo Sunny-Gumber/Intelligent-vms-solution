@@ -7,6 +7,7 @@
 using System;
 using System.ComponentModel;
 using System.Windows.Controls;
+using System.Windows;
 using IntelligentVms.Client.ViewModels;
 using LibVLCSharp.Shared;
 

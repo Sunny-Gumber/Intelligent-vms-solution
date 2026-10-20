@@ -26,6 +26,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import fromstring
+
 from app.core.netguard import NetworkGuard, NetworkGuardError
 from app.devices.onvif_soap import NS
 from app.logging_setup import get_logger
@@ -77,7 +80,7 @@ class DiscoveryHit:
 
 class WsDiscovery:
     def __init__(self, guard: NetworkGuard, *, timeout_s: float = 5.0,
-                 bind_address: str = "0.0.0.0") -> None:
+                 bind_address: str = "0.0.0.0") -> None:  # noqa: S104 - local UDP discovery socket
         self.guard = guard
         self.timeout_s = timeout_s
         self.bind_address = bind_address
@@ -103,7 +106,7 @@ class WsDiscovery:
             while time.monotonic() < deadline:
                 try:
                     data, addr = sock.recvfrom(65535)
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError as exc:
                     log.warning("discovery.socket_error", error=str(exc))
@@ -126,8 +129,8 @@ class WsDiscovery:
 
 def parse_probe_match(payload: str, source_address: str) -> DiscoveryHit | None:
     try:
-        root = ET.fromstring(payload)
-    except ET.ParseError:
+        root = fromstring(payload)
+    except (ET.ParseError, DefusedXmlException):
         return None
     match = root.find(".//d:ProbeMatch", NS)
     if match is None:
@@ -166,7 +169,7 @@ async def probe_unicast_range(guard: NetworkGuard, cidr: str, ports: list[int], 
             try:
                 _, writer = await asyncio.wait_for(
                     asyncio.open_connection(host, port), timeout=timeout_s)
-            except (OSError, asyncio.TimeoutError):
+            except (TimeoutError, OSError):
                 return
             writer.close()
             try:

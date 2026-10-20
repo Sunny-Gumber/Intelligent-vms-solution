@@ -66,11 +66,10 @@ def probe_duration(path: Path) -> float:
 async def test_recorder_produces_playable_segments_and_matching_index(
         seeded, settings, db_session, sample_video):
     """Files on disk and index rows must agree, and the files must play."""
-    from vms_contracts.enums import SegmentState
-
     from app.db.models import RecordingSegment
     from app.recording.index import resolve_path
     from recorder.supervisor import CameraRecorder
+    from vms_contracts.enums import SegmentState
 
     camera = make_camera(db_session)
 
@@ -129,16 +128,16 @@ async def test_recorder_records_without_transcoding(seeded, settings, db_session
     assert segment is not None
 
     path = resolve_path(db_session, segment)
-    codec = subprocess.run(
+    codec = (await asyncio.to_thread(subprocess.run,
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
-        capture_output=True, text=True, check=False).stdout.strip()
+        capture_output=True, text=True, check=False)).stdout.strip()
     assert codec == "h264", f"expected an untranscoded h264 copy, got {codec!r}"
 
 
 def recorder_command(recorder, settings) -> list[str]:
     """Build the FFmpeg command the recorder would run, without running it."""
-    from recorder.segmenter import SegmentRecorder, SegmenterConfig
+    from recorder.segmenter import SegmenterConfig, SegmentRecorder
 
     config = SegmenterConfig(source_url=recorder.source_override,
                              spool_dir=settings.spool_dir / "probe",
@@ -158,10 +157,9 @@ def recorder_command(recorder, settings) -> list[str]:
 # ==========================================================================
 async def test_crash_recovery_never_leaves_a_segment_writing(seeded, settings, db_session):
     """A WRITING row after a crash is either finalized or marked corrupt."""
-    from vms_contracts.enums import SegmentState
-
     from app.db.models import RecordingSegment, StorageVolume
     from app.recording import recovery
+    from vms_contracts.enums import SegmentState
 
     camera = make_camera(db_session, name="Crash Test")
     volume = db_session.query(StorageVolume).first()
@@ -174,7 +172,7 @@ async def test_crash_recovery_never_leaves_a_segment_writing(seeded, settings, d
     empty_rel = f"recordings/{camera.id}/2026/10/19/main/empty.mp4"
     (Path(volume.path) / empty_rel).with_suffix(".mp4.part").write_bytes(b"")
 
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     for relative in (good_rel, empty_rel):
         db_session.add(RecordingSegment(
             camera_id=camera.id, stream_role="main", volume_id=volume.id,
@@ -221,10 +219,9 @@ async def test_stale_recorder_tasks_are_released_for_another_worker(seeded, db_s
 # ==========================================================================
 async def test_retention_deletes_old_files_but_keeps_a_tombstone(seeded, settings,
                                                                  db_session):
-    from vms_contracts.enums import SegmentState
-
     from app.db.models import RecordingSegment, StorageVolume
     from app.recording import retention
+    from vms_contracts.enums import SegmentState
 
     camera = make_camera(db_session, name="Retention Test")
     camera.retention_days = 1
@@ -235,7 +232,7 @@ async def test_retention_deletes_old_files_but_keeps_a_tombstone(seeded, setting
     old_path.parent.mkdir(parents=True, exist_ok=True)
     old_path.write_bytes(b"\0" * 4096)
 
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     db_session.add(RecordingSegment(
         camera_id=camera.id, stream_role="main", volume_id=volume.id,
         relative_path=old_rel, started_at=now - dt.timedelta(days=10),
@@ -259,11 +256,10 @@ async def test_retention_deletes_old_files_but_keeps_a_tombstone(seeded, setting
 
 
 async def test_retention_keeps_recordings_inside_the_window(seeded, settings, db_session):
-    from vms_contracts.enums import SegmentState
-
     from app.core.timeutil import utcnow
     from app.db.models import RecordingSegment, StorageVolume
     from app.recording import retention
+    from vms_contracts.enums import SegmentState
 
     camera = make_camera(db_session, name="Within Window")
     camera.retention_days = 30
@@ -297,7 +293,7 @@ async def test_playback_refuses_to_hang_when_media_is_missing(seeded, db_session
 
     camera = make_camera(db_session, name="Missing Media")
     volume = db_session.query(StorageVolume).first()
-    start = dt.datetime(2026, 10, 19, 11, 0, tzinfo=dt.timezone.utc)
+    start = dt.datetime(2026, 10, 19, 11, 0, tzinfo=dt.UTC)
 
     db_session.add(RecordingSegment(
         camera_id=camera.id, stream_role="main", volume_id=volume.id,
@@ -318,11 +314,10 @@ async def test_playback_refuses_to_hang_when_media_is_missing(seeded, db_session
 @pytest.mark.ffmpeg
 async def test_export_produces_a_real_clip_with_verifiable_evidence(
         seeded, settings, db_session, sample_video):
-    from vms_contracts.enums import ExportFormat, ExportState
-
     from app.core.crypto import sha256_file
     from app.db.models import ExportJob, RecordingSegment, StorageVolume
     from app.exports.jobs import ExportService
+    from vms_contracts.enums import ExportFormat, ExportState
 
     camera = make_camera(db_session, name="Export Test")
     volume = db_session.query(StorageVolume).first()
@@ -332,7 +327,7 @@ async def test_export_produces_a_real_clip_with_verifiable_evidence(
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(sample_video.read_bytes())
 
-    start = dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.timezone.utc)
+    start = dt.datetime(2026, 10, 19, 10, 0, tzinfo=dt.UTC)
     db_session.add(RecordingSegment(
         camera_id=camera.id, stream_role="main", volume_id=volume.id,
         relative_path=relative, started_at=start,
@@ -377,14 +372,13 @@ async def test_export_produces_a_real_clip_with_verifiable_evidence(
 @pytest.mark.ffmpeg
 async def test_export_refuses_rather_than_silently_shortening(seeded, settings, db_session):
     """Missing source footage must fail the export, never produce a partial clip."""
-    from vms_contracts.enums import ExportState
-
     from app.db.models import ExportJob, RecordingSegment, StorageVolume
     from app.exports.jobs import ExportService
+    from vms_contracts.enums import ExportState
 
     camera = make_camera(db_session, name="Incomplete Export")
     volume = db_session.query(StorageVolume).first()
-    start = dt.datetime(2026, 10, 19, 11, 0, tzinfo=dt.timezone.utc)
+    start = dt.datetime(2026, 10, 19, 11, 0, tzinfo=dt.UTC)
 
     db_session.add(RecordingSegment(
         camera_id=camera.id, stream_role="main", volume_id=volume.id,
@@ -399,7 +393,9 @@ async def test_export_refuses_rather_than_silently_shortening(seeded, settings, 
     db_session.commit()
     job_id = job.id
 
-    with pytest.raises(Exception):
+    from app.core.errors import MediaUnavailableError
+
+    with pytest.raises(MediaUnavailableError):
         await service.run(job_id)
 
     db_session.expire_all()
@@ -427,11 +423,10 @@ async def test_export_preflight_blocks_when_disk_is_short(settings, tmp_path, mo
 
 async def test_export_expiry_reclaims_disk_and_revokes_the_token(seeded, settings,
                                                                  db_session):
-    from vms_contracts.enums import ExportState
-
     from app.core.timeutil import utcnow
     from app.db.models import ExportJob
     from app.exports.cleanup import cleanup_expired
+    from vms_contracts.enums import ExportState
 
     relative = "expired-job/clip.mp4"
     path = settings.exports_dir / relative

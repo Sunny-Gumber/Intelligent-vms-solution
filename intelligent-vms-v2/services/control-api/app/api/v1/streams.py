@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
-
 from vms_contracts.dto import LiveSessionOut
 from vms_contracts.enums import Permission, StreamRole
 

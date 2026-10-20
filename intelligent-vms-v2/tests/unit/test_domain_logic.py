@@ -6,7 +6,6 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
-
 from app.core.timeutil import utcnow
 
 
@@ -15,7 +14,7 @@ def test_schedule_is_evaluated_in_site_local_time():
     from app.recording.planner import parse_blocks, should_record
 
     blocks = parse_blocks([{"day": 0, "start": "08:00", "end": "18:00"}])
-    monday_0500_utc = dt.datetime(2026, 10, 19, 5, 0, tzinfo=dt.timezone.utc)
+    monday_0500_utc = dt.datetime(2026, 10, 19, 5, 0, tzinfo=dt.UTC)
     # 05:00 UTC is 10:30 in Kolkata (inside the window) and 05:00 UTC (outside).
     assert should_record(blocks, "Asia/Kolkata", monday_0500_utc)[0] is True
     assert should_record(blocks, "UTC", monday_0500_utc)[0] is False
@@ -40,7 +39,7 @@ def test_gap_detection_finds_holes(seeded, db_session):
     from app.db.models import RecordingSegment
     from app.recording.gaps import continuity_percent, find_gaps
 
-    start = dt.datetime(2026, 10, 19, 12, 0, tzinfo=dt.timezone.utc)
+    start = dt.datetime(2026, 10, 19, 12, 0, tzinfo=dt.UTC)
     for offset, length in ((0, 300), (600, 300)):      # 5-minute hole between
         db_session.add(RecordingSegment(
             camera_id="cam1", stream_role="main", relative_path=f"r/{offset}.mp4",
@@ -61,7 +60,7 @@ def test_timeline_buckets_reflect_recorded_time(seeded, db_session):
     from app.db.models import RecordingSegment
     from app.recording.index import timeline_buckets
 
-    start = dt.datetime(2026, 10, 19, 0, 0, tzinfo=dt.timezone.utc)
+    start = dt.datetime(2026, 10, 19, 0, 0, tzinfo=dt.UTC)
     db_session.add(RecordingSegment(
         camera_id="cam2", stream_role="main", relative_path="r/a.mp4", started_at=start,
         ended_at=start + dt.timedelta(hours=1), duration_s=3600, size_bytes=1,
@@ -116,7 +115,7 @@ def test_allocator_builds_confined_dated_paths(seeded, db_session):
 
     allocation = allocator.allocate(
         db_session, camera, role="main",
-        start=dt.datetime(2026, 3, 7, 14, 30, tzinfo=dt.timezone.utc), segment_id="abc123")
+        start=dt.datetime(2026, 3, 7, 14, 30, tzinfo=dt.UTC), segment_id="abc123")
     assert "/2026/03/07/main/" in allocation.relative_path
     assert allocation.absolute_path.is_relative_to(volume.path)
     assert allocation.temp_path.name.endswith(".part")
@@ -152,8 +151,8 @@ unused devices: <none>""")
 
 # -- stream policy ---------------------------------------------------------
 def test_stream_policy_picks_sub_for_small_tiles():
-    from vms_contracts.enums import StreamRole
     from app.media.stream_policy import StreamOption, select_stream
+    from vms_contracts.enums import StreamRole
 
     options = [StreamOption(StreamRole.MAIN, 1920, 1080, 4096),
                StreamOption(StreamRole.SUB, 640, 360, 512)]
@@ -162,8 +161,8 @@ def test_stream_policy_picks_sub_for_small_tiles():
 
 
 def test_stream_policy_respects_bandwidth_budget():
-    from vms_contracts.enums import StreamRole
     from app.media.stream_policy import StreamOption, select_stream
+    from vms_contracts.enums import StreamRole
 
     options = [StreamOption(StreamRole.MAIN, 1920, 1080, 8192),
                StreamOption(StreamRole.SUB, 640, 360, 512)]
@@ -174,8 +173,8 @@ def test_stream_policy_respects_bandwidth_budget():
 
 
 def test_stream_policy_override_wins():
-    from vms_contracts.enums import StreamRole
     from app.media.stream_policy import StreamOption, select_stream
+    from vms_contracts.enums import StreamRole
 
     options = [StreamOption(StreamRole.MAIN, 1920, 1080, 4096),
                StreamOption(StreamRole.SUB, 640, 360, 512)]
@@ -290,16 +289,16 @@ def test_rule_schedule_window_crossing_midnight():
     from app.events_engine.ingest import schedule_active
 
     schedule = {"start": "22:00", "end": "06:00"}
-    assert schedule_active(schedule, dt.datetime(2026, 1, 1, 23, 0, tzinfo=dt.timezone.utc))
-    assert schedule_active(schedule, dt.datetime(2026, 1, 1, 2, 0, tzinfo=dt.timezone.utc))
+    assert schedule_active(schedule, dt.datetime(2026, 1, 1, 23, 0, tzinfo=dt.UTC))
+    assert schedule_active(schedule, dt.datetime(2026, 1, 1, 2, 0, tzinfo=dt.UTC))
     assert not schedule_active(schedule,
-                               dt.datetime(2026, 1, 1, 12, 0, tzinfo=dt.timezone.utc))
+                               dt.datetime(2026, 1, 1, 12, 0, tzinfo=dt.UTC))
 
 
 def test_alarm_state_machine_transitions():
-    from vms_contracts.enums import AlarmState
     from app.core.errors import ConflictError
     from app.events_engine.alarms import assert_transition
+    from vms_contracts.enums import AlarmState
 
     assert_transition(AlarmState.NEW, AlarmState.ACKNOWLEDGED)
     with pytest.raises(ConflictError):
@@ -307,8 +306,8 @@ def test_alarm_state_machine_transitions():
 
 
 def test_alarm_aggregation_by_dedupe_key(seeded, db_session):
-    from vms_contracts.enums import EventSeverity
     from app.events_engine.alarms import raise_alarm
+    from vms_contracts.enums import EventSeverity
 
     first = raise_alarm(db_session, title="Offline", severity=EventSeverity.HIGH,
                         camera_id="cam1", dedupe_key="camera.offline|cam1")
@@ -387,8 +386,8 @@ def test_privacy_retention_strips_biometrics(seeded, db_session, settings):
 
 
 def test_onvif_motion_maps_to_camera_edge_source():
-    from vms_contracts.enums import AnalyticsSource
     from app.analytics.ingest import from_onvif_notification
+    from vms_contracts.enums import AnalyticsSource
 
     result = from_onvif_notification("cam1", {
         "topic": "tns1:RuleEngine/CellMotionDetector/Motion",
@@ -421,9 +420,9 @@ def test_licence_quota_enforced_on_new_cameras(seeded, db_session, settings):
 
 
 def test_signed_licence_round_trip_and_tamper_detection():
-    from vms_contracts.enums import Edition
     from app.core.crypto import generate_signing_keypair
     from app.licensing import license_file
+    from vms_contracts.enums import Edition
 
     private, public = generate_signing_keypair()
     document = license_file.issue(private, customer="Acme", edition=Edition.PRO,
@@ -482,8 +481,12 @@ def test_admin_without_scope_sees_everything():
 
 
 def test_builtin_role_permission_sets_are_distinct():
+    from app.core.rbac import (
+        ADMIN_PERMISSIONS,
+        OPERATOR_PERMISSIONS,
+        VIEWER_PERMISSIONS,
+    )
     from vms_contracts.enums import Permission
-    from app.core.rbac import ADMIN_PERMISSIONS, OPERATOR_PERMISSIONS, VIEWER_PERMISSIONS
 
     assert Permission.PTZ_CONTROL in OPERATOR_PERMISSIONS
     assert Permission.PTZ_CONTROL not in VIEWER_PERMISSIONS
@@ -515,8 +518,8 @@ def test_capabilities_default_to_unproven():
 
 
 def test_profiles_are_classified_by_resolution():
-    from vms_contracts.enums import StreamRole
     from app.devices.base import StreamProfile, classify_profiles
+    from vms_contracts.enums import StreamRole
 
     profiles = [StreamProfile(role=StreamRole.MAIN, name="Profile_2", width=640, height=360),
                 StreamProfile(role=StreamRole.MAIN, name="Profile_1", width=1920,
@@ -593,7 +596,7 @@ def test_timeline_buckets_reflect_coverage(seeded, db_session):
     from app.db.models import RecordingSegment
     from app.recording.index import timeline_buckets
 
-    start = dt.datetime(2026, 10, 19, 0, 0, tzinfo=dt.timezone.utc)
+    start = dt.datetime(2026, 10, 19, 0, 0, tzinfo=dt.UTC)
     db_session.add(RecordingSegment(
         camera_id="cam-timeline", stream_role="main", relative_path="r/a.mp4",
         started_at=start, ended_at=start + dt.timedelta(hours=1), duration_s=3600,
@@ -627,9 +630,12 @@ def test_duplicate_detection_by_serial_mac_and_host(seeded, db_session):
 
 def test_builtin_role_permission_sets_are_bounded():
     """A viewer must never silently acquire operator or admin capability."""
+    from app.core.rbac import (
+        ADMIN_PERMISSIONS,
+        OPERATOR_PERMISSIONS,
+        VIEWER_PERMISSIONS,
+    )
     from vms_contracts.enums import Permission
-
-    from app.core.rbac import ADMIN_PERMISSIONS, OPERATOR_PERMISSIONS, VIEWER_PERMISSIONS
 
     assert Permission.PTZ_CONTROL in OPERATOR_PERMISSIONS
     assert Permission.USER_MANAGE not in OPERATOR_PERMISSIONS
@@ -640,9 +646,8 @@ def test_builtin_role_permission_sets_are_bounded():
 
 def test_onvif_notification_maps_to_camera_edge_analytics():
     """An ONVIF motion event is camera_edge, never server_inference."""
-    from vms_contracts.enums import AnalyticsSource
-
     from app.analytics.ingest import from_onvif_notification
+    from vms_contracts.enums import AnalyticsSource
 
     result = from_onvif_notification("cam1", {
         "topic": "tns1:RuleEngine/CellMotionDetector/Motion",

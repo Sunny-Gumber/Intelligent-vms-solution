@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from vms_contracts.dto import PtzCommand
 from vms_contracts.enums import PtzMoveKind
 

@@ -63,7 +63,7 @@ export function VideoTile({
         peer.addTransceiver('video', { direction: 'recvonly' });
         peer.addTransceiver('audio', { direction: 'recvonly' });
         peer.ontrack = (event) => {
-          if (videoRef.current) videoRef.current.srcObject = event.streams[0];
+          if (videoRef.current) videoRef.current.srcObject = event.streams[0] ?? new MediaStream([event.track]);
         };
 
         const offer = await peer.createOffer();

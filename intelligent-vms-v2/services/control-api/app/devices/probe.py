@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import CameraState, StreamRole
 
 from app.config import Settings, get_settings
@@ -14,8 +13,13 @@ from app.core.netguard import NetworkGuard, NetworkGuardError
 from app.core.timeutil import utcnow
 from app.db.models import Camera, CameraStream
 from app.devices.base import (
-    Capabilities, Credentials, DeviceEndpoint, DeviceError, DeviceInfo,
-    DeviceUnauthorized, StreamProfile,
+    Capabilities,
+    Credentials,
+    DeviceEndpoint,
+    DeviceError,
+    DeviceInfo,
+    DeviceUnauthorized,
+    StreamProfile,
 )
 from app.devices.registry import build_adapter, resolve_adapter_name
 from app.logging_setup import get_logger

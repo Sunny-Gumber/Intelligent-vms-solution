@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
 
 from app.logging_setup import get_logger, redact_text
 
@@ -39,17 +39,25 @@ def write_concat_list(sources: list[Path], list_path: Path) -> Path:
     Our own paths never contain quotes (ids are hex), but imported files
     might, and a malformed list would read an unintended file.
     """
-    lines = [f"file '{str(s.resolve()).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'"
-             for s in sources]
+    lines = [
+        f"file '{str(s.resolve()).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'"
+        for s in sources
+    ]
     list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return list_path
 
 
-async def export_clip(*, sources: list[Path], output: Path, skip_seconds: float = 0.0,
-                      duration_seconds: float | None = None, transcode: bool = False,
-                      ffmpeg_path: str = "ffmpeg", cancel: asyncio.Event | None = None,
-                      on_progress: Callable[[float], Awaitable[None]] | None = None
-                      ) -> ExportResult:
+async def export_clip(
+    *,
+    sources: list[Path],
+    output: Path,
+    skip_seconds: float = 0.0,
+    duration_seconds: float | None = None,
+    transcode: bool = False,
+    ffmpeg_path: str = "ffmpeg",
+    cancel: asyncio.Event | None = None,
+    on_progress: Callable[[float], Awaitable[None]] | None = None,
+) -> ExportResult:
     if shutil.which(ffmpeg_path) is None:
         return ExportResult(False, error=f"{ffmpeg_path} not found on PATH")
     if not sources:
@@ -60,11 +68,23 @@ async def export_clip(*, sources: list[Path], output: Path, skip_seconds: float 
     list_path = output.parent / "sources.txt"
     write_concat_list(sources, list_path)
 
-    args = [ffmpeg_path, "-hide_banner", "-loglevel", "warning", "-nostdin", "-y",
-            "-f", "concat", "-safe", "0", "-i", str(list_path)]
+    args = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostdin",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_path),
+    ]
 
     if skip_seconds > 0:
-        args += ["-ss", f"{skip_seconds:.3f}"]       # accurate seek (after -i)
+        args += ["-ss", f"{skip_seconds:.3f}"]  # accurate seek (after -i)
     if duration_seconds and duration_seconds > 0:
         args += ["-t", f"{duration_seconds:.3f}"]
 
@@ -76,16 +96,25 @@ async def export_clip(*, sources: list[Path], output: Path, skip_seconds: float 
     # The working file is "<name>.part", whose extension FFmpeg cannot map to a
     # container, so the format is stated explicitly.
     container = {"mp4": "mp4", "mkv": "matroska", "mov": "mov"}.get(
-        output.suffix.lstrip(".").lower(), "mp4")
-    args += ["-movflags", "+faststart", "-f", container,
-             "-progress", "pipe:1", "-nostats", str(partial)]
+        output.suffix.lstrip(".").lower(), "mp4"
+    )
+    args += [
+        "-movflags",
+        "+faststart",
+        "-f",
+        container,
+        "-progress",
+        "pipe:1",
+        "-nostats",
+        str(partial),
+    ]
 
-    log.info("export.ffmpeg_start", output=str(output), sources=len(sources),
-             transcode=transcode)
+    log.info("export.ffmpeg_start", output=str(output), sources=len(sources), transcode=transcode)
 
     try:
         process = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
     except OSError as exc:
         return ExportResult(False, error=f"failed to start ffmpeg: {exc}")
 
@@ -113,7 +142,7 @@ async def export_clip(*, sources: list[Path], output: Path, skip_seconds: float 
             process.terminate()
             try:
                 await asyncio.wait_for(process.wait(), timeout=5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
 
     stderr_chunks: list[bytes] = []
@@ -151,52 +180,107 @@ async def export_clip(*, sources: list[Path], output: Path, skip_seconds: float 
         _remove(partial)
         return ExportResult(False, error=f"ffmpeg exited {returncode}: {detail}")
 
-    if not partial.is_file() or partial.stat().st_size == 0:
+    if (
+        not await asyncio.to_thread(partial.is_file)
+        or (await asyncio.to_thread(partial.stat)).st_size == 0
+    ):
         _remove(partial)
         return ExportResult(False, error="ffmpeg produced an empty file")
 
     partial.replace(output)
-    size = output.stat().st_size
+    size = (await asyncio.to_thread(output.stat)).st_size
     if on_progress:
         await on_progress(1.0)
     log.info("export.ffmpeg_done", output=str(output), bytes=size)
     return ExportResult(True, output_bytes=size)
 
 
-async def extract_snapshot(*, source: Path, output: Path, offset_s: float = 0.0,
-                           ffmpeg_path: str = "ffmpeg", timeout_s: float = 30.0) -> bool:
+async def extract_snapshot(
+    *,
+    source: Path,
+    output: Path,
+    offset_s: float = 0.0,
+    ffmpeg_path: str = "ffmpeg",
+    timeout_s: float = 30.0,
+) -> bool:
     """Single JPEG frame from a recorded file (alarm thumbnails)."""
     if shutil.which(ffmpeg_path) is None:
         return False
     output.parent.mkdir(parents=True, exist_ok=True)
-    args = [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-ss", f"{max(0.0, offset_s):.3f}", "-i", str(source),
-            "-frames:v", "1", "-q:v", "3", str(output)]
+    args = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-ss",
+        f"{max(0.0, offset_s):.3f}",
+        "-i",
+        str(source),
+        "-frames:v",
+        "1",
+        "-q:v",
+        "3",
+        str(output),
+    ]
     try:
         process = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
         returncode = await asyncio.wait_for(process.wait(), timeout=timeout_s)
-    except (OSError, asyncio.TimeoutError):
+    except (TimeoutError, OSError):
         return False
-    return returncode == 0 and output.is_file() and output.stat().st_size > 0
+    return (
+        returncode == 0
+        and await asyncio.to_thread(output.is_file)
+        and (await asyncio.to_thread(output.stat)).st_size > 0
+    )
 
 
-async def grab_live_snapshot(*, source_url: str, output: Path, transport: str = "tcp",
-                             ffmpeg_path: str = "ffmpeg", timeout_s: float = 15.0) -> bool:
+async def grab_live_snapshot(
+    *,
+    source_url: str,
+    output: Path,
+    transport: str = "tcp",
+    ffmpeg_path: str = "ffmpeg",
+    timeout_s: float = 15.0,
+) -> bool:
     """One frame directly from a camera (manual snapshot button)."""
     if shutil.which(ffmpeg_path) is None:
         return False
     output.parent.mkdir(parents=True, exist_ok=True)
-    args = [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-rtsp_transport", transport, "-rw_timeout", str(int(timeout_s * 1_000_000)),
-            "-i", source_url, "-frames:v", "1", "-q:v", "3", str(output)]
+    args = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-rtsp_transport",
+        transport,
+        "-rw_timeout",
+        str(int(timeout_s * 1_000_000)),
+        "-i",
+        source_url,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "3",
+        str(output),
+    ]
     try:
         process = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
         returncode = await asyncio.wait_for(process.wait(), timeout=timeout_s + 5)
-    except (OSError, asyncio.TimeoutError):
+    except (TimeoutError, OSError):
         return False
-    return returncode == 0 and output.is_file() and output.stat().st_size > 0
+    return (
+        returncode == 0
+        and await asyncio.to_thread(output.is_file)
+        and (await asyncio.to_thread(output.stat)).st_size > 0
+    )
 
 
 def _remove(path: Path) -> None:

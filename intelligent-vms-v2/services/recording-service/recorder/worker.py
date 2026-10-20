@@ -22,10 +22,6 @@ import signal
 import socket
 import sys
 
-from sqlalchemy import select
-
-from vms_contracts.enums import RecordingMode, StreamRole
-
 from app.config import get_settings
 from app.core.crypto import CredentialVault, load_or_create_master_key
 from app.core.timeutil import utcnow
@@ -34,6 +30,8 @@ from app.db.session import session_scope, wait_for_database
 from app.devices.credentials import CredentialStore
 from app.logging_setup import configure_logging, get_logger
 from app.recording import planner, recovery
+from sqlalchemy import select
+from vms_contracts.enums import RecordingMode, StreamRole
 
 from recorder.supervisor import CameraRecorder
 
@@ -113,7 +111,7 @@ class RecordingWorker:
         if task is not None:
             try:
                 await asyncio.wait_for(task, timeout=30)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 task.cancel()
         log.info("worker.recorder_stopped", camera_id=camera_id, reason=reason)
 
@@ -153,12 +151,12 @@ class RecordingWorker:
                 if loop.time() - last_heartbeat > HEARTBEAT_INTERVAL_S:
                     self.heartbeat()
                     last_heartbeat = loop.time()
-            except Exception as exc:  # noqa: BLE001
-                log.error("worker.cycle_failed", error=str(exc), exc_info=True)
+            except Exception as exc:
+                log.exception("worker.cycle_failed", error=str(exc))
 
             try:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=POLL_INTERVAL_S)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
         log.info("worker.stopping", recorders=len(self.recorders))

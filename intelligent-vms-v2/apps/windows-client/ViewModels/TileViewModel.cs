@@ -33,7 +33,7 @@ public sealed class TileViewModel : ViewModelBase
     public string Status { get => _status; private set => SetField(ref _status, value); }
     public string? Error { get => _error; private set => SetField(ref _error, value); }
     public string? CameraName { get => _cameraName; private set => SetField(ref _cameraName, value); }
-    public string? StreamUrl => _session?.WhepUrl;
+    public string? StreamUrl => _session?.HlsUrl;
     public string? PlayToken => _session?.PlayToken;
 
     public TileViewModel(ApiClient api, int index)
@@ -66,26 +66,26 @@ public sealed class TileViewModel : ViewModelBase
             // The server chooses main/sub/third from the tile's pixel size, so
             // a thumbnail never pulls a 4K main stream.
             _session = await _api.OpenLiveSessionAsync(CameraId!, tileWidth: 640, tileHeight: 360);
-            CameraName = _session.CameraName;
+            CameraName = CameraId;
             Status = "Live";
             Error = null;
             _attempt = 0;
             OnPropertyChanged(nameof(StreamUrl));
             OnPropertyChanged(nameof(PlayToken));
         }
-        catch (ApiException ex) when (ex.Code == "media_gateway_unavailable")
+        catch (VmsApiException ex) when (ex.Code == "media_gateway_unavailable")
         {
             // Be precise: recording is unaffected, and the operator should know.
             SetError("Live video is unavailable (media gateway down). Recording continues.");
             ScheduleRetry();
         }
-        catch (ApiException ex) when (ex.Code == "permission_denied")
+        catch (VmsApiException ex) when (ex.Code == "permission_denied")
         {
             SetError("You do not have access to this camera.");   // no retry
         }
-        catch (ApiException ex) when (ex.Code is "live_session_limit" or "user_session_limit")
+        catch (VmsApiException ex) when (ex.Code is "live_session_limit" or "user_session_limit")
         {
-            SetError(ex.Detail ?? "Session limit reached.");
+            SetError(ex.Problem.Detail ?? "Session limit reached.");
             ScheduleRetry();
         }
         catch (Exception ex)

@@ -5,7 +5,8 @@
  * "unknown" and the UI says so rather than implying health it cannot verify.
  */
 import { useEffect, useState } from "react";
-import { api, Volume } from "../lib/api";
+import { api } from "../lib/api";
+import type { Volume } from "../lib/types";
 
 function bytes(value?: number | null) {
   if (!value) return "—";
@@ -20,16 +21,19 @@ export function StoragePage() {
   const [volumes, setVolumes] = useState<Volume[]>([]);
   const [raidNote, setRaidNote] = useState<string>("");
 
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
-    api.listVolumes().then((response) => {
+    api.get<{ items: Volume[]; raid_note: string }>("/storage/volumes").then((response) => {
       setVolumes(response.items);
       setRaidNote(response.raid_note);
-    });
+    }).catch((error) => setError(String(error)));
   }, []);
 
   return (
     <section className="page">
       <h1>Storage</h1>
+      {error && <p role="alert">{error}</p>}
       <table className="data-table">
         <thead>
           <tr>

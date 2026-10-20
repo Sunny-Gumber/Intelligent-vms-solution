@@ -26,7 +26,6 @@ from dataclasses import dataclass
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import FeatureFlag, Permission
 
 from app.config import Settings, get_settings

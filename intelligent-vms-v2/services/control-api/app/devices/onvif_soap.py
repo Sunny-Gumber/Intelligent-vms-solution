@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import fromstring
 
 from app.core.timeutil import utcnow
 from app.logging_setup import get_logger
@@ -49,7 +51,7 @@ NS = {
     "d": "http://schemas.xmlsoap.org/ws/2005/04/discovery",
 }
 
-PASSWORD_DIGEST_TYPE = ("http://docs.oasis-open.org/wss/2004/01/"
+PASSWORD_DIGEST_TYPE = ("http://docs.oasis-open.org/wss/2004/01/"  # noqa: S105 - WS-Security namespace URI, not a password
                         "oasis-200401-wss-username-token-profile-1.0#PasswordDigest")
 BASE64_TYPE = ("http://docs.oasis-open.org/wss/2004/01/"
                "oasis-200401-wss-soap-message-security-1.0#Base64Binary")
@@ -86,7 +88,8 @@ class SoapClient:
         nonce = os.urandom(16)
         created = (utcnow() + dt.timedelta(seconds=self.clock_offset_s)).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
-        digest = base64.b64encode(hashlib.sha1(
+        digest = base64.b64encode(hashlib.sha1(  # noqa: S324 - SHA-1 is mandated by ONVIF WS-Security PasswordDigest
+
             nonce + created.encode("utf-8")
             + (self.password or "").encode("utf-8")).digest()).decode("ascii")
         return (f'<wsse:Security xmlns:wsse="{NS["wsse"]}" xmlns:wsu="{NS["wsu"]}" '
@@ -129,8 +132,8 @@ class SoapClient:
         if response.status_code == 401:
             raise SoapFault("NotAuthorized", "device returned HTTP 401", 401)
         try:
-            root = ET.fromstring(response.text)
-        except ET.ParseError as exc:
+            root = fromstring(response.text)
+        except (ET.ParseError, DefusedXmlException) as exc:
             raise SoapFault("parse_error",
                             f"device returned non-XML response ({response.status_code})",
                             response.status_code) from exc
@@ -165,7 +168,7 @@ class SoapClient:
                 int(_text(date_el.find("tt:Day", NS))),
                 int(_text(time_el.find("tt:Hour", NS))),
                 int(_text(time_el.find("tt:Minute", NS))),
-                int(_text(time_el.find("tt:Second", NS))), tzinfo=dt.timezone.utc)
+                int(_text(time_el.find("tt:Second", NS))), tzinfo=dt.UTC)
         except (AttributeError, TypeError, ValueError):
             return 0.0
         self.clock_offset_s = (device_time - utcnow()).total_seconds()

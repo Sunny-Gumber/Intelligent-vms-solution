@@ -9,7 +9,6 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import SegmentState, StorageState
 
 from app.db.models import Camera, RecordingSegment, StorageVolume

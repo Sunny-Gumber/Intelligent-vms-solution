@@ -9,6 +9,6 @@ Contract stability rules (docs/decisions/ADR-0003-contract-versioning.md):
   * Breaking changes require a new module (vms_contracts.v2) and a new API path.
 """
 
+from .dto import *
+from .enums import *
 from .version import API_PREFIX, CONTRACT_VERSION  # noqa: F401
-from .enums import *  # noqa: F401,F403
-from .dto import *  # noqa: F401,F403

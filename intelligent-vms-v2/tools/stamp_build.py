@@ -34,7 +34,7 @@ def metadata(build_number: str | None) -> dict[str, str]:
     return {
         "VMS_BUILD_COMMIT": git("rev-parse", "--short", "HEAD") or "dev",
         "VMS_BUILD_NUMBER": build_number or "0",
-        "VMS_BUILD_DATE": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "VMS_BUILD_DATE": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 

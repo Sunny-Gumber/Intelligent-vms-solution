@@ -23,10 +23,6 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy.orm import Session
-
-from vms_contracts.enums import EventSeverity, EventType, RecordingState, StreamRole
-
 from app.config import Settings, get_settings
 from app.core.backoff import BackoffPolicy
 from app.core.timeutil import utcnow
@@ -35,8 +31,14 @@ from app.db.session import session_scope
 from app.logging_setup import get_logger
 from app.recording import health, index
 from app.storage import allocator
+from vms_contracts.enums import EventSeverity, EventType, RecordingState, StreamRole
 
-from recorder.segmenter import CompletedSegment, SegmentRecorder, SegmenterConfig, finalize_into
+from recorder.segmenter import (
+    CompletedSegment,
+    SegmenterConfig,
+    SegmentRecorder,
+    finalize_into,
+)
 
 log = get_logger("recorder.supervisor")
 
@@ -55,8 +57,8 @@ class RecorderStats:
 
 class CameraRecorder:
     def __init__(self, camera_id: str, *, stream_role: StreamRole = StreamRole.MAIN,
-                 settings: Settings | None = None, event_sink=None,  # noqa: ANN001
-                 credential_store=None, source_override: str | None = None,  # noqa: ANN001
+                 settings: Settings | None = None, event_sink=None,
+                 credential_store=None, source_override: str | None = None,
                  is_file_source: bool = False,
                  extra_input_args: list[str] | None = None) -> None:
         self.camera_id = camera_id
@@ -210,7 +212,7 @@ class CameraRecorder:
             try:
                 await asyncio.wait_for(self.stop_event.wait(), timeout=delay)
                 break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
         await self._set_state(RecordingState.IDLE, "stopped")

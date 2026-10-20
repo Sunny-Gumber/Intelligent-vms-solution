@@ -15,8 +15,6 @@ import sys
 import zipfile
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = ROOT / "tools"
 
@@ -64,7 +62,7 @@ def test_diagnostic_bundle_contains_no_secrets(seeded, settings, db_session, tmp
         encoding="utf-8")
 
     sys.path.insert(0, str(TOOLS))
-    import diag_bundle  # noqa: PLC0415
+    import diag_bundle
 
     archive_path = diag_bundle.build(settings, tmp_path, log_lines=500)
     assert archive_path.is_file()
@@ -91,7 +89,7 @@ def test_diagnostic_bundle_contains_no_secrets(seeded, settings, db_session, tmp
 
 def test_diagnostic_bundle_redacts_credentials_in_log_tails(seeded, settings, tmp_path):
     sys.path.insert(0, str(TOOLS))
-    import diag_bundle  # noqa: PLC0415
+    import diag_bundle
 
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
     (settings.logs_dir / "recorder.log").write_text(
@@ -107,7 +105,7 @@ def test_diagnostic_bundle_redacts_credentials_in_log_tails(seeded, settings, tm
 # ==========================================================================
 def test_backup_excludes_the_master_key_by_default(seeded, settings, tmp_path):
     sys.path.insert(0, str(TOOLS))
-    import backup_restore  # noqa: PLC0415
+    import backup_restore
 
     archive_path = backup_restore.backup(settings, tmp_path)
     with zipfile.ZipFile(archive_path) as archive:
@@ -122,7 +120,7 @@ def test_backup_excludes_the_master_key_by_default(seeded, settings, tmp_path):
 
 def test_backup_can_include_the_key_when_explicitly_requested(seeded, settings, tmp_path):
     sys.path.insert(0, str(TOOLS))
-    import backup_restore  # noqa: PLC0415
+    import backup_restore
 
     archive_path = backup_restore.backup(settings, tmp_path, include_keys=True)
     with zipfile.ZipFile(archive_path) as archive:
@@ -135,8 +133,7 @@ def test_backup_can_include_the_key_when_explicitly_requested(seeded, settings, 
 
 def test_backup_records_an_accurate_inventory(seeded, settings, db_session, tmp_path):
     sys.path.insert(0, str(TOOLS))
-    import backup_restore  # noqa: PLC0415
-
+    import backup_restore
     from app.db.models import Camera
 
     db_session.add(Camera(name="Inventory Cam", host="192.168.81.10"))
@@ -156,8 +153,7 @@ def test_backup_records_an_accurate_inventory(seeded, settings, db_session, tmp_
 def test_backup_restore_round_trip(seeded, settings, db_session, tmp_path):
     """A restored database must contain the data that was backed up."""
     sys.path.insert(0, str(TOOLS))
-    import backup_restore  # noqa: PLC0415
-
+    import backup_restore
     from app.db import session as db
     from app.db.models import Camera
 
@@ -184,7 +180,7 @@ def test_backup_restore_round_trip(seeded, settings, db_session, tmp_path):
 
 def test_restore_refuses_a_schema_mismatch(seeded, settings, tmp_path):
     sys.path.insert(0, str(TOOLS))
-    import backup_restore  # noqa: PLC0415
+    import backup_restore
 
     archive_path = backup_restore.backup(settings, tmp_path)
 
@@ -279,8 +275,7 @@ def test_storage_migration_verifies_before_deleting(seeded, settings, db_session
                                                     tmp_path):
     """The source file must survive until the copy is checksum-verified."""
     sys.path.insert(0, str(TOOLS))
-    import storage_migrate  # noqa: PLC0415
-
+    import storage_migrate
     from app.db.models import RecordingSegment, StorageVolume
     from app.storage import volumes as volume_service
 
@@ -294,7 +289,7 @@ def test_storage_migration_verifies_before_deleting(seeded, settings, db_session
     source_file.parent.mkdir(parents=True, exist_ok=True)
     source_file.write_bytes(b"\x00\x01\x02" * 1000)
 
-    started = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    started = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
     db_session.add(RecordingSegment(
         camera_id="cam-mig", stream_role="main", volume_id=source.id,
         relative_path=relative, started_at=started,

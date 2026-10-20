@@ -7,7 +7,6 @@ import datetime as dt
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-
 from vms_contracts.dto import RoleOut, SiteOut, UserOut
 from vms_contracts.enums import Permission
 
@@ -160,7 +159,7 @@ def update_user(request: Request, user_id: str, payload: UserPatch, session: DbS
         user.must_change_password = True
         user.password_changed_at = utcnow()
         revoke_all_for_user(session, user.id, "password_reset_by_admin")
-        changes["password"] = "reset"
+        changes["password"] = "reset"  # noqa: S105 - audit marker, not a password
 
     if payload.roles is not None:
         for link in list(user.roles):

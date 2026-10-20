@@ -71,12 +71,11 @@ class Capabilities:
         return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "Capabilities":
+    def from_dict(cls, data: dict[str, Any] | None) -> Capabilities:
         data = dict(data or {})
         probed = data.pop("probed_at", None)
         errors = data.pop("probe_errors", []) or []
-        known = {f for f in cls.__dataclass_fields__
-                 if f not in {"probed_at", "probe_errors"}}
+        known = {f for f in cls.__dataclass_fields__ if f not in {"probed_at", "probe_errors"}}
         obj = cls(**{k: bool(v) for k, v in data.items() if k in known})
         obj.probe_errors = list(errors)
         if isinstance(probed, str):
@@ -90,8 +89,7 @@ class Capabilities:
 
     @property
     def any_ptz(self) -> bool:
-        return (self.ptz_continuous or self.ptz_absolute
-                or self.ptz_relative or self.ptz_presets)
+        return self.ptz_continuous or self.ptz_absolute or self.ptz_relative or self.ptz_presets
 
 
 @dataclass
@@ -108,7 +106,7 @@ class StreamProfile:
     role: StreamRole
     token: str | None = None
     name: str | None = None
-    url: str | None = None          # may embed credentials -> stored encrypted
+    url: str | None = None  # may embed credentials -> stored encrypted
     codec: str | None = None
     width: int | None = None
     height: int | None = None
@@ -142,8 +140,7 @@ class DeviceUnauthorized(DeviceError):
 
 class CapabilityNotSupported(DeviceError):
     def __init__(self, capability: str) -> None:
-        super().__init__(f"device does not support {capability}",
-                         code="capability_not_supported")
+        super().__init__(f"device does not support {capability}", code="capability_not_supported")
         self.capability = capability
 
 
@@ -158,8 +155,9 @@ class DeviceAdapter(abc.ABC):
     name: str = "generic"
     protocol: str = "rtsp"
 
-    def __init__(self, endpoint: DeviceEndpoint, credentials: Credentials, *,
-                 timeout_s: float = 10.0) -> None:
+    def __init__(
+        self, endpoint: DeviceEndpoint, credentials: Credentials, *, timeout_s: float = 10.0
+    ) -> None:
         self.endpoint = endpoint
         self.credentials = credentials
         self.timeout_s = timeout_s
@@ -175,16 +173,15 @@ class DeviceAdapter(abc.ABC):
     async def synchronize_time(self, now: dt.datetime | None = None) -> bool:
         raise CapabilityNotSupported("time synchronization")
 
-    async def ptz_continuous(self, pan: float, tilt: float, zoom: float,
-                             speed: float, duration_s: float) -> None:
+    async def ptz_continuous(
+        self, pan: float, tilt: float, zoom: float, speed: float, duration_s: float
+    ) -> None:
         raise CapabilityNotSupported("continuous PTZ")
 
-    async def ptz_relative(self, pan: float, tilt: float, zoom: float,
-                           speed: float) -> None:
+    async def ptz_relative(self, pan: float, tilt: float, zoom: float, speed: float) -> None:
         raise CapabilityNotSupported("relative PTZ")
 
-    async def ptz_absolute(self, pan: float, tilt: float, zoom: float,
-                           speed: float) -> None:
+    async def ptz_absolute(self, pan: float, tilt: float, zoom: float, speed: float) -> None:
         raise CapabilityNotSupported("absolute PTZ")
 
     async def ptz_stop(self) -> None:
@@ -221,7 +218,9 @@ def classify_profiles(profiles: list[StreamProfile]) -> dict[StreamRole, StreamP
     """
     ordered = sorted(profiles, key=lambda p: (p.pixels, p.bitrate_kbps or 0), reverse=True)
     out: dict[StreamRole, StreamProfile] = {}
-    for role, profile in zip((StreamRole.MAIN, StreamRole.SUB, StreamRole.THIRD), ordered):
+    for role, profile in zip(
+        (StreamRole.MAIN, StreamRole.SUB, StreamRole.THIRD), ordered, strict=False
+    ):
         profile.role = role
         out[role] = profile
     return out

@@ -9,7 +9,6 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-
 from vms_contracts.dto import CameraCapabilities, CameraCreate, CameraOut, CameraUpdate, StreamOut
 from vms_contracts.enums import (
     CameraState,

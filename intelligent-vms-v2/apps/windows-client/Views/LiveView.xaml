@@ -1,59 +1,26 @@
-<!--
-  Live monitoring wall.
-
-  Each tile binds to its own TileViewModel, so a failed tile renders its own
-  error overlay while every other tile keeps playing.
--->
 <UserControl x:Class="IntelligentVms.Client.Views.LiveView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:controls="clr-namespace:IntelligentVms.Client.Controls">
-  <Grid>
-    <Grid.ColumnDefinitions>
-      <ColumnDefinition Width="260" />
-      <ColumnDefinition Width="*" />
-    </Grid.ColumnDefinitions>
-
-    <!-- Camera tree: drag a camera onto a tile to assign it. -->
-    <DockPanel Grid.Column="0" Background="{DynamicResource PanelBrush}">
-      <TextBlock DockPanel.Dock="Top" Text="Cameras" Style="{StaticResource PanelHeader}" />
-      <TreeView ItemsSource="{Binding Cameras}" AllowDrop="False">
-        <TreeView.ItemTemplate>
-          <DataTemplate>
-            <StackPanel Orientation="Horizontal">
-              <Ellipse Width="8" Height="8" Margin="0,0,6,0"
-                       Fill="{Binding State, Converter={StaticResource StateToBrush}}" />
-              <TextBlock Text="{Binding Name}" />
-            </StackPanel>
-          </DataTemplate>
-        </TreeView.ItemTemplate>
-      </TreeView>
-    </DockPanel>
-
-    <DockPanel Grid.Column="1">
-      <ToolBar DockPanel.Dock="Top">
-        <Button Content="1x1" Command="{Binding SetLayoutCommand}" CommandParameter="1" />
-        <Button Content="2x2" Command="{Binding SetLayoutCommand}" CommandParameter="2" />
-        <Button Content="3x3" Command="{Binding SetLayoutCommand}" CommandParameter="3" />
-        <Button Content="4x4" Command="{Binding SetLayoutCommand}" CommandParameter="4" />
-        <Separator />
-        <Button Content="Fullscreen" Command="{Binding FullscreenCommand}" />
-        <Button Content="New window" Command="{Binding NewMonitorCommand}"
-                ToolTip="Open another monitoring window on a second display" />
-      </ToolBar>
-
-      <ItemsControl ItemsSource="{Binding Tiles}">
-        <ItemsControl.ItemsPanel>
-          <ItemsPanelTemplate>
-            <UniformGrid Rows="{Binding Rows}" Columns="{Binding Columns}" />
-          </ItemsPanelTemplate>
-        </ItemsControl.ItemsPanel>
-        <ItemsControl.ItemTemplate>
-          <DataTemplate>
-            <controls:VideoTile Margin="2" />
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
-    </DockPanel>
-  </Grid>
+  <DockPanel>
+    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8">
+      <Button Content="1x1" Tag="1" Click="SetLayout" Margin="4" />
+      <Button Content="2x2" Tag="2" Click="SetLayout" Margin="4" />
+      <Button Content="3x3" Tag="3" Click="SetLayout" Margin="4" />
+      <Button Content="4x4" Tag="4" Click="SetLayout" Margin="4" />
+      <TextBlock Text="Camera:" VerticalAlignment="Center" Margin="12,0,4,0" />
+      <ComboBox x:Name="CameraList" ItemsSource="{Binding Cameras}" DisplayMemberPath="Name" Width="220" />
+      <TextBlock Text="Tile:" VerticalAlignment="Center" Margin="12,0,4,0" />
+      <ComboBox x:Name="TileList" ItemsSource="{Binding Tiles}" DisplayMemberPath="Index" Width="70" SelectedIndex="0" />
+      <Button Content="Open camera" Click="AssignCamera" Margin="8,0" />
+    </StackPanel>
+    <ItemsControl ItemsSource="{Binding Tiles}">
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate><UniformGrid Rows="{Binding Rows}" Columns="{Binding Columns}" /></ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate><controls:VideoTile Margin="2" /></DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+  </DockPanel>
 </UserControl>

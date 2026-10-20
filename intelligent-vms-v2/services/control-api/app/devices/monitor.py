@@ -12,7 +12,6 @@ import asyncio
 from dataclasses import dataclass
 
 from sqlalchemy import select
-
 from vms_contracts.enums import CameraState, EventSeverity, EventType
 
 from app.config import Settings, get_settings

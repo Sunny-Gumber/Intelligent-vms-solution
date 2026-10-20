@@ -45,7 +45,7 @@ class GuardPolicy:
     max_discovery_hosts: int = 1024
 
     @classmethod
-    def from_settings(cls, settings) -> "GuardPolicy":  # noqa: ANN001
+    def from_settings(cls, settings) -> GuardPolicy:  # noqa: ANN001
         return cls(allow_private=settings.allow_private_camera_networks,
                    allow_cidrs=tuple(settings.camera_allow_cidrs),
                    deny_cidrs=tuple(settings.camera_deny_cidrs),

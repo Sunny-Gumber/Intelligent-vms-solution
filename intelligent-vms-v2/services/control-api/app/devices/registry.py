@@ -12,19 +12,17 @@ integration can never break the product.
 
 from __future__ import annotations
 
-from typing import Type
-
 from app.devices.base import Credentials, DeviceAdapter, DeviceEndpoint
 from app.devices.onvif_adapter import OnvifAdapter
 from app.devices.rtsp_adapter import RtspAdapter
 
-_ADAPTERS: dict[str, Type[DeviceAdapter]] = {
+_ADAPTERS: dict[str, type[DeviceAdapter]] = {
     "onvif": OnvifAdapter, "rtsp": RtspAdapter, "generic": OnvifAdapter,
 }
 _VENDOR_ALIASES: dict[str, str] = {}
 
 
-def register_adapter(name: str, adapter: Type[DeviceAdapter], *,
+def register_adapter(name: str, adapter: type[DeviceAdapter], *,
                      vendors: tuple[str, ...] = ()) -> None:
     key = name.strip().lower()
     if key in _ADAPTERS and _ADAPTERS[key] is not adapter:

@@ -32,7 +32,7 @@ requires_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG,
 
 
 @contextlib.asynccontextmanager
-async def _noop_lifespan(app):  # noqa: ANN001
+async def _noop_lifespan(app):
     """Tests drive the app without background loops."""
     yield
 
@@ -86,7 +86,7 @@ def migration_template(tmp_path_factory) -> Path:
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c",
          str(ROOT / "database" / "alembic.ini"), "upgrade", "head"],
-        capture_output=True, text=True, env=env, cwd=str(ROOT / "database"))
+        capture_output=True, text=True, env=env, cwd=str(ROOT / "database"), check=False)
     assert result.returncode == 0, f"alembic failed:\n{result.stdout}\n{result.stderr}"
     assert template.is_file()
     return template
@@ -147,9 +147,8 @@ def seeded(container, settings):
 @pytest.fixture
 def client(seeded, settings):
     """TestClient without the lifespan (no background loops in tests)."""
-    from fastapi.testclient import TestClient
-
     from app.main import create_app
+    from fastapi.testclient import TestClient
 
     app = create_app(settings, container=seeded)
     app.router.lifespan_context = _noop_lifespan

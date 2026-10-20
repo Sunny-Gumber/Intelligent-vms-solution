@@ -81,7 +81,7 @@ def windows_arrays(timeout_s: float = 10.0) -> list[RaidArray]:
                "Get-VirtualDisk | Select-Object FriendlyName,ResiliencySettingName,"
                "HealthStatus,OperationalStatus | ConvertTo-Csv -NoTypeInformation"]
     try:
-        output = subprocess.run(command, capture_output=True, text=True,
+        output = subprocess.run(command,  # noqa: S603 - fixed PowerShell command, no user input capture_output=True, text=True,
                                 timeout=timeout_s, check=False).stdout
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("raid.windows_query_failed", error=str(exc))

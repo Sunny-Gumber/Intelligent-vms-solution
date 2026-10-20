@@ -147,7 +147,7 @@ def build_sbom() -> dict:
         "serialNumber": f"urn:uuid:{uuid.uuid4()}",
         "version": 1,
         "metadata": {
-            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "timestamp": dt.datetime.now(dt.UTC).isoformat(),
             "tools": [{"vendor": "Intelligent VMS", "name": "generate_sbom.py",
                        "version": "1.0"}],
             "component": {"type": "application", "name": "Intelligent VMS",

@@ -19,10 +19,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-
+from app.logging_setup import get_logger
 from vms_contracts.enums import AnalyticsClass
 
-from app.logging_setup import get_logger
 from analytics_worker.detectors.base import Detection, Detector
 
 log = get_logger("analytics.onnx")
@@ -56,7 +55,7 @@ def letterbox(frame: np.ndarray, size: int) -> tuple[np.ndarray, float, float, f
     """Resize preserving aspect ratio and pad. Returns (image, scale, dx, dy)."""
     height, width = frame.shape[:2]
     scale = min(size / width, size / height)
-    new_w, new_h = int(round(width * scale)), int(round(height * scale))
+    new_w, new_h = round(width * scale), round(height * scale)
 
     # Nearest-neighbour resize without OpenCV so the worker has no heavy
     # image-processing dependency; the model's own preprocessing dominates.
@@ -162,7 +161,7 @@ def decode_output(raw: np.ndarray, labels: list[str], *, input_size: int,
 class OnnxDetector(Detector):
     name = "onnx"
 
-    def __init__(self, status, labels_path: Path | None = None,  # noqa: ANN001
+    def __init__(self, status, labels_path: Path | None = None,
                  input_size: int = 640) -> None:
         self.status = status
         self.labels = load_labels(labels_path)

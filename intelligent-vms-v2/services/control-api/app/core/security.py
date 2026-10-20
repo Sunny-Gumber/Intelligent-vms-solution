@@ -118,7 +118,7 @@ class AccessClaims:
     roles: tuple[str, ...]
     permissions: tuple[str, ...]
     expires_at: dt.datetime
-    token_type: str = "access"
+    token_type: str = "access"  # noqa: S105 - JWT type label, not a token value
     api_key_id: str | None = None
 
     @property
@@ -166,7 +166,7 @@ def decode_access_token(token: str, settings: Settings | None = None) -> AccessC
     return AccessClaims(
         sub=payload["sub"], jti=payload["jti"], username=payload.get("username", ""),
         roles=tuple(payload.get("roles", [])), permissions=tuple(payload.get("perms", [])),
-        expires_at=dt.datetime.fromtimestamp(payload["exp"], tz=dt.timezone.utc),
+        expires_at=dt.datetime.fromtimestamp(payload["exp"], tz=dt.UTC),
         api_key_id=payload.get("api_key_id"))
 
 

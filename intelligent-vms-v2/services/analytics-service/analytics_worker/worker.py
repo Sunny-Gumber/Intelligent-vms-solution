@@ -25,21 +25,19 @@ import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import select
-
-from vms_contracts.enums import AnalyticsClass, AnalyticsSource
-
 from app.analytics.ingest import AnalyticsInput, store, to_event
 from app.analytics.linking import link_segment
 from app.analytics.zones import ZoneEvaluator
 from app.config import Settings, get_settings
 from app.core.backoff import BackoffPolicy
 from app.core.supervisor import interruptible_sleep
+from app.core.timeutil import utcnow
 from app.db import session as db
 from app.db.models import AnalyticsZone, Camera, CameraStream, WorkerHeartbeat
 from app.db.session import session_scope
-from app.core.timeutil import utcnow
 from app.logging_setup import configure_logging, get_logger
+from sqlalchemy import select
+from vms_contracts.enums import AnalyticsSource
 
 from analytics_worker.detectors.base import Detector, NullDetector
 from analytics_worker.runtime import RuntimeStatus, resolve
@@ -85,7 +83,7 @@ class WorkerStats:
 class AnalyticsWorker:
     def __init__(self, settings: Settings | None = None, *,
                  detector: Detector | None = None,
-                 credential_store=None) -> None:  # noqa: ANN001
+                 credential_store=None) -> None:
         self.settings = settings or get_settings()
         self.worker_id = f"analytics@{Path.cwd().name}:{id(self)}"
         self.stop_event = asyncio.Event()
@@ -145,7 +143,7 @@ class AnalyticsWorker:
                     out.append((camera.id, camera.name, source))
         return out
 
-    def _source_url(self, session, camera: Camera) -> str | None:  # noqa: ANN001
+    def _source_url(self, session, camera: Camera) -> str | None:
         from app.media.url_builder import build_rtsp_url, with_credentials
 
         stream = session.execute(
@@ -220,7 +218,7 @@ class AnalyticsWorker:
                     stats.zone_hits += self._evaluate_zones(
                         camera_id, zones, evaluator, detection, track_id)
 
-    def _persist(self, camera_id: str, detection, track_id: str) -> None:  # noqa: ANN001
+    def _persist(self, camera_id: str, detection, track_id: str) -> None:
         with session_scope() as session:
             record = store(session, AnalyticsInput(
                 camera_id=camera_id,
@@ -235,7 +233,7 @@ class AnalyticsWorker:
             link_segment(session, record)
 
     def _evaluate_zones(self, camera_id: str, zones: list[AnalyticsZone],
-                        evaluator: ZoneEvaluator, detection, track_id: str) -> int:  # noqa: ANN001
+                        evaluator: ZoneEvaluator, detection, track_id: str) -> int:
         hits = 0
         for zone in zones:
             classes = zone.object_classes or []

@@ -9,7 +9,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-
 from vms_contracts.version import API_PREFIX
 
 from app.api.v1 import api_router

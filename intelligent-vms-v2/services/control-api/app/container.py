@@ -27,7 +27,8 @@ from app.events_engine.ingest import EventPipeline
 from app.exports.jobs import ExportService
 from app.federation.aggregator import FederationAggregator
 from app.health.registry import HealthRegistry
-from app.licensing.entitlements import Entitlements, resolve as resolve_entitlements
+from app.licensing.entitlements import Entitlements
+from app.licensing.entitlements import resolve as resolve_entitlements
 from app.logging_setup import get_logger
 from app.media.mediamtx_client import MediaGatewayClient, NullGatewayClient
 from app.media.session_broker import SessionBroker

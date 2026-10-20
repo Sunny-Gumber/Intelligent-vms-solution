@@ -2,13 +2,13 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 
 import Layout from './components/Layout';
 import RequireAuth from './components/RequireAuth';
-import Alarms from './pages/Alarms';
-import Cameras from './pages/Cameras';
-import Dashboard from './pages/Dashboard';
+import { AlarmsPage as Alarms } from './pages/Alarms';
+import { CamerasPage as Cameras } from './pages/Cameras';
+import { DashboardPage as Dashboard } from './pages/Dashboard';
 import Live from './pages/Live';
-import Login from './pages/Login';
-import Playback from './pages/Playback';
-import Storage from './pages/Storage';
+import { LoginPage as Login } from './pages/Login';
+import { PlaybackPage as Playback } from './pages/Playback';
+import { StoragePage as Storage } from './pages/Storage';
 
 export default function App() {
   return (
@@ -25,6 +25,7 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/live" element={<Live />} />
         <Route path="/playback" element={<Playback />} />
+        <Route path="/playback/:cameraId" element={<Playback />} />
         <Route path="/cameras" element={<Cameras />} />
         <Route path="/alarms" element={<Alarms />} />
         <Route path="/storage" element={<Storage />} />

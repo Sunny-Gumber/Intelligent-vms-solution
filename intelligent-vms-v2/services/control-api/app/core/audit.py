@@ -26,10 +26,10 @@ class Action:
     LOGIN_SUCCESS = "auth.login.success"
     LOGIN_FAILURE = "auth.login.failure"
     LOGOUT = "auth.logout"
-    TOKEN_REFRESH = "auth.token.refresh"
-    TOKEN_REVOKE = "auth.token.revoke"
-    PASSWORD_CHANGE = "auth.password.change"
-    PASSWORD_RESET = "auth.password.reset"
+    TOKEN_REFRESH = "auth.token.refresh"  # noqa: S105 - audit action name, not a token
+    TOKEN_REVOKE = "auth.token.revoke"  # noqa: S105 - audit action name, not a token
+    PASSWORD_CHANGE = "auth.password.change"  # noqa: S105 - audit action name, not a password
+    PASSWORD_RESET = "auth.password.reset"  # noqa: S105 - audit action name, not a password
     MFA_ENABLE = "auth.mfa.enable"
     MFA_DISABLE = "auth.mfa.disable"
 

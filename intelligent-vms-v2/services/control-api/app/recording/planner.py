@@ -29,7 +29,7 @@ class ScheduleBlock:
     mode: RecordingMode = RecordingMode.CONTINUOUS
 
     @classmethod
-    def parse(cls, raw: dict) -> "ScheduleBlock":
+    def parse(cls, raw: dict) -> ScheduleBlock:
         day = int(raw.get("day", 0))
         if not 0 <= day <= 6:
             raise ValueError(f"day must be 0..6, got {day}")

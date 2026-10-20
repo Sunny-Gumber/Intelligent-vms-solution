@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
-
 from vms_contracts.dto import PtzCommand, PtzPresetOut
 from vms_contracts.enums import Permission
 

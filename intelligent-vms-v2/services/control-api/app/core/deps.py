@@ -13,13 +13,13 @@ client-supplied role, permission or camera list. The chain is:
 
 from __future__ import annotations
 
-from typing import Annotated, Iterator
+from collections.abc import Iterator
+from typing import Annotated
 
 from fastapi import Depends, Header, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import Permission
 
 from app.container import Container

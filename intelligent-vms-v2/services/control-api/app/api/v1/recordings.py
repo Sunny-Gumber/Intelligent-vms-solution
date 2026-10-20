@@ -7,7 +7,6 @@ import datetime as dt
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-
 from vms_contracts.enums import Permission, RecordingMode
 
 from app.core import audit

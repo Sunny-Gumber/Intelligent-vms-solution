@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
-
 from vms_contracts.dto import CapacityEstimate, HealthReport, LicenseStatus
 from vms_contracts.enums import AlarmState, CameraState, FeatureFlag, Permission
 

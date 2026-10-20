@@ -27,9 +27,9 @@ import csv
 import datetime as dt
 import os
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
 
 from app.core.timeutil import utcnow
 from app.logging_setup import get_logger, redact_text
@@ -163,8 +163,8 @@ class SegmentRecorder:
         if not list_path.is_file() or self.started_at is None:
             return
         try:
-            with open(list_path, newline="", encoding="utf-8") as handle:
-                rows = list(csv.reader(handle))
+            contents = await asyncio.to_thread(list_path.read_text, encoding="utf-8")
+            rows = list(csv.reader(contents.splitlines()))
         except OSError:
             return
 
@@ -190,9 +190,9 @@ class SegmentRecorder:
                 await self.on_segment(CompletedSegment(path=path, started_at=start,
                                                        ended_at=end, size_bytes=size,
                                                        index=index))
-            except Exception as exc:  # noqa: BLE001
-                log.error("recorder.segment_callback_failed", name=self.name,
-                          error=str(exc), exc_info=True)
+            except Exception as exc:
+                log.exception("recorder.segment_callback_failed", name=self.name,
+                          error=str(exc))
         self._seen_rows = len(rows)
 
     async def _drain_stderr(self) -> None:
@@ -239,7 +239,7 @@ class SegmentRecorder:
             return
         try:
             await asyncio.wait_for(self.process.wait(), timeout=timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("recorder.force_kill", name=self.name)
             try:
                 self.process.kill()

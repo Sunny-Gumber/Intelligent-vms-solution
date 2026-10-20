@@ -11,7 +11,6 @@ import datetime as dt
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import SegmentState
 
 from app.core.timeutil import ensure_utc

@@ -405,7 +405,7 @@ def test_live_session_fails_clearly_without_gateway(client, auth, db_session):
 # -- playback --------------------------------------------------------------
 def test_playback_manifest_without_recordings_is_explicit(client, auth):
     camera_id = create_camera(client, auth).json()["id"]
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     body = client.get(f"{API}/playback/{camera_id}/manifest", headers=auth,
                       params={"start": (now - dt.timedelta(hours=1)).isoformat(),
                               "end": now.isoformat()}).json()
@@ -416,7 +416,7 @@ def test_playback_manifest_without_recordings_is_explicit(client, auth):
 
 def test_playback_rejects_inverted_range(client, auth):
     camera_id = create_camera(client, auth).json()["id"]
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     response = client.get(f"{API}/playback/{camera_id}/manifest", headers=auth,
                           params={"start": now.isoformat(),
                                   "end": (now - dt.timedelta(hours=1)).isoformat()})

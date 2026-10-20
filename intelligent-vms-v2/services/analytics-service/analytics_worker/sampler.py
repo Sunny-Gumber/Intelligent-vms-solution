@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 import shutil
 from dataclasses import dataclass
+from typing import Self
 
 import numpy as np
-
 from app.logging_setup import get_logger, redact_text
 
 log = get_logger("analytics.sampler")
@@ -66,7 +66,7 @@ class FrameSampler:
         ]
         return args
 
-    async def __aenter__(self) -> FrameSampler:
+    async def __aenter__(self) -> Self:
         await self.start()
         return self
 
@@ -107,7 +107,7 @@ class FrameSampler:
         try:
             self.process.terminate()
             await asyncio.wait_for(self.process.wait(), timeout=5)
-        except (ProcessLookupError, asyncio.TimeoutError):
+        except (TimeoutError, ProcessLookupError):
             try:
                 self.process.kill()
                 await self.process.wait()

@@ -24,7 +24,6 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import EventSeverity, EventType, StorageState, VolumeKind
 
 from app.config import Settings, get_settings

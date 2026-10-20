@@ -12,8 +12,8 @@ status.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
 
 from vms_contracts.dto import ComponentHealth, HealthReport
 from vms_contracts.enums import HealthStatus, ServiceState

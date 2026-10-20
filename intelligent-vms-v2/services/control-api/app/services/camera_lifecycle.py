@@ -23,10 +23,10 @@ from dataclasses import dataclass
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import CameraState, RecordingState
 
-from app.core.audit import Action, record as audit_record
+from app.core.audit import Action
+from app.core.audit import record as audit_record
 from app.core.errors import ConflictError, NotFoundError
 from app.core.timeutil import utcnow
 from app.db.models import (

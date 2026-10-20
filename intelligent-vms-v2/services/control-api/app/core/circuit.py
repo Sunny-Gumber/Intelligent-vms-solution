@@ -9,14 +9,15 @@ allowed. Keeps a dead camera from consuming a worker slot forever.
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Awaitable, Callable, TypeVar
+from enum import StrEnum
+from typing import TypeVar
 
 T = TypeVar("T")
 
 
-class BreakerState(str, Enum):
+class BreakerState(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"

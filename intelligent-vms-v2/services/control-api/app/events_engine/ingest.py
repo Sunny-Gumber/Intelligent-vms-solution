@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import AnalyticsSource, EventSeverity, EventType
 
 from app.config import Settings, get_settings
@@ -122,7 +122,7 @@ class EventPipeline:
         while not self.stop_event.is_set():
             try:
                 incoming = await asyncio.wait_for(self.queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             try:
                 await self.process(incoming)

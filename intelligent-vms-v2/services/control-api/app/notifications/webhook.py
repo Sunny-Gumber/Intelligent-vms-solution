@@ -38,7 +38,7 @@ class DeliveryResult:
 
 
 def sign_payload(secret: str, body: bytes, timestamp: int) -> str:
-    material = f"{timestamp}.".encode("utf-8") + body
+    material = f"{timestamp}.".encode() + body
     return "sha256=" + hmac.new(secret.encode("utf-8"), material,
                                 hashlib.sha256).hexdigest()
 

@@ -286,7 +286,7 @@ modules:
       - {id: M13-R07, text: "Alarm management", component: "apps/windows-client/Views", status: partial, verification: none, evidence: "source delivered"}
       - {id: M13-R08, text: "PTZ panel", component: "apps/windows-client/Views", status: partial, verification: none, evidence: "source delivered"}
       - {id: M13-R09, text: "Export and snapshot interface", component: "apps/windows-client/Views", status: partial, verification: none, evidence: "source delivered"}
-      - {id: M13-R10, text: "Dark and light themes", component: "apps/windows-client/Themes", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R10, text: "Dark and light themes", component: "apps/windows-client/Themes", status: partial, verification: none, evidence: "Dark.xaml resources only; light theme and switching not implemented"}
       - {id: M13-R11, text: "Keyboard shortcuts and notification centre", component: "apps/windows-client", status: partial, verification: none, evidence: "source delivered"}
       - {id: M13-R12, text: "Connection status, error recovery, persistent preferences", component: "apps/windows-client/Services", status: partial, verification: none, evidence: "source delivered"}
       - {id: M13-R13, text: "Video rendering pipeline (LibVLCSharp)", component: "apps/windows-client/Controls", status: partial, verification: none, evidence: "integration code written against LibVLCSharp; NOT compiled or run"}

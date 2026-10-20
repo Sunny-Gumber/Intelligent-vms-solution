@@ -1,8 +1,10 @@
 /** Sign-in, including the TOTP second factor. */
 import { FormEvent, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 
-export function LoginPage({ onSignedIn }: { onSignedIn: () => void }) {
+export function LoginPage() {
+  const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");
@@ -14,7 +16,7 @@ export function LoginPage({ onSignedIn }: { onSignedIn: () => void }) {
     setError(null);
     try {
       await api.login(username, password, needsTotp ? totp : undefined);
-      onSignedIn();
+      navigate("/dashboard", { replace: true });
     } catch (e: any) {
       if (e?.code === "mfa_required") {
         setNeedsTotp(true);

@@ -7,7 +7,6 @@ import datetime as dt
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-
 from vms_contracts.dto import AnalyticsEventOut
 from vms_contracts.enums import AnalyticsClass, AnalyticsSource, Permission
 

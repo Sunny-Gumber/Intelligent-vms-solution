@@ -15,8 +15,16 @@ from __future__ import annotations
 import datetime as dt
 
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, Float, ForeignKey, Index, Integer, String,
-    Text, UniqueConstraint,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,7 +44,7 @@ class Role(Base, IdMixin, TimestampMixin):
     builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     permissions: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
 
-    users: Mapped[list["UserRole"]] = relationship(back_populates="role",
+    users: Mapped[list[UserRole]] = relationship(back_populates="role",
                                                    cascade="all, delete-orphan")
 
 
@@ -64,11 +72,11 @@ class User(Base, IdMixin, TimestampMixin):
 
     preferences: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
 
-    roles: Mapped[list["UserRole"]] = relationship(
+    roles: Mapped[list[UserRole]] = relationship(
         back_populates="user", cascade="all, delete-orphan", lazy="selectin")
-    site_scopes: Mapped[list["UserSiteScope"]] = relationship(
+    site_scopes: Mapped[list[UserSiteScope]] = relationship(
         cascade="all, delete-orphan", lazy="selectin")
-    camera_scopes: Mapped[list["UserCameraScope"]] = relationship(
+    camera_scopes: Mapped[list[UserCameraScope]] = relationship(
         cascade="all, delete-orphan", lazy="selectin")
 
 
@@ -250,9 +258,9 @@ class Camera(Base, IdMixin, TimestampMixin):
     node_id: Mapped[str | None] = mapped_column(String(32), index=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
-    streams: Mapped[list["CameraStream"]] = relationship(
+    streams: Mapped[list[CameraStream]] = relationship(
         back_populates="camera", cascade="all, delete-orphan", lazy="selectin")
-    credential: Mapped["CameraCredential | None"] = relationship(
+    credential: Mapped[CameraCredential | None] = relationship(
         back_populates="camera", cascade="all, delete-orphan", uselist=False,
         lazy="selectin")
 

@@ -16,7 +16,7 @@ than failing silently or claiming GPU performance it does not have.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +54,7 @@ class RuntimeStatus:
 
 def import_onnxruntime():
     try:
-        import onnxruntime  # noqa: PLC0415 - optional dependency probed at runtime
+        import onnxruntime
 
         return onnxruntime
     except ImportError:

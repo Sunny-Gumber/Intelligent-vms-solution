@@ -12,7 +12,6 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from vms_contracts.enums import AlarmState
 
 from app.core.timeutil import utcnow

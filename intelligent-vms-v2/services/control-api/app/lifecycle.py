@@ -23,7 +23,6 @@ import secrets
 import sys
 
 from sqlalchemy import select
-
 from vms_contracts.dto import ComponentHealth
 from vms_contracts.enums import HealthStatus, ServiceState
 

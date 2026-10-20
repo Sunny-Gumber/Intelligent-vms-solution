@@ -335,7 +335,7 @@
 | M13-R07 | Alarm management | Partial | **Not independently verified** | `apps/windows-client/Views` | source delivered |
 | M13-R08 | PTZ panel | Partial | **Not independently verified** | `apps/windows-client/Views` | source delivered |
 | M13-R09 | Export and snapshot interface | Partial | **Not independently verified** | `apps/windows-client/Views` | source delivered |
-| M13-R10 | Dark and light themes | Partial | **Not independently verified** | `apps/windows-client/Themes` | source delivered |
+| M13-R10 | Dark and light themes | Partial | **Not independently verified** | `apps/windows-client/Themes` | Dark.xaml resources only; light theme and switching not implemented |
 | M13-R11 | Keyboard shortcuts and notification centre | Partial | **Not independently verified** | `apps/windows-client` | source delivered |
 | M13-R12 | Connection status, error recovery, persistent preferences | Partial | **Not independently verified** | `apps/windows-client/Services` | source delivered |
 | M13-R13 | Video rendering pipeline (LibVLCSharp) | Partial | **Not independently verified** | `apps/windows-client/Controls` | integration code written against LibVLCSharp; NOT compiled or run |

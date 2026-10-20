@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
 
 from app.core.backoff import BackoffPolicy
 from app.core.timeutil import utcnow
@@ -111,7 +111,7 @@ class Supervisor:
                 await asyncio.wait_for(self._stopping.wait(),
                                        timeout=max(task.policy.delay_for(attempt), 0.01))
                 break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     async def stop_all(self, timeout_s: float = 15.0) -> None:
@@ -145,5 +145,5 @@ async def interruptible_sleep(stop: asyncio.Event, seconds: float) -> bool:
     try:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
         return True
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return False

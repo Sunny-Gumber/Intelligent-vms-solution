@@ -8,7 +8,6 @@ import io
 
 from fastapi import APIRouter, Query, Response
 from sqlalchemy import func, select
-
 from vms_contracts.enums import (
     AlarmState,
     CameraState,
