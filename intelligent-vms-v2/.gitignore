@@ -31,7 +31,7 @@ installers/build/
 var/
 data/
 recordings/
-exports/
+/exports/
 snapshots/
 spool/
 logs/
