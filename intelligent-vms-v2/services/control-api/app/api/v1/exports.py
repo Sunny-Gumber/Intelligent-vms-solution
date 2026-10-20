@@ -137,6 +137,8 @@ def download_token(request: Request, export_id: str, session: DbSession, contain
 def download(export_id: str, token: str, session: DbSession, container: Ctr,
              principal: CurrentPrincipal) -> FileResponse:
     principal.require(Permission.EXPORT_DOWNLOAD)
+    # A download token does not bypass the export ownership boundary.
+    _load_job(session, principal, export_id)
     job = container.exports.verify_download_token(session, export_id, token)
     if not job.relative_path:
         raise ConflictError("This export has no file", code="export_not_ready")
