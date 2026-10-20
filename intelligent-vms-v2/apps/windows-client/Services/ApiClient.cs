@@ -103,8 +103,8 @@ public sealed class ApiClient : IDisposable
     public Task<LiveSession> OpenLiveSessionAsync(string cameraId, int tileWidth, int tileHeight) =>
         PostAsync<LiveSession>("live/sessions", new { camera_id = cameraId, tile_width = tileWidth, tile_height = tileHeight });
 
-    public Task<LiveSession> KeepAliveAsync(string sessionId) =>
-        PostAsync<LiveSession>($"live/sessions/{Uri.EscapeDataString(sessionId)}/keepalive");
+    public Task<JsonElement> KeepAliveAsync(string sessionId) =>
+        PostAsync<JsonElement>($"live/sessions/{Uri.EscapeDataString(sessionId)}/keepalive");
 
     public Task<JsonElement> CloseLiveSessionAsync(string sessionId) =>
         DeleteAsync<JsonElement>($"live/sessions/{Uri.EscapeDataString(sessionId)}");

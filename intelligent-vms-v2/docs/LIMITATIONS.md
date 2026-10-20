@@ -89,17 +89,27 @@ operator should believe they have pre-event footage when they do not.
 
 ---
 
-## 6. Clients are delivered as source, not binaries
+## 6. Client builds pass; runtime qualification remains pending
 
-- **Windows WPF client** — no .NET SDK existed in the build environment, so
-  the project has **never been compiled**. Expect to fix compilation issues on
-  first build. Hardware-accelerated decoding (D3D11/DXVA) is designed but not
-  implemented; the client relies on LibVLCSharp.
-- **Web client** — TypeScript source delivered; `npm install && npm run build`
-  has **not been executed**. Expect dependency resolution work.
+GitHub Actions run [39363143375](https://github.com/Sunny-Gumber/Intelligent-vms-solution/actions/runs/39363143375)
+verified commit `c889a5e8e35d48b4d45a0bb334ff020b915015bf` on 2026-10-20:
+web typecheck/build and Windows .NET 8 restore/build passed. The Windows build
+reported zero warnings and zero errors. See draft PR #177 for later commit checks.
 
-Any statement about client UI behaviour in this repository is a statement
-about source code, not about observed behaviour.
+- **Windows WPF client**: missing startup, model and login wiring was supplied
+  during CI repair. The alpha shell exposes login, camera inventory, grid layout
+  and live-session assignment. It does not implement the originally sketched
+  playback, alarm, notification, multi-monitor or persistent-preference workspaces.
+  LibVLC uses the HLS gateway endpoint; decoding, token renewal, reconnect and
+  session teardown still require live runtime qualification. Hardware-accelerated
+  decoding remains unqualified.
+- **Web client**: compile failures in page imports, tile properties, authentication
+  guard and API calls were repaired, and an npm lockfile was added. No browser
+  end-to-end or real-media qualification has been performed. The playback page
+  displays metadata/timeline availability; it is not a verified video player.
+
+Build success establishes compilation only. It is not evidence that UI bindings,
+authentication against a live server or camera playback work in an installed system.
 
 ---
 

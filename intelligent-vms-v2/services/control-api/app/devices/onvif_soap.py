@@ -89,7 +89,6 @@ class SoapClient:
         created = (utcnow() + dt.timedelta(seconds=self.clock_offset_s)).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
         digest = base64.b64encode(hashlib.sha1(  # noqa: S324 - SHA-1 is mandated by ONVIF WS-Security PasswordDigest
-
             nonce + created.encode("utf-8")
             + (self.password or "").encode("utf-8")).digest()).decode("ascii")
         return (f'<wsse:Security xmlns:wsse="{NS["wsse"]}" xmlns:wsu="{NS["wsu"]}" '
