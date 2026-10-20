@@ -4,10 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from vms_contracts.enums import Permission
 
 from app.api.v1.exports import download
 from app.core.errors import NotFoundError
+from vms_contracts.enums import Permission
 
 
 def test_export_download_rejects_other_users_token_before_verification():
