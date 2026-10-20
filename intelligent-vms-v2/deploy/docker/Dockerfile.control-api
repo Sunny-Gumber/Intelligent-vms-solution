@@ -1,0 +1,24 @@
+FROM python:3.12-slim AS base
+
+# ffmpeg/ffprobe are required for camera validation, snapshots and exports.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY packages/shared-contracts /app/packages/shared-contracts
+COPY services/control-api /app/services/control-api
+COPY database /app/database
+
+RUN pip install --no-cache-dir ./packages/shared-contracts \
+ && pip install --no-cache-dir ./services/control-api
+
+# Run as a non-root user; /data is the only writable location needed.
+RUN useradd --system --uid 10001 vms && mkdir -p /data && chown vms:vms /data
+USER vms
+
+ENV VMS_DATA_ROOT=/data VMS_API_HOST=0.0.0.0 VMS_API_PORT=8080
+EXPOSE 8080
+
+# Migrations run at container start so a fresh database is usable immediately.
+CMD ["sh", "-c", "cd /app/database && alembic upgrade head && cd /app && python -m app.main"]

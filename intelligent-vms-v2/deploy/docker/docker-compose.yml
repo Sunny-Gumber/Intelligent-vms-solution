@@ -1,0 +1,84 @@
+# Development and small-deployment stack.
+#
+# NOTE: Docker Compose is NOT the only supported installation method.
+# Native installers for Ubuntu (systemd) and Windows (services) are provided
+# in deploy/ubuntu and installers/windows, because an appliance-style VMS is
+# frequently installed on bare metal without a container runtime.
+
+name: intelligent-vms
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vms
+      POSTGRES_PASSWORD: ${VMS_DB_PASSWORD:?set VMS_DB_PASSWORD}
+      POSTGRES_DB: intelligentvms
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vms -d intelligentvms"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "8889:8889"      # WebRTC / WHEP
+      - "8189:8189/udp"  # WebRTC ICE
+      - "8888:8888"      # HLS
+      - "8554:8554"      # RTSP for native clients
+      # 9997 (control API) is deliberately NOT published; only the control
+      # plane talks to it, over the internal network.
+    restart: unless-stopped
+
+  control-api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.control-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      VMS_ENVIRONMENT: ${VMS_ENVIRONMENT:-development}
+      VMS_SECRET_KEY: ${VMS_SECRET_KEY:?set VMS_SECRET_KEY}
+      VMS_DATABASE_URL: postgresql+psycopg://vms:${VMS_DB_PASSWORD}@postgres/intelligentvms
+      VMS_DATA_ROOT: /data
+      VMS_MEDIA_GATEWAY_URL: http://mediamtx:9997
+      VMS_MEDIA_PUBLIC_WEBRTC_URL: ${VMS_PUBLIC_WEBRTC_URL:-http://localhost:8889}
+      VMS_MEDIA_PUBLIC_HLS_URL: ${VMS_PUBLIC_HLS_URL:-http://localhost:8888}
+    volumes:
+      - vmsdata:/data
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+
+  recorder:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.recorder
+    depends_on:
+      control-api:
+        condition: service_healthy
+    environment:
+      VMS_SECRET_KEY: ${VMS_SECRET_KEY}
+      VMS_DATABASE_URL: postgresql+psycopg://vms:${VMS_DB_PASSWORD}@postgres/intelligentvms
+      VMS_DATA_ROOT: /data
+    volumes:
+      - vmsdata:/data      # shares the master key and recording volumes
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  vmsdata:

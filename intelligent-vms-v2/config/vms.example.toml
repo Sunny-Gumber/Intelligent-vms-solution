@@ -1,0 +1,84 @@
+# Intelligent VMS configuration example.
+# Install to /etc/intelligent-vms/vms.toml (Linux) or
+# C:\ProgramData\IntelligentVMS\config\vms.toml (Windows).
+#
+# Every key can also be set as an environment variable with the VMS_ prefix,
+# e.g. secret_key -> VMS_SECRET_KEY. Environment variables win.
+
+[vms]
+environment = "production"          # development | staging | production
+log_level = "INFO"
+log_json = true
+
+# REQUIRED in production. Generate with:
+#   python -c "import secrets; print(secrets.token_urlsafe(48))"
+secret_key = "CHANGE-ME"
+
+# PostgreSQL is the only supported production backend.
+database_url = "postgresql+psycopg://vms:CHANGE-ME@localhost/intelligentvms"
+
+api_host = "127.0.0.1"              # bind loopback when behind a reverse proxy
+api_port = 8080
+trusted_hosts = ["vms.example.com"] # never "*" in production
+cors_origins = ["https://vms.example.com"]
+
+[camera]
+# Narrow this to the camera VLAN. With an allow-list configured the SSRF guard
+# switches from deny-list to allow-list, which is far stronger.
+allow_cidrs = ["10.20.0.0/16"]
+allowed_ports = [80, 443, 554, 8000, 8080, 8554]
+discovery_max_hosts = 1024
+
+[media]
+gateway_url = "http://127.0.0.1:9997"
+public_webrtc_url = "https://vms.example.com/webrtc"
+public_hls_url = "https://vms.example.com/hls"
+max_live_sessions = 256
+max_live_sessions_per_user = 32
+
+[recording]
+segment_seconds = 300
+retention_default_days = 30
+retention_min_free_percent = 10.0
+# Pre-event recording is NOT implemented. A value above 0 is rejected at
+# startup so nobody believes they have pre-event footage.
+pre_event_seconds = 0
+post_event_seconds = 30
+
+[export]
+max_concurrent_exports = 2
+export_ttl_hours = 72
+
+[ptz]
+# Hard ceiling on any single movement, regardless of what a client requests.
+max_move_seconds = 5.0
+lock_ttl_s = 10.0
+
+[analytics]
+enabled = true
+# No detection model ships with this product. Point this at your own ONNX
+# models to enable server-side inference.
+# model_dir = "/var/lib/intelligent-vms/models"
+providers = ["CPUExecutionProvider"]
+
+# Regulated capabilities. Disabled by default; enabling them also requires a
+# licence feature and a per-user permission, and every query is recorded in
+# the privacy access log with a justification.
+face_recognition_enabled = false
+anpr_enabled = false
+privacy_retention_days = 30
+
+[security]
+password_min_length = 12
+lockout_threshold = 5
+lockout_duration_s = 900
+require_mfa_for_admins = false
+# Argon2id cost. Do not lower these in production; start-up validates them
+# against the OWASP floor (memory >= 19456 KiB, time_cost >= 2).
+password_hash_time_cost = 3
+password_hash_memory_kib = 65536
+
+[license]
+# Offline licensing: no activation server, no phone-home.
+# license_file = "/var/lib/intelligent-vms/license.json"
+# license_public_key_file = "/etc/intelligent-vms/license-public.key"

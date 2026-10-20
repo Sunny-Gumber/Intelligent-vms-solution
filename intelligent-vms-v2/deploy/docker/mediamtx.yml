@@ -1,0 +1,49 @@
+# MediaMTX configuration for Intelligent VMS.
+#
+# Paths are created dynamically by the control plane through the control API
+# on 9997; none are statically defined here. The control API supplies the
+# camera's credentialed RTSP URL, which is why 9997 must never be exposed
+# outside the host or the internal compose network.
+
+logLevel: info
+logDestinations: [stdout]
+
+api: yes
+apiAddress: :9997
+
+metrics: yes
+metricsAddress: 127.0.0.1:9998
+
+# WebRTC is the primary browser transport (low latency).
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcAdditionalHosts: []
+
+# HLS is the fallback for browsers or networks where WebRTC cannot establish.
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsAlwaysRemux: no
+
+# RTSP republishing for native desktop clients.
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+
+rtmp: no
+srt: no
+
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 512
+
+pathDefaults:
+  # On-demand pulling is what keeps bandwidth bounded on large systems: the
+  # gateway only connects to a camera while somebody is watching.
+  sourceOnDemand: yes
+  sourceOnDemandStartTimeout: 10s
+  sourceOnDemandCloseAfter: 10s
+  rtspTransport: tcp

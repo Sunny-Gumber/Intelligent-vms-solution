@@ -1,0 +1,19 @@
+[project]
+name = "vms-analytics-service"
+version = "0.1.0"
+description = "Intelligent VMS analytics worker: frame sampling and pluggable inference."
+requires-python = ">=3.11"
+dependencies = ["vms-contracts", "vms-control-api", "numpy>=1.24"]
+
+[project.optional-dependencies]
+# Inference is OPTIONAL. The worker runs without it and reports that no
+# detector is available rather than pretending to analyse video.
+onnx = ["onnxruntime>=1.17"]
+gpu = ["onnxruntime-gpu>=1.17"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["analytics_worker*"]

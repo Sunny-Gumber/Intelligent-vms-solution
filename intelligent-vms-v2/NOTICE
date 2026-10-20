@@ -1,0 +1,22 @@
+Intelligent VMS
+Copyright (c) 2026 Sunny Gumber
+
+This product includes third-party open-source software. A full inventory with
+versions, licenses and distribution obligations is maintained in:
+
+    docs/operations/third-party-licenses.md
+    release/sbom/            (generated - see tools/generate_sbom.py)
+
+Key runtime components and their upstream projects:
+  FFmpeg               FFmpeg project          LGPL-2.1+/GPL-2.0+ (build dependent)
+  MediaMTX             bluenviron              MIT
+  PostgreSQL           PostgreSQL Global Dev   PostgreSQL License
+  FastAPI / Starlette  Sebastian Ramirez       MIT / BSD-3-Clause
+  SQLAlchemy / Alembic SQLAlchemy authors      MIT
+  React                Meta Platforms          MIT
+  LibVLCSharp          VideoLAN                LGPL-2.1+
+
+IMPORTANT: FFmpeg licensing depends entirely on how the binary was compiled.
+Intelligent VMS invokes FFmpeg as a SEPARATE EXECUTABLE PROCESS and does not
+link against its libraries. This is a deliberate architectural decision
+recorded in docs/decisions/ADR-0006-media-and-ffmpeg-isolation.md.
