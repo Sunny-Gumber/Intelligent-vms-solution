@@ -719,6 +719,44 @@ class LiveSession(Base, IdMixin):
     close_reason: Mapped[str | None] = mapped_column(String(64))
 
 
+class MediaConnection(Base, IdMixin):
+    """One gateway connection admitted for a live session (ADR-0015 s6).
+
+    Persisted (not in memory) so that a control-API restart does not lose the
+    ability to disconnect a specific viewer. A row is "open" while closed_at is
+    NULL. revoke_reason is set when policy decides the connection must end;
+    the revocation loop then kicks it at the gateway and sets closed_at.
+    HLS reads are not bound: the gateway exposes no per-viewer HLS session.
+    """
+
+    __tablename__ = "media_connections"
+
+    live_session_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    camera_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    path: Mapped[str] = mapped_column(String(256), nullable=False)
+    protocol: Mapped[str] = mapped_column(String(16), nullable=False)
+    gateway_conn_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UtcDateTime, default=utcnow,
+                                                    nullable=False)
+    last_admitted_at: Mapped[dt.datetime] = mapped_column(UtcDateTime, default=utcnow,
+                                                          nullable=False)
+    last_policy_check_at: Mapped[dt.datetime | None] = mapped_column(UtcDateTime)
+    revoke_reason: Mapped[str | None] = mapped_column(String(64))
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(UtcDateTime)
+    kick_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    kicked_at: Mapped[dt.datetime | None] = mapped_column(UtcDateTime)
+    closed_at: Mapped[dt.datetime | None] = mapped_column(UtcDateTime, index=True)
+    close_reason: Mapped[str | None] = mapped_column(String(64))
+
+    __table_args__ = (
+        UniqueConstraint("protocol", "gateway_conn_id", name="media_conn_unique_gateway_id"),
+        Index("ix_media_conn_open_session", "live_session_id", "closed_at"),
+        Index("ix_media_conn_policy_scan", "closed_at", "revoke_reason",
+              "last_policy_check_at"),
+    )
+
+
 class Layout(Base, IdMixin, TimestampMixin):
     __tablename__ = "layouts"
 

@@ -17,6 +17,7 @@ Consequences:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,6 +27,11 @@ from app.core.outbound import internal_client
 from app.logging_setup import get_logger, redact_text
 
 log = get_logger("media.gateway")
+_GATEWAY_CONNECTION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+
+
+def valid_connection_id(value: str) -> bool:
+    return bool(_GATEWAY_CONNECTION_ID.fullmatch(value))
 
 
 class GatewayError(RuntimeError):
@@ -82,13 +88,16 @@ class MediaGatewayClient:
         sourceOnDemand means the gateway only connects to the camera while a
         viewer is watching, which keeps bandwidth bounded on large systems.
         """
+        if read_user or read_pass:
+            # Legacy per-path credentials bypass the admission hook and, before
+            # MediaMTX v1.21.2, granted open playback-server access. Viewer
+            # admission is decided only by POST /internal/media/auth (ADR-0015).
+            raise GatewayError("per-path read credentials are not supported; "
+                               "viewer admission is enforced by the auth hook")
         config: dict[str, Any] = {
             "source": source_url, "sourceOnDemand": True,
             "sourceOnDemandStartTimeout": "10s", "sourceOnDemandCloseAfter": "10s",
             "rtspTransport": transport}
-        if read_user:
-            config["readUser"] = read_user
-            config["readPass"] = read_pass or ""
         try:
             await self._request("POST", f"/v3/config/paths/add/{name}", json=config)
         except GatewayError as exc:
@@ -129,8 +138,34 @@ class MediaGatewayClient:
                             bytes_received=int(i.get("bytesReceived") or 0))
                 for i in response.json().get("items", [])]
 
+    # Gateway API collection for each protocol whose sessions can be kicked
+    # individually. HLS is absent on purpose: an HLS muxer is shared by every
+    # viewer of a path, so kicking it would disconnect authorized viewers too.
+    KICKABLE_COLLECTIONS = {"webrtc": "webrtcsessions", "rtsp": "rtspsessions",
+                            "rtsps": "rtspssessions"}
+
+    async def kick_connection(self, protocol: str, connection_id: str) -> bool:
+        """Disconnect ONE gateway session, leaving other viewers untouched.
+
+        Returns True when the session was kicked or is already gone (404/400),
+        so callers can close their binding. Raises GatewayError when the
+        outcome is unknown (gateway unreachable, 5xx), so callers retry.
+        """
+        collection = self.KICKABLE_COLLECTIONS.get(protocol)
+        if collection is None:
+            raise ValueError(f"protocol {protocol!r} has no per-viewer kick")
+        if not valid_connection_id(connection_id):
+            raise ValueError("invalid gateway connection id")
+        try:
+            await self._request("POST", f"/v3/{collection}/kick/{connection_id}")
+        except GatewayError as exc:
+            if exc.status in (400, 404):
+                return True
+            raise
+        return True
+
     async def kick_readers(self, name: str) -> int:
-        """Disconnect viewers of a path (used when access is revoked)."""
+        """Disconnect ALL viewers of a path (camera deletion / credential change)."""
         kicked = 0
         for kind in ("webrtcsessions", "rtspsessions", "hlsmuxers"):
             try:
@@ -176,3 +211,7 @@ class NullGatewayClient(MediaGatewayClient):
 
     async def kick_readers(self, name: str) -> int:
         return 0
+
+    async def kick_connection(self, protocol: str, connection_id: str) -> bool:
+        # No gateway means no connection can exist; the binding may be closed.
+        return True

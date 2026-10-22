@@ -38,6 +38,17 @@ function New-SecretKey {
     return [Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_').TrimEnd('=')
 }
 
+function Set-PrivateDirectoryAcl([string]$Path) {
+    $acl = Get-Acl $Path
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
+    foreach ($who in @("NT AUTHORITY\SYSTEM", "BUILTIN\Administrators")) {
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $who, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")))
+    }
+    Set-Acl $Path $acl
+}
+
 Assert-Administrator
 Write-Host "==> 1/7 Creating directories"
 
@@ -49,18 +60,12 @@ foreach ($dir in @($InstallPath, $DataPath,
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
 }
 
-Write-Host "==> 2/7 Restricting ACLs on the key directory"
+Write-Host "==> 2/7 Restricting ACLs on secret directories"
 # The master key decrypts every camera password. Only SYSTEM and local
 # Administrators may read it; inheritance is removed so a permissive parent
 # ACL cannot widen access later.
-$acl = Get-Acl "$DataPath\keys"
-$acl.SetAccessRuleProtection($true, $false)
-$acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
-foreach ($who in @("NT AUTHORITY\SYSTEM", "BUILTIN\Administrators")) {
-    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
-        $who, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")))
-}
-Set-Acl "$DataPath\keys" $acl
+Set-PrivateDirectoryAcl "$DataPath\keys"
+Set-PrivateDirectoryAcl "$DataPath\config"
 
 Write-Host "==> 3/7 Creating the virtual environment"
 & $PythonExe -m venv "$InstallPath\venv"
@@ -79,7 +84,9 @@ $configFile = "$DataPath\config\vms.toml"
 if (Test-Path $configFile) {
     Write-Host "    Existing configuration kept: $configFile"
 } else {
-@"
+$hookSecret = New-SecretKey
+$gatewayPassword = New-SecretKey
+$configText = @"
 [vms]
 environment = "production"
 secret_key = "$(New-SecretKey)"
@@ -87,16 +94,53 @@ database_url = "$DatabaseUrl"
 data_root = "$($DataPath -replace '\\','\\')"
 api_host = "127.0.0.1"
 api_port = 8080
-trusted_hosts = ["localhost"]      # CHANGE to the real hostname
+trusted_hosts = ["localhost", "127.0.0.1"] # Add the real hostname if needed
 
 [media]
 gateway_url = "http://127.0.0.1:9997"
+gateway_user = "vms-control"
+gateway_password = "$gatewayPassword"
+auth_hook_user = "mediamtx"
+auth_hook_secret = "$hookSecret"
+auth_allowed_callers = ["127.0.0.1/32"]
 
 [recording]
 segment_seconds = 300
 retention_default_days = 30
-"@ | Set-Content -Path $configFile -Encoding UTF8
+"@
+    [System.IO.File]::WriteAllText(
+        $configFile, $configText, [System.Text.UTF8Encoding]::new($false))
     Write-Host "    Wrote $configFile (review trusted_hosts before going live)"
+}
+
+Write-Host "    Validating production and media-hook settings"
+$env:VMS_CONFIG_FILE = $configFile
+$configCheck = & "$InstallPath\venv\Scripts\python.exe" -c `
+    "from app.config import get_settings; s=get_settings(); p=s.media_auth_problems(); assert not p, '; '.join(p); assert '127.0.0.1' in s.trusted_hosts"
+if ($LASTEXITCODE -ne 0) {
+    throw "Production media-auth configuration is invalid; services were not registered."
+}
+$hookSecret = & "$InstallPath\venv\Scripts\python.exe" -c `
+    "from app.config import get_settings; print(get_settings().media_auth_hook_secret)"
+if ($LASTEXITCODE -ne 0 -or -not $hookSecret) {
+    throw "Could not read the media-hook secret from $configFile."
+}
+$gatewayConfigPath = "$DataPath\config\mediamtx.yml"
+$callbackUrl = "http://" + "mediamtx:" + $hookSecret + "@127.0.0.1:8080/internal/media/auth"
+if (-not (Test-Path $gatewayConfigPath)) {
+    $gatewayConfig = Get-Content "$SourcePath\deploy\docker\mediamtx.yml" -Raw
+    $gatewayConfig = $gatewayConfig.Replace(
+        "authHTTPAddress: http://127.0.0.1:9/media-auth-not-configured",
+        "authHTTPAddress: $callbackUrl")
+    $gatewayConfig = $gatewayConfig.Replace("apiAddress: :9997", "apiAddress: 127.0.0.1:9997")
+    [System.IO.File]::WriteAllText(
+        $gatewayConfigPath, $gatewayConfig, [System.Text.UTF8Encoding]::new($false))
+}
+$gatewayConfig = Get-Content $gatewayConfigPath -Raw
+if (-not $gatewayConfig.Contains(
+        "authHTTPAddress: $callbackUrl") -or
+    -not $gatewayConfig.Contains("apiAddress: 127.0.0.1:9997")) {
+    throw "MediaMTX config does not match the hook secret or loopback API; services were not registered."
 }
 
 Write-Host "==> 6/7 Applying database migrations"
@@ -111,6 +155,10 @@ if ($SkipServices) {
 }
 
 Write-Host "==> 7/7 Registering services"
+# The official gateway binary is installed separately from the source package.
+if (-not (Test-Path "$InstallPath\mediamtx\mediamtx.exe")) {
+    throw "Install pinned MediaMTX 1.21.2 at $InstallPath\mediamtx\mediamtx.exe before registering services."
+}
 # Delayed auto-start lets PostgreSQL finish initialising first; the explicit
 # depend= chain enforces ordering, and failure actions restart rather than
 # leaving the site without recording.

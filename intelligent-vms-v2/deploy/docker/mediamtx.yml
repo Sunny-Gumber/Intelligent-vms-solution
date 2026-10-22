@@ -1,26 +1,64 @@
 # MediaMTX configuration for Intelligent VMS.
 #
-# Paths are created dynamically by the control plane through the control API
+# Written for the pinned release in docker-compose.yml (MediaMTX v1.21.2).
+# Validate after any upgrade:  mediamtx --validate-conf=/mediamtx.yml
+#
+# Paths are created dynamically by the control plane through the Control API
 # on 9997; none are statically defined here. The control API supplies the
-# camera's credentialed RTSP URL, which is why 9997 must never be exposed
-# outside the host or the internal compose network.
+# camera's credentialed RTSP URL, which is why the Control API itself is
+# authenticated (action=api goes through the hook) and is only reachable on
+# the internal media-admin network.
+#
+# NEVER add legacy per-path credential keys (readUser, readPass, publishUser,
+# publishPass, readIPs, publishIPs) or an authInternalUsers block. Legacy keys
+# switch the server into its pre-1.6 credential model, which bypasses the
+# hook below. tests/unit/test_deploy_config.py enforces this.
 
 logLevel: info
 logDestinations: [stdout]
 
+###############################################
+# Authentication (ADR-0015)
+
+# Every read and every Control API request is decided by the control API.
+authMethod: http
+
+# Placeholder that fails closed (nothing listens on port 9). The real value,
+# which carries the hook's Basic credentials, is injected at runtime through
+# MTX_AUTHHTTPADDRESS so the secret never lives in this file.
+authHTTPAddress: http://127.0.0.1:9/media-auth-not-configured
+
+# MUST stay an explicit empty list. Before v1.20.1 the default excluded api,
+# metrics and pprof from HTTP authentication. Being explicit means a version
+# change cannot silently reopen the Control API.
+authHTTPExclude: []
+
+###############################################
+# Control API / metrics / pprof
+
 api: yes
+# Listens inside the container; docker-compose binds it to the media-admin
+# network address only (MTX_APIADDRESS) and never publishes it.
 apiAddress: :9997
 
 metrics: yes
 metricsAddress: 127.0.0.1:9998
 
-# WebRTC is the primary browser transport (low latency).
+pprof: no
+playback: no
+
+###############################################
+# Viewer protocols
+
+# WebRTC / WHEP: primary browser transport. Credentials travel in the
+# Authorization header (Bearer play token).
 webrtc: yes
 webrtcAddress: :8889
 webrtcLocalUDPAddress: :8189
 webrtcAdditionalHosts: []
 
-# HLS is the fallback for browsers or networks where WebRTC cannot establish.
+# HLS: fallback transport. Playlist and segment requests are 'read' actions.
+# HLS has no per-viewer kickable session; see ADR-0015 s9.
 hls: yes
 hlsAddress: :8888
 hlsVariant: lowLatency
@@ -28,22 +66,28 @@ hlsSegmentDuration: 1s
 hlsPartDuration: 200ms
 hlsAlwaysRemux: no
 
-# RTSP republishing for native desktop clients.
+# RTSP for native clients. Basic only: the hook validates a plaintext token,
+# so digest (which needs the server to know the secret) cannot be used.
+# Plain RTSP sends the token unencrypted; expose 8554 only on trusted
+# networks, or use RTSPS.
 rtsp: yes
 rtspAddress: :8554
 rtspTransports: [tcp]
+rtspAuthMethods: [basic]
 
 rtmp: no
 srt: no
+moq: no
 
 readTimeout: 10s
 writeTimeout: 10s
 writeQueueSize: 512
 
 pathDefaults:
-  # On-demand pulling is what keeps bandwidth bounded on large systems: the
-  # gateway only connects to a camera while somebody is watching.
+  # On-demand pulling keeps bandwidth bounded on large systems: the gateway
+  # only connects to a camera while somebody is watching.
   sourceOnDemand: yes
   sourceOnDemandStartTimeout: 10s
   sourceOnDemandCloseAfter: 10s
   rtspTransport: tcp
+  record: no

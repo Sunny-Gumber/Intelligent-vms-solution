@@ -137,6 +137,16 @@ async def startup(container: Container) -> None:
     db.wait_for_database(settings, BackoffPolicy(
         initial_s=0.5, max_s=10.0, max_attempts=settings.database_connect_retries))
 
+    media_problems = settings.media_auth_problems()
+    if media_problems:
+        if settings.environment == "production":
+            raise RuntimeError("Refusing to start: media admission is not configured: "
+                               + "; ".join(media_problems))
+        # Outside production the API still starts, but the admission hook
+        # denies every viewer and every gateway-API call until fixed.
+        log.error("startup.media_auth_unconfigured", problems=media_problems,
+                  effect="all live video and gateway administration denied")
+
     with session_scope() as session:
         seed_roles(session)
     with session_scope() as session:
@@ -316,7 +326,27 @@ def register_background_tasks(container: Container) -> None:
             with session_scope() as session:
                 await container.notifications.process_pending(session)
 
+    async def media_revocation_loop() -> None:
+        """Disconnect gateway sessions whose authorization has ended.
+
+        Covers closed/expired sessions, logout, deactivation, permission
+        changes and superseded reconnects, including those decided by
+        synchronous code paths. State is in the database, so the first cycle
+        after a restart resumes outstanding revocations.
+        """
+        while not stop.is_set():
+            if await interruptible_sleep(stop, settings.media_revocation_interval_s):
+                return
+            with session_scope() as session:
+                result = await container.sessions.connections.enforce(session)
+            if result.kicked or result.kick_failures or result.abandoned:
+                log.info("media.revocation_cycle", kicked=result.kicked,
+                         failures=result.kick_failures, abandoned=result.abandoned,
+                         reasons=result.reasons)
+            supervisor.heartbeat("media-revocation")
+
     supervisor.register("retention", retention_loop)
+    supervisor.register("media-revocation", media_revocation_loop, critical=True)
     supervisor.register("session-reaper", session_reaper, critical=True)
     supervisor.register("ptz-watchdog", ptz_watchdog, critical=True)
     supervisor.register("maintenance", maintenance_loop)

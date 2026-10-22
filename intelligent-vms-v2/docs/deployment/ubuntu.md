@@ -22,8 +22,12 @@ sudo -u postgres psql -c "ALTER USER vms WITH PASSWORD 'choose-a-strong-password
 
 ```bash
 sudo ./deploy/ubuntu/install.sh
-sudo nano /etc/intelligent-vms/vms.env     # database URL, trusted hosts
+sudo nano /etc/intelligent-vms/vms.env     # database URL and public host
 ```
+
+The installer generates the media-hook and gateway secrets and binds hook
+trust to loopback. Keep `/etc/intelligent-vms/vms.env` private; do not replace
+the callback URL without updating its hook secret and caller allowlist.
 
 Production startup **refuses to run** with a development secret, with SQLite,
 with `trusted_hosts = ["*"]`, or with LDAP enabled. That is deliberate: a
@@ -32,15 +36,18 @@ misconfiguration fails loudly at boot rather than quietly in production.
 ## 3. Media gateway (required only for live video)
 
 ```bash
-MEDIAMTX_VERSION=1.9.0
+MEDIAMTX_VERSION=1.21.2
 curl -fsSL -o /tmp/mediamtx.tar.gz \
   "https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VERSION}/mediamtx_v${MEDIAMTX_VERSION}_linux_amd64.tar.gz"
-sudo tar -xzf /tmp/mediamtx.tar.gz -C /usr/local/bin mediamtx
-sudo install -D -m 0644 deploy/docker/mediamtx.yml /etc/mediamtx/mediamtx.yml
+mkdir -p /tmp/mediamtx-extract
+tar -xzf /tmp/mediamtx.tar.gz -C /tmp/mediamtx-extract mediamtx
+sudo install -o root -g root -m 0755 /tmp/mediamtx-extract/mediamtx /usr/local/bin/mediamtx
+sudo systemctl enable intelligent-vms-mediamtx
 ```
 
-Recording, playback and export work without it; live view returns
-`503 media_gateway_unavailable` until it is running.
+The service reads `/etc/intelligent-vms/mediamtx.yml` and the restricted
+`vms.env` file. Recording, playback and export work without a running gateway;
+live view returns `503 media_gateway_unavailable`.
 
 ## 4. Storage
 
@@ -56,7 +63,11 @@ NFS remount that would otherwise surface at 3 a.m. as silent recording loss.
 ## 5. Start
 
 ```bash
+sudo -u vms env VMS_ENV_FILE=/etc/intelligent-vms/vms.env \
+  /opt/intelligent-vms/venv/bin/python -m alembic \
+  -c /opt/intelligent-vms/database/alembic.ini upgrade head
 sudo systemctl enable --now intelligent-vms-api intelligent-vms-recorder
+sudo systemctl start intelligent-vms-mediamtx
 sudo systemctl status intelligent-vms-api
 curl -s localhost:8080/healthz
 curl -s localhost:8080/readyz

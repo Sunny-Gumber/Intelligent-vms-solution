@@ -45,9 +45,11 @@ If an upgrade is interrupted:
    artefact store and run `alembic downgrade <previous>`.
 5. If the database is in an unknown state, restore the pre-upgrade backup.
 
-Startup refuses to run against a schema older than
-`REQUIRED_SCHEMA_REVISION` in `app/version.py`, so a mismatched system fails
-loudly instead of corrupting data.
+The application reports `REQUIRED_SCHEMA_REVISION` in version and backup
+metadata; it does not enforce an Alembic revision check at startup. Before
+starting a new build, run `alembic current`, apply `alembic upgrade head`, and
+confirm the resulting revision. Starting with an unapplied migration can make
+database-backed features fail.
 
 ## Rolling upgrade
 

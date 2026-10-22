@@ -17,8 +17,9 @@ BUILD_COMMIT = os.getenv("VMS_BUILD_COMMIT", "dev")
 BUILD_NUMBER = os.getenv("VMS_BUILD_NUMBER", "0")
 BUILD_DATE = os.getenv("VMS_BUILD_DATE", "unset")
 
-# Schema revision this binary expects. Startup refuses an older schema.
-REQUIRED_SCHEMA_REVISION = "0001_initial"
+# Schema revision reported to clients and used by backup/restore validation.
+# Apply Alembic upgrades separately before starting a new build.
+REQUIRED_SCHEMA_REVISION = "0002_media_connections"
 
 RELEASE_MATURITY = "alpha"
 # Flipped to True only when the release gates in

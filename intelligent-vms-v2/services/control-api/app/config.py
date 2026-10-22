@@ -14,15 +14,22 @@ Security rules enforced here:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tomllib
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# List settings arrive from environment variables as comma-separated text
+# (VMS_TRUSTED_HOSTS=a.example,b.example). pydantic-settings would otherwise
+# JSON-decode them before validation and refuse to start on plain CSV.
+CsvList = Annotated[list[str], NoDecode]
+CsvIntList = Annotated[list[int], NoDecode]
 
 
 def _default_data_root() -> Path:
@@ -47,7 +54,7 @@ def _file_defaults() -> dict[str, Any]:
     for section, body in raw.items():
         if isinstance(body, dict):
             for key, value in body.items():
-                flat[f"{section}_{key}"] = value
+                flat[key if section == "vms" else f"{section}_{key}"] = value
         else:
             flat[section] = body
     return flat
@@ -73,8 +80,8 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"  # noqa: S104 - appliance binds all interfaces by design
     api_port: int = 8080
     api_root_path: str = ""
-    cors_origins: list[str] = Field(default_factory=list)
-    trusted_hosts: list[str] = Field(default_factory=lambda: ["*"])
+    cors_origins: CsvList = Field(default_factory=list)
+    trusted_hosts: CsvList = Field(default_factory=lambda: ["*"])
 
     # ---------------- database ----------------
     # SQLite default so a developer checkout runs immediately; PostgreSQL is the
@@ -114,15 +121,15 @@ class Settings(BaseSettings):
 
     # ---------------- network guard (SSRF) ----------------
     allow_private_camera_networks: bool = True
-    camera_allow_cidrs: list[str] = Field(default_factory=list)
-    camera_deny_cidrs: list[str] = Field(
+    camera_allow_cidrs: CsvList = Field(default_factory=list)
+    camera_deny_cidrs: CsvList = Field(
         default_factory=lambda: [
             "127.0.0.0/8", "::1/128",
             "169.254.0.0/16", "fe80::/10",   # link-local / cloud metadata
             "0.0.0.0/8",
         ]
     )
-    camera_allowed_ports: list[int] = Field(
+    camera_allowed_ports: CsvIntList = Field(
         default_factory=lambda: [80, 443, 554, 322, 8000, 8080, 8443, 8554, 2020, 37777]
     )
     discovery_max_hosts: int = 1024
@@ -140,6 +147,27 @@ class Settings(BaseSettings):
     max_live_sessions: int = 256
     max_live_sessions_per_user: int = 32
     live_session_ttl_s: int = 300
+    # ---------------- media gateway admission (ADR-0015) ----------------
+    # MediaMTX calls POST /internal/media/auth for every read and every
+    # gateway-API request. The caller must present HTTP Basic credentials
+    # (media_auth_hook_user / media_auth_hook_secret) AND connect from an
+    # address inside media_auth_allowed_callers. There is no permissive
+    # default: if either is missing the hook denies everything.
+    media_auth_hook_user: str = "mediamtx"
+    media_auth_hook_secret: str | None = None
+    media_auth_allowed_callers: CsvList = Field(default_factory=list)
+    # Bounded per-session gateway connection bindings; the oldest binding is
+    # superseded (and kicked) when a session reconnects beyond this number.
+    media_connection_max_per_session: int = 4
+    media_revocation_interval_s: float = 5.0
+    media_revocation_batch: int = 200
+    media_revocation_kick_concurrency: int = 16
+    media_revocation_kick_timeout_s: float = 5.5
+    media_kick_max_attempts: int = 5
+    media_connection_retention_s: int = 24 * 3600
+    # Peers whose X-Forwarded-For header uvicorn will honour. Defaults to
+    # loopback only; "*" lets any client spoof its source address.
+    forwarded_allow_ips: str = "127.0.0.1"
 
     # ---------------- recording ----------------
     ffmpeg_path: str = "ffmpeg"
@@ -186,7 +214,7 @@ class Settings(BaseSettings):
     analytics_enabled: bool = True
     analytics_queue_max: int = 5000
     analytics_model_dir: Path | None = None
-    analytics_providers: list[str] = Field(default_factory=lambda: ["CPUExecutionProvider"])
+    analytics_providers: CsvList = Field(default_factory=lambda: ["CPUExecutionProvider"])
     analytics_max_fps_per_camera: float = 2.0
     face_recognition_enabled: bool = False
     anpr_enabled: bool = False
@@ -217,18 +245,25 @@ class Settings(BaseSettings):
 
     # ---------------- validators ----------------
     @field_validator("cors_origins", "trusted_hosts", "camera_allow_cidrs",
-                     "camera_deny_cidrs", "analytics_providers", mode="before")
+                     "camera_deny_cidrs", "analytics_providers",
+                     "media_auth_allowed_callers", mode="before")
     @classmethod
     def _split_csv(cls, v: Any) -> Any:
         if isinstance(v, str):
-            return [p.strip() for p in v.split(",") if p.strip()]
+            text = v.strip()
+            if text.startswith("["):
+                return json.loads(text)
+            return [p.strip() for p in text.split(",") if p.strip()]
         return v
 
     @field_validator("camera_allowed_ports", mode="before")
     @classmethod
     def _split_ports(cls, v: Any) -> Any:
         if isinstance(v, str):
-            return [int(p) for p in v.split(",") if p.strip()]
+            text = v.strip()
+            if text.startswith("["):
+                return json.loads(text)
+            return [int(p) for p in text.split(",") if p.strip()]
         return v
 
     @model_validator(mode="after")
@@ -254,6 +289,46 @@ class Settings(BaseSettings):
             if problems:
                 raise ValueError("Refusing to start in production mode: " + "; ".join(problems))
         return self
+
+    # ---------------- media admission validation ----------------
+    def media_auth_problems(self) -> list[str]:
+        """Return reasons the media admission hook cannot be trusted.
+
+        An empty list means the hook may admit. Any problem makes the hook deny
+        every request (fail closed); production startup refuses to continue.
+        Kept out of the model validator so non-media tooling (migrations, CI
+        contract generation) can still construct Settings.
+        """
+        import ipaddress
+
+        problems: list[str] = []
+        secret = self.media_auth_hook_secret or ""
+        if len(secret) < 32:
+            problems.append("VMS_MEDIA_AUTH_HOOK_SECRET must be set (>= 32 characters)")
+        if not self.media_auth_hook_user:
+            problems.append("VMS_MEDIA_AUTH_HOOK_USER must not be empty")
+        if not self.media_auth_allowed_callers:
+            problems.append("VMS_MEDIA_AUTH_ALLOWED_CALLERS must list the gateway address(es)")
+        for entry in self.media_auth_allowed_callers:
+            try:
+                network = ipaddress.ip_network(entry, strict=False)
+            except ValueError:
+                problems.append(f"VMS_MEDIA_AUTH_ALLOWED_CALLERS entry {entry!r} is not a CIDR")
+                continue
+            if network.prefixlen == 0:
+                problems.append("VMS_MEDIA_AUTH_ALLOWED_CALLERS must not contain a /0 network")
+        if not self.media_gateway_user or len(self.media_gateway_password or "") < 16:
+            problems.append("VMS_MEDIA_GATEWAY_USER and VMS_MEDIA_GATEWAY_PASSWORD "
+                            "(>= 16 characters) are required for gateway administration")
+        if self.media_connection_max_per_session < 1:
+            problems.append("VMS_MEDIA_CONNECTION_MAX_PER_SESSION must be >= 1")
+        if self.media_revocation_batch < 1:
+            problems.append("VMS_MEDIA_REVOCATION_BATCH must be >= 1")
+        if self.media_revocation_kick_concurrency < 1:
+            problems.append("VMS_MEDIA_REVOCATION_KICK_CONCURRENCY must be >= 1")
+        if self.media_revocation_kick_timeout_s <= 0:
+            problems.append("VMS_MEDIA_REVOCATION_KICK_TIMEOUT_S must be > 0")
+        return problems
 
     # ---------------- derived paths ----------------
     @property

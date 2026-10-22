@@ -1,0 +1,1082 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.7.0 -- /home/claude/work/intelligent-vms-v2/../../venv/bin/python
+rootdir: /home/claude/work/intelligent-vms-v2
+configfile: pytest.ini
+plugins: asyncio-1.4.0, anyio-4.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 94 items
+
+tests/unit/test_media_gateway_admission.py::test_valid_webrtc_bearer_session_is_admitted_and_bound PASSED [  1%]
+tests/unit/test_media_gateway_admission.py::test_valid_rtsp_basic_session_is_admitted PASSED [  2%]
+tests/unit/test_media_gateway_admission.py::test_valid_hls_read_is_admitted_but_not_bound PASSED [  3%]
+tests/unit/test_media_gateway_admission.py::test_missing_malformed_or_wrong_token_is_denied[change0] PASSED [  4%]
+tests/unit/test_media_gateway_admission.py::test_missing_malformed_or_wrong_token_is_denied[change1] PASSED [  5%]
+tests/unit/test_media_gateway_admission.py::test_missing_malformed_or_wrong_token_is_denied[change2] PASSED [  6%]
+tests/unit/test_media_gateway_admission.py::test_valid_token_for_another_camera_path_is_denied PASSED [  7%]
+tests/unit/test_media_gateway_admission.py::test_expired_session_is_denied PASSED [  8%]
+tests/unit/test_media_gateway_admission.py::test_closed_session_is_denied PASSED [  9%]
+tests/unit/test_media_gateway_admission.py::test_disabled_account_is_denied PASSED [ 10%]
+tests/unit/test_media_gateway_admission.py::test_locked_account_is_denied PASSED [ 11%]
+tests/unit/test_media_gateway_admission.py::test_permission_removed_after_issue_is_denied PASSED [ 12%]
+tests/unit/test_media_gateway_admission.py::test_disabled_camera_is_denied PASSED [ 13%]
+tests/unit/test_media_gateway_admission.py::test_basic_user_must_match_the_session PASSED [ 14%]
+tests/unit/test_media_gateway_admission.py::test_rest_access_token_is_not_media_authority PASSED [ 15%]
+tests/unit/test_media_gateway_admission.py::test_play_token_is_not_rest_authority PASSED [ 17%]
+tests/unit/test_media_gateway_admission.py::test_credentials_in_url_query_are_rejected_even_when_valid[token={tok}] PASSED [ 18%]
+tests/unit/test_media_gateway_admission.py::test_credentials_in_url_query_are_rejected_even_when_valid[pass={tok}] PASSED [ 19%]
+tests/unit/test_media_gateway_admission.py::test_credentials_in_url_query_are_rejected_even_when_valid[jwt=abc] PASSED [ 20%]
+tests/unit/test_media_gateway_admission.py::test_credentials_in_url_query_are_rejected_even_when_valid[a=1&Token=x] PASSED [ 21%]
+tests/unit/test_media_gateway_admission.py::test_harmless_query_parameters_are_allowed PASSED [ 22%]
+tests/unit/test_media_gateway_admission.py::test_kickable_protocol_without_connection_id_is_denied PASSED [ 23%]
+tests/unit/test_media_gateway_admission.py::test_caller_without_basic_credentials_is_denied PASSED [ 24%]
+tests/unit/test_media_gateway_admission.py::test_caller_with_wrong_hook_secret_is_denied PASSED [ 25%]
+tests/unit/test_media_gateway_admission.py::test_caller_outside_allowed_network_is_denied_even_with_secret PASSED [ 26%]
+tests/unit/test_media_gateway_admission.py::test_forwarded_header_and_payload_ip_do_not_establish_trust PASSED [ 27%]
+tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change0] PASSED [ 28%]
+tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change1] PASSED [ 29%]
+tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change2] PASSED [ 30%]
+tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change3] PASSED [ 31%]
+tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change4] PASSED [ 32%]
+tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change5] PASSED [ 34%]
+tests/unit/test_media_gateway_admission.py::test_shipped_defaults_are_not_trusted PASSED [ 35%]
+tests/unit/test_media_gateway_admission.py::test_control_plane_api_action_with_service_credentials_is_admitted PASSED [ 36%]
+tests/unit/test_media_gateway_admission.py::test_api_action_without_service_credentials_is_denied[-] PASSED [ 37%]
+tests/unit/test_media_gateway_admission.py::test_api_action_without_service_credentials_is_denied[vms-control-wrong] PASSED [ 38%]
+tests/unit/test_media_gateway_admission.py::test_api_action_without_service_credentials_is_denied[admin-gateway-admin-password-0123] PASSED [ 39%]
+tests/unit/test_media_gateway_admission.py::test_viewer_play_token_cannot_administer_the_gateway PASSED [ 40%]
+tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[publish] PASSED [ 41%]
+tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[playback] PASSED [ 42%]
+tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[metrics] PASSED [ 43%]
+tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[pprof] PASSED [ 44%]
+tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[other] PASSED [ 45%]
+tests/unit/test_media_gateway_admission.py::test_unexposed_protocol_is_denied PASSED [ 46%]
+tests/unit/test_media_gateway_admission.py::test_ensure_path_refuses_legacy_per_path_credentials PASSED [ 47%]
+tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[] PASSED [ 48%]
+tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[not json] PASSED [ 50%]
+tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[[]] PASSED [ 51%]
+tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[{"action": 5}] PASSED [ 52%]
+tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[{"token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}] PASSED [ 53%]
+tests/unit/test_media_gateway_admission.py::test_missing_application_container_denies PASSED [ 54%]
+tests/unit/test_media_gateway_admission.py::test_broker_failure_denies_and_never_logs_secret_text PASSED [ 55%]
+tests/unit/test_media_gateway_admission.py::test_denials_never_log_presented_tokens_or_queries PASSED [ 56%]
+tests/unit/test_media_gateway_admission.py::test_denied_request_does_not_persist_a_binding PASSED [ 57%]
+tests/unit/test_media_gateway_admission.py::test_closing_one_session_kicks_only_that_viewer PASSED [ 58%]
+tests/unit/test_media_gateway_admission.py::test_logout_revocation_from_sync_code_is_enforced_by_cycle PASSED [ 59%]
+tests/unit/test_media_gateway_admission.py::test_permission_change_kicks_and_closes_the_session PASSED [ 60%]
+tests/unit/test_media_gateway_admission.py::test_permission_change_is_seen_even_through_a_stale_session PASSED [ 61%]
+tests/unit/test_media_gateway_admission.py::test_account_disablement_kicks_existing_viewer PASSED [ 62%]
+tests/unit/test_media_gateway_admission.py::test_session_expiry_kicks_established_connection PASSED [ 63%]
+tests/unit/test_media_gateway_admission.py::test_revocation_survives_control_api_restart PASSED [ 64%]
+tests/unit/test_media_gateway_admission.py::test_failed_kicks_are_retried_then_abandoned_loudly PASSED [ 65%]
+tests/unit/test_media_gateway_admission.py::test_reconnects_beyond_the_bound_supersede_the_oldest PASSED [ 67%]
+tests/unit/test_media_gateway_admission.py::test_reauthentication_of_a_revoked_connection_is_denied PASSED [ 68%]
+tests/unit/test_media_gateway_admission.py::test_connection_id_cannot_be_rebound_to_another_session PASSED [ 69%]
+tests/unit/test_media_gateway_admission.py::test_closed_bindings_are_purged_after_retention PASSED [ 70%]
+tests/unit/test_media_gateway_admission.py::test_kick_targets_one_session_with_service_credentials PASSED [ 71%]
+tests/unit/test_media_gateway_admission.py::test_kick_of_vanished_session_counts_as_done PASSED [ 72%]
+tests/unit/test_media_gateway_admission.py::test_kick_when_gateway_errors_is_retryable PASSED [ 73%]
+tests/unit/test_media_gateway_admission.py::test_kick_rejects_unkickable_protocols_and_bad_ids[hls-x] PASSED [ 74%]
+tests/unit/test_media_gateway_admission.py::test_kick_rejects_unkickable_protocols_and_bad_ids[webrtc-../paths] PASSED [ 75%]
+tests/unit/test_media_gateway_admission.py::test_kick_rejects_unkickable_protocols_and_bad_ids[webrtc-] PASSED [ 76%]
+tests/unit/test_deploy_config.py::test_gateway_delegates_every_action_to_the_hook PASSED [ 77%]
+tests/unit/test_deploy_config.py::test_gateway_file_holds_no_hook_secret_and_fails_closed PASSED [ 78%]
+tests/unit/test_deploy_config.py::test_gateway_has_no_legacy_credential_keys PASSED [ 79%]
+tests/unit/test_deploy_config.py::test_gateway_admin_surfaces PASSED     [ 80%]
+tests/unit/test_deploy_config.py::test_gateway_image_is_pinned PASSED    [ 81%]
+tests/unit/test_deploy_config.py::test_admin_ports_are_never_published PASSED [ 82%]
+tests/unit/test_deploy_config.py::test_hook_callback_matches_listener_route_and_trust PASSED [ 84%]
+tests/unit/test_deploy_config.py::test_admin_network_is_internal PASSED  [ 85%]
+tests/unit/test_deploy_config.py::test_hook_route_is_registered_where_the_gateway_calls_it PASSED [ 86%]
+tests/unit/test_security_defaults.py::test_shipped_argon2_defaults_follow_owasp PASSED [ 87%]
+tests/unit/test_security_defaults.py::test_production_requires_strong_secret PASSED [ 88%]
+tests/unit/test_security_defaults.py::test_production_rejects_sqlite PASSED [ 89%]
+tests/unit/test_security_defaults.py::test_production_rejects_wildcard_trusted_hosts PASSED [ 90%]
+tests/unit/test_security_defaults.py::test_production_rejects_weak_password_hashing PASSED [ 91%]
+tests/unit/test_security_defaults.py::test_production_rejects_unimplemented_ldap PASSED [ 92%]
+tests/unit/test_security_defaults.py::test_development_defaults_are_permissive_but_sqlite_only_locally PASSED [ 93%]
+tests/gateway/test_mediamtx_gateway.py::test_shipped_config_validates_on_pinned_binary SKIPPED [ 94%]
+tests/gateway/test_mediamtx_gateway.py::test_control_api_requires_service_credentials SKIPPED [ 95%]
+tests/gateway/test_mediamtx_gateway.py::test_path_creation_and_inspection_through_authorized_api SKIPPED [ 96%]
+tests/gateway/test_mediamtx_gateway.py::test_rtsp_reads_require_a_matching_session SKIPPED [ 97%]
+tests/gateway/test_mediamtx_gateway.py::test_hls_accepts_header_credentials_and_refuses_query_tokens SKIPPED [ 98%]
+tests/gateway/test_mediamtx_gateway.py::test_revoking_one_viewer_leaves_the_other_playing SKIPPED [100%]
+
+=============================== warnings summary ===============================
+tests/unit/test_media_gateway_admission.py::test_valid_webrtc_bearer_session_is_admitted_and_bound
+  /home/claude/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+==================================== PASSES ====================================
+____________ test_valid_webrtc_bearer_session_is_admitted_and_bound ____________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "8e90d34218294ac5a5a854e1fa6b6485", "session_id": "c89d310002414f7d96f18de730359a46", "role": "main", "reason": "only stream available", "user_id": "0b5a9c81bfa54e81b24b7e70e2f44157", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.292361Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_8e90d34218294ac5a5a854e1fa6b6485_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": "c89d310002414f7d96f18de730359a46", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.323321Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "8e90d34218294ac5a5a854e1fa6b6485", "session_id": "c89d310002414f7d96f18de730359a46", "role": "main", "reason": "only stream available", "user_id": "0b5a9c81bfa54e81b24b7e70e2f44157", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.292361Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_8e90d34218294ac5a5a854e1fa6b6485_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": "c89d310002414f7d96f18de730359a46", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.323321Z", "correlation_id": "-"}
+__________________ test_valid_rtsp_basic_session_is_admitted ___________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "8af6070712a048979ed11a46e81ede2f", "session_id": "b8eba1c076e249ebafbc36415a443fe6", "role": "main", "reason": "only stream available", "user_id": "672744cb8ff847069edb4b3a7ec46bdd", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.437423Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "rtsp", "path": "cam_8af6070712a048979ed11a46e81ede2f_main", "connection_id": "rtsp-1", "viewer_ip": "10.0.0.50", "live_session_id": "b8eba1c076e249ebafbc36415a443fe6", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.465517Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "8af6070712a048979ed11a46e81ede2f", "session_id": "b8eba1c076e249ebafbc36415a443fe6", "role": "main", "reason": "only stream available", "user_id": "672744cb8ff847069edb4b3a7ec46bdd", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.437423Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "rtsp", "path": "cam_8af6070712a048979ed11a46e81ede2f_main", "connection_id": "rtsp-1", "viewer_ip": "10.0.0.50", "live_session_id": "b8eba1c076e249ebafbc36415a443fe6", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.465517Z", "correlation_id": "-"}
+________________ test_valid_hls_read_is_admitted_but_not_bound _________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "408cfbe954f94d6cbecf9eab915a8a8c", "session_id": "93dfa2c7a18f40f1b4c42d5b153443c3", "role": "main", "reason": "only stream available", "user_id": "fa16fc3f36ad4eb19dd8c915c2f7688d", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.555586Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": false, "action": "read", "protocol": "hls", "path": "cam_408cfbe954f94d6cbecf9eab915a8a8c_main", "connection_id": "", "viewer_ip": "10.0.0.50", "live_session_id": "93dfa2c7a18f40f1b4c42d5b153443c3", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.573702Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "408cfbe954f94d6cbecf9eab915a8a8c", "session_id": "93dfa2c7a18f40f1b4c42d5b153443c3", "role": "main", "reason": "only stream available", "user_id": "fa16fc3f36ad4eb19dd8c915c2f7688d", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.555586Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": false, "action": "read", "protocol": "hls", "path": "cam_408cfbe954f94d6cbecf9eab915a8a8c_main", "connection_id": "", "viewer_ip": "10.0.0.50", "live_session_id": "93dfa2c7a18f40f1b4c42d5b153443c3", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.573702Z", "correlation_id": "-"}
+___________ test_missing_malformed_or_wrong_token_is_denied[change0] ___________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "b5014ec5c0a84a3cac6ae483b5aad747", "session_id": "d00df7ed9eea47dfa9223ffb725d230b", "role": "main", "reason": "only stream available", "user_id": "65013818dc4d47808b438a99ba8568b9", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.663387Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"action": "read", "protocol": "webrtc", "path": "cam_b5014ec5c0a84a3cac6ae483b5aad747_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.challenge", "service": "control-api", "level": "debug", "timestamp": "2026-10-22T04:39:00.671898Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "b5014ec5c0a84a3cac6ae483b5aad747", "session_id": "d00df7ed9eea47dfa9223ffb725d230b", "role": "main", "reason": "only stream available", "user_id": "65013818dc4d47808b438a99ba8568b9", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.663387Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+DEBUG    media.auth_hook:media_auth.py:68 {"action": "read", "protocol": "webrtc", "path": "cam_b5014ec5c0a84a3cac6ae483b5aad747_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.challenge", "service": "control-api", "level": "debug", "timestamp": "2026-10-22T04:39:00.671898Z", "correlation_id": "-"}
+___________ test_missing_malformed_or_wrong_token_is_denied[change1] ___________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "f32448df1a8744aa80c5aa7b45564a56", "session_id": "a26ce0d077554f298cf748c2d91f9c1e", "role": "main", "reason": "only stream available", "user_id": "3133ce11462748e4a653fc7a932b5ef9", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.764316Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_f32448df1a8744aa80c5aa7b45564a56_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:00.779746Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "f32448df1a8744aa80c5aa7b45564a56", "session_id": "a26ce0d077554f298cf748c2d91f9c1e", "role": "main", "reason": "only stream available", "user_id": "3133ce11462748e4a653fc7a932b5ef9", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:00.764316Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_f32448df1a8744aa80c5aa7b45564a56_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:00.779746Z", "correlation_id": "-"}
+___________ test_missing_malformed_or_wrong_token_is_denied[change2] ___________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "178ec7790823403ba41ac85d0a861848", "session_id": "e96f617185d94709883a1448c89dd0d8", "role": "main", "reason": "only stream available", "user_id": "cf1feb32376c457b989c14b1e0a2b9be", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.000889Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "malformed_request", "action": "read", "protocol": "webrtc", "path": "cam_178ec7790823403ba41ac85d0a861848_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.010479Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "178ec7790823403ba41ac85d0a861848", "session_id": "e96f617185d94709883a1448c89dd0d8", "role": "main", "reason": "only stream available", "user_id": "cf1feb32376c457b989c14b1e0a2b9be", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.000889Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "malformed_request", "action": "read", "protocol": "webrtc", "path": "cam_178ec7790823403ba41ac85d0a861848_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.010479Z", "correlation_id": "-"}
+______________ test_valid_token_for_another_camera_path_is_denied ______________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "6d7bc5adca6e4b0c93bb04b5596897da", "session_id": "f0198f91484543ea8d7bb5a025eb9808", "role": "main", "reason": "only stream available", "user_id": "80ab85415ebc4013aab217ddf2ebdf50", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.104086Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_aff6800ac3dd4f16bcc31c117236d9c5_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.114306Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "6d7bc5adca6e4b0c93bb04b5596897da", "session_id": "f0198f91484543ea8d7bb5a025eb9808", "role": "main", "reason": "only stream available", "user_id": "80ab85415ebc4013aab217ddf2ebdf50", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.104086Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_aff6800ac3dd4f16bcc31c117236d9c5_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.114306Z", "correlation_id": "-"}
+________________________ test_expired_session_is_denied ________________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "4c2526248aad45c7bbb6963d43acc620", "session_id": "8ee762cf65d748eba584e8539d88d43f", "role": "main", "reason": "only stream available", "user_id": "b9c9eed197de4964aa644d869d125a68", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.200845Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_4c2526248aad45c7bbb6963d43acc620_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.220095Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "4c2526248aad45c7bbb6963d43acc620", "session_id": "8ee762cf65d748eba584e8539d88d43f", "role": "main", "reason": "only stream available", "user_id": "b9c9eed197de4964aa644d869d125a68", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.200845Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_4c2526248aad45c7bbb6963d43acc620_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.220095Z", "correlation_id": "-"}
+________________________ test_closed_session_is_denied _________________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "455e6dbbc51a41578c6b3c8422bcc9b8", "session_id": "b5f3a81efcb54a00a96a6b12977b9399", "role": "main", "reason": "only stream available", "user_id": "a2fb276c4d9a4c1daa592b41c8e87970", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.311060Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"session_id": "b5f3a81efcb54a00a96a6b12977b9399", "reason": "client_closed", "event": "live.session_closed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.323865Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_455e6dbbc51a41578c6b3c8422bcc9b8_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.333537Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "455e6dbbc51a41578c6b3c8422bcc9b8", "session_id": "b5f3a81efcb54a00a96a6b12977b9399", "role": "main", "reason": "only stream available", "user_id": "a2fb276c4d9a4c1daa592b41c8e87970", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.311060Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:194 {"session_id": "b5f3a81efcb54a00a96a6b12977b9399", "reason": "client_closed", "event": "live.session_closed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.323865Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_455e6dbbc51a41578c6b3c8422bcc9b8_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.333537Z", "correlation_id": "-"}
+_______________________ test_disabled_account_is_denied ________________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "2c3cbf8d09f146fdb5d4ca4281e9f9b4", "session_id": "59da5fbc77714512af5b0bab1ec134f8", "role": "main", "reason": "only stream available", "user_id": "a944210099a14544a961b1d0630b9b66", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.421156Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "user_inactive", "action": "read", "protocol": "webrtc", "path": "cam_2c3cbf8d09f146fdb5d4ca4281e9f9b4_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.441590Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "2c3cbf8d09f146fdb5d4ca4281e9f9b4", "session_id": "59da5fbc77714512af5b0bab1ec134f8", "role": "main", "reason": "only stream available", "user_id": "a944210099a14544a961b1d0630b9b66", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.421156Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "user_inactive", "action": "read", "protocol": "webrtc", "path": "cam_2c3cbf8d09f146fdb5d4ca4281e9f9b4_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.441590Z", "correlation_id": "-"}
+________________________ test_locked_account_is_denied _________________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "0b058b745ec6495bb62a33ce812ba3fd", "session_id": "04342734be9742bab65bf899a0af13be", "role": "main", "reason": "only stream available", "user_id": "5b83ea9f14b94e3a9f6441792c27b139", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.530625Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "permission_revoked", "action": "read", "protocol": "webrtc", "path": "cam_0b058b745ec6495bb62a33ce812ba3fd_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.556229Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "0b058b745ec6495bb62a33ce812ba3fd", "session_id": "04342734be9742bab65bf899a0af13be", "role": "main", "reason": "only stream available", "user_id": "5b83ea9f14b94e3a9f6441792c27b139", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.530625Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "permission_revoked", "action": "read", "protocol": "webrtc", "path": "cam_0b058b745ec6495bb62a33ce812ba3fd_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.556229Z", "correlation_id": "-"}
+________________ test_permission_removed_after_issue_is_denied _________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "193d60cc34d54264937a20b15bdb4ea8", "session_id": "65a04eff6f5e430a97fd9254c40e6baf", "role": "main", "reason": "only stream available", "user_id": "8b860280ce4448bb8aa10cbbfae9e305", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.663234Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "permission_revoked", "action": "read", "protocol": "webrtc", "path": "cam_193d60cc34d54264937a20b15bdb4ea8_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.690823Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "193d60cc34d54264937a20b15bdb4ea8", "session_id": "65a04eff6f5e430a97fd9254c40e6baf", "role": "main", "reason": "only stream available", "user_id": "8b860280ce4448bb8aa10cbbfae9e305", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.663234Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "permission_revoked", "action": "read", "protocol": "webrtc", "path": "cam_193d60cc34d54264937a20b15bdb4ea8_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.690823Z", "correlation_id": "-"}
+________________________ test_disabled_camera_is_denied ________________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "a2162bdabcfd451ba202f6b1c9312679", "session_id": "1abb0fb712014c61bc8ed22c66fcae0b", "role": "main", "reason": "only stream available", "user_id": "cff7b1e0069c4845b36bf598693a7a86", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.784852Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "camera_unavailable", "action": "read", "protocol": "webrtc", "path": "cam_a2162bdabcfd451ba202f6b1c9312679_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.808939Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "a2162bdabcfd451ba202f6b1c9312679", "session_id": "1abb0fb712014c61bc8ed22c66fcae0b", "role": "main", "reason": "only stream available", "user_id": "cff7b1e0069c4845b36bf598693a7a86", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.784852Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "camera_unavailable", "action": "read", "protocol": "webrtc", "path": "cam_a2162bdabcfd451ba202f6b1c9312679_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.808939Z", "correlation_id": "-"}
+____________________ test_basic_user_must_match_the_session ____________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "ca6f52f817244153a9e07fcb8e6ea445", "session_id": "92688dcf95ed404fb36fe05205daa0a8", "role": "main", "reason": "only stream available", "user_id": "b37247a9b213401f8dcdf7471de122b4", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.898304Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "session_user_mismatch", "action": "read", "protocol": "rtsp", "path": "cam_ca6f52f817244153a9e07fcb8e6ea445_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.908843Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "ca6f52f817244153a9e07fcb8e6ea445", "session_id": "92688dcf95ed404fb36fe05205daa0a8", "role": "main", "reason": "only stream available", "user_id": "b37247a9b213401f8dcdf7471de122b4", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:01.898304Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "session_user_mismatch", "action": "read", "protocol": "rtsp", "path": "cam_ca6f52f817244153a9e07fcb8e6ea445_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:01.908843Z", "correlation_id": "-"}
+________________ test_rest_access_token_is_not_media_authority _________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "7464f2a9c77b4c87bae7236c95961666", "session_id": "9dac39f6dc014776b5dd6044c3892583", "role": "main", "reason": "only stream available", "user_id": "4b35274059334c77b3e233bebbae87c6", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.028846Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "malformed_request", "action": "read", "protocol": "webrtc", "path": "cam_7464f2a9c77b4c87bae7236c95961666_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.038487Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "7464f2a9c77b4c87bae7236c95961666", "session_id": "9dac39f6dc014776b5dd6044c3892583", "role": "main", "reason": "only stream available", "user_id": "4b35274059334c77b3e233bebbae87c6", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.028846Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "malformed_request", "action": "read", "protocol": "webrtc", "path": "cam_7464f2a9c77b4c87bae7236c95961666_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.038487Z", "correlation_id": "-"}
+____________________ test_play_token_is_not_rest_authority _____________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "ba5c22202ff14c6eba992e903be63e1c", "session_id": "7b74650a91f5487ab2bd65f37d292de1", "role": "main", "reason": "only stream available", "user_id": "e4f1569f03f845538d3517f80fbfd5db", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.136046Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "ba5c22202ff14c6eba992e903be63e1c", "session_id": "7b74650a91f5487ab2bd65f37d292de1", "role": "main", "reason": "only stream available", "user_id": "e4f1569f03f845538d3517f80fbfd5db", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.136046Z", "correlation_id": "-"}
+___ test_credentials_in_url_query_are_rejected_even_when_valid[token={tok}] ____
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "7e9269d8a1134a9589c6c468e5a88003", "session_id": "4c17df6b37364a43a468b942353b6a6c", "role": "main", "reason": "only stream available", "user_id": "db5ff42fd38c4a1baa8b2c453efd108e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.401797Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_7e9269d8a1134a9589c6c468e5a88003_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.414885Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "7e9269d8a1134a9589c6c468e5a88003", "session_id": "4c17df6b37364a43a468b942353b6a6c", "role": "main", "reason": "only stream available", "user_id": "db5ff42fd38c4a1baa8b2c453efd108e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.401797Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_7e9269d8a1134a9589c6c468e5a88003_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.414885Z", "correlation_id": "-"}
+____ test_credentials_in_url_query_are_rejected_even_when_valid[pass={tok}] ____
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "7e4218193d994a07b7140410b2fb9ff2", "session_id": "8c0832ea04a845368a0a44af322b9043", "role": "main", "reason": "only stream available", "user_id": "0e44e20b1a224710addba129aa1da646", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.502302Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_7e4218193d994a07b7140410b2fb9ff2_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.511066Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "7e4218193d994a07b7140410b2fb9ff2", "session_id": "8c0832ea04a845368a0a44af322b9043", "role": "main", "reason": "only stream available", "user_id": "0e44e20b1a224710addba129aa1da646", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.502302Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_7e4218193d994a07b7140410b2fb9ff2_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.511066Z", "correlation_id": "-"}
+_____ test_credentials_in_url_query_are_rejected_even_when_valid[jwt=abc] ______
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "7a25f90033a34b13a605321eec7a12e6", "session_id": "8c7d1a123d734e3080e170c19736ab70", "role": "main", "reason": "only stream available", "user_id": "98d5ddd30e654befad37d1e523c23b56", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.597461Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_7a25f90033a34b13a605321eec7a12e6_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.606870Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "7a25f90033a34b13a605321eec7a12e6", "session_id": "8c7d1a123d734e3080e170c19736ab70", "role": "main", "reason": "only stream available", "user_id": "98d5ddd30e654befad37d1e523c23b56", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.597461Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_7a25f90033a34b13a605321eec7a12e6_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.606870Z", "correlation_id": "-"}
+___ test_credentials_in_url_query_are_rejected_even_when_valid[a=1&Token=x] ____
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "dc6051ea380f4ccaa73d5432503c7159", "session_id": "ca78d9ad78464b83935e681ac02d844e", "role": "main", "reason": "only stream available", "user_id": "79a553838afd43e58fe7cdbcbb5f9219", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.714133Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_dc6051ea380f4ccaa73d5432503c7159_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.722855Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "dc6051ea380f4ccaa73d5432503c7159", "session_id": "ca78d9ad78464b83935e681ac02d844e", "role": "main", "reason": "only stream available", "user_id": "79a553838afd43e58fe7cdbcbb5f9219", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.714133Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_dc6051ea380f4ccaa73d5432503c7159_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.722855Z", "correlation_id": "-"}
+__________________ test_harmless_query_parameters_are_allowed __________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "3455f82391d24dc981b358d93ba0aaec", "session_id": "588304fb814341a38d5ec4da9b201b54", "role": "main", "reason": "only stream available", "user_id": "08d0902b81974a8ca03258855acdd80a", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.821302Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_3455f82391d24dc981b358d93ba0aaec_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": "588304fb814341a38d5ec4da9b201b54", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.851919Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "3455f82391d24dc981b358d93ba0aaec", "session_id": "588304fb814341a38d5ec4da9b201b54", "role": "main", "reason": "only stream available", "user_id": "08d0902b81974a8ca03258855acdd80a", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.821302Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_3455f82391d24dc981b358d93ba0aaec_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": "588304fb814341a38d5ec4da9b201b54", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.851919Z", "correlation_id": "-"}
+____________ test_kickable_protocol_without_connection_id_is_denied ____________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "31dcd869ce07453898b1c24fff5bfb27", "session_id": "abf757aab6c349d5ac960ff341ae8729", "role": "main", "reason": "only stream available", "user_id": "c452b5641e4c47bab2351f4b5f6c63f1", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.950351Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "no_connection_id", "action": "read", "protocol": "webrtc", "path": "cam_31dcd869ce07453898b1c24fff5bfb27_main", "connection_id": "", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.969451Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "31dcd869ce07453898b1c24fff5bfb27", "session_id": "abf757aab6c349d5ac960ff341ae8729", "role": "main", "reason": "only stream available", "user_id": "c452b5641e4c47bab2351f4b5f6c63f1", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:02.950351Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "no_connection_id", "action": "read", "protocol": "webrtc", "path": "cam_31dcd869ce07453898b1c24fff5bfb27_main", "connection_id": "", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:02.969451Z", "correlation_id": "-"}
+_______________ test_caller_without_basic_credentials_is_denied ________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "9f1c780bdeeb4c12be6aa15bf58b35f0", "session_id": "5d6bd59e859f406ca94dfe69487f8ac4", "role": "main", "reason": "only stream available", "user_id": "ebb965f2c02e4633a54725ab4b354e53", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.056832Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.066001Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "9f1c780bdeeb4c12be6aa15bf58b35f0", "session_id": "5d6bd59e859f406ca94dfe69487f8ac4", "role": "main", "reason": "only stream available", "user_id": "ebb965f2c02e4633a54725ab4b354e53", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.056832Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.066001Z", "correlation_id": "-"}
+_________________ test_caller_with_wrong_hook_secret_is_denied _________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "f2f2b12c4a7d4e3b83d8a2bbaf059577", "session_id": "e0d3c566b3fe43ddaeebe5d6d06242fa", "role": "main", "reason": "only stream available", "user_id": "08fd5f4f9ff642d393a64ab0ca586e7e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.155406Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.163481Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "f2f2b12c4a7d4e3b83d8a2bbaf059577", "session_id": "e0d3c566b3fe43ddaeebe5d6d06242fa", "role": "main", "reason": "only stream available", "user_id": "08fd5f4f9ff642d393a64ab0ca586e7e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.155406Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.163481Z", "correlation_id": "-"}
+________ test_caller_outside_allowed_network_is_denied_even_with_secret ________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "f6ec626e377d4448ae8dae041f3e9038", "session_id": "82d175c4e2574a29b41d100aed12d1c9", "role": "main", "reason": "only stream available", "user_id": "39df9ff0db044cedb27943fb160c55a4", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.251807Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.261372Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "f6ec626e377d4448ae8dae041f3e9038", "session_id": "82d175c4e2574a29b41d100aed12d1c9", "role": "main", "reason": "only stream available", "user_id": "39df9ff0db044cedb27943fb160c55a4", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.251807Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.261372Z", "correlation_id": "-"}
+_________ test_forwarded_header_and_payload_ip_do_not_establish_trust __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "83073655d52c461da36598ccf06c3f4b", "session_id": "fd0533ed666748e09727f3848d5fed9d", "role": "main", "reason": "only stream available", "user_id": "f7a597baa7314b9f8a50bfb53ea06c4e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.351817Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.360392Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "83073655d52c461da36598ccf06c3f4b", "session_id": "fd0533ed666748e09727f3848d5fed9d", "role": "main", "reason": "only stream available", "user_id": "f7a597baa7314b9f8a50bfb53ea06c4e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.351817Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.360392Z", "correlation_id": "-"}
+_________ test_invalid_trust_configuration_denies_everything[change0] __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "423cb9dcef88413d9fe22b775d6acd84", "session_id": "395e5fe6c2824c0284e94b67a2502a3b", "role": "main", "reason": "only stream available", "user_id": "9f47ff443d144812a91021958802c4a6", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.445748Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.455348Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "423cb9dcef88413d9fe22b775d6acd84", "session_id": "395e5fe6c2824c0284e94b67a2502a3b", "role": "main", "reason": "only stream available", "user_id": "9f47ff443d144812a91021958802c4a6", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.445748Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.455348Z", "correlation_id": "-"}
+_________ test_invalid_trust_configuration_denies_everything[change1] __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "3d3eac9feda140f6ab8f9b55de80583a", "session_id": "66f585522e4949d7af02abbe4d47298f", "role": "main", "reason": "only stream available", "user_id": "b5e34acb3f484efbb5a9fda99537b6d9", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.641792Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.650164Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "3d3eac9feda140f6ab8f9b55de80583a", "session_id": "66f585522e4949d7af02abbe4d47298f", "role": "main", "reason": "only stream available", "user_id": "b5e34acb3f484efbb5a9fda99537b6d9", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.641792Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.650164Z", "correlation_id": "-"}
+_________ test_invalid_trust_configuration_denies_everything[change2] __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "74623f0228714d37b63475e57e8caddf", "session_id": "9f1a3ea03d614679b31a45b76654e167", "role": "main", "reason": "only stream available", "user_id": "1bab6aa138f9416fb0dec92a8169e196", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.747852Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.759230Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "74623f0228714d37b63475e57e8caddf", "session_id": "9f1a3ea03d614679b31a45b76654e167", "role": "main", "reason": "only stream available", "user_id": "1bab6aa138f9416fb0dec92a8169e196", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.747852Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.759230Z", "correlation_id": "-"}
+_________ test_invalid_trust_configuration_denies_everything[change3] __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "852749039114495683284d5138e1ae58", "session_id": "c9dd88faaa2a4a3fbee0ea8692872780", "role": "main", "reason": "only stream available", "user_id": "7014ab8f1c4d4286979d691ba7262e40", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.908496Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.933411Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "852749039114495683284d5138e1ae58", "session_id": "c9dd88faaa2a4a3fbee0ea8692872780", "role": "main", "reason": "only stream available", "user_id": "7014ab8f1c4d4286979d691ba7262e40", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:03.908496Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:03.933411Z", "correlation_id": "-"}
+_________ test_invalid_trust_configuration_denies_everything[change4] __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "5d04ef27f2dc42aaa2f31e24f0179740", "session_id": "c4b4b99afb0542c3ad7edc5d91ec1def", "role": "main", "reason": "only stream available", "user_id": "0faaeeaff539469db957378a9cea366a", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.057631Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.066744Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "5d04ef27f2dc42aaa2f31e24f0179740", "session_id": "c4b4b99afb0542c3ad7edc5d91ec1def", "role": "main", "reason": "only stream available", "user_id": "0faaeeaff539469db957378a9cea366a", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.057631Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.066744Z", "correlation_id": "-"}
+_________ test_invalid_trust_configuration_denies_everything[change5] __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "d5d8bd4274654c3eb76b95af502ccb9d", "session_id": "5e2130cf46e146ebb0420f2e382d016d", "role": "main", "reason": "only stream available", "user_id": "33a40f15bafc4f20a757822748f23905", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.182710Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.191023Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "d5d8bd4274654c3eb76b95af502ccb9d", "session_id": "5e2130cf46e146ebb0420f2e382d016d", "role": "main", "reason": "only stream available", "user_id": "33a40f15bafc4f20a757822748f23905", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.182710Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.191023Z", "correlation_id": "-"}
+______ test_control_plane_api_action_with_service_credentials_is_admitted ______
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"bound": false, "action": "api", "protocol": "", "path": "", "connection_id": "", "viewer_ip": "172.31.250.10", "live_session_id": null, "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.297619Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": false, "action": "api", "protocol": "", "path": "", "connection_id": "", "viewer_ip": "172.31.250.10", "live_session_id": null, "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.297619Z", "correlation_id": "-"}
+___________ test_api_action_without_service_credentials_is_denied[-] ___________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"reason": "service_credentials_invalid", "action": "api", "protocol": "", "path": "", "connection_id": "", "viewer_ip": "10.0.0.9", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.385511Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "service_credentials_invalid", "action": "api", "protocol": "", "path": "", "connection_id": "", "viewer_ip": "10.0.0.9", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.385511Z", "correlation_id": "-"}
+___ test_api_action_without_service_credentials_is_denied[vms-control-wrong] ___
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"reason": "service_credentials_invalid", "action": "api", "protocol": "", "path": "", "connection_id": "", "viewer_ip": "10.0.0.9", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.480419Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "service_credentials_invalid", "action": "api", "protocol": "", "path": "", "connection_id": "", "viewer_ip": "10.0.0.9", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.480419Z", "correlation_id": "-"}
+_ test_api_action_without_service_credentials_is_denied[admin-gateway-admin-password-0123] _
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"reason": "service_credentials_invalid", "action": "api", "protocol": "", "path": "", "connection_id": "", "viewer_ip": "10.0.0.9", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.574164Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "service_credentials_invalid", "action": "api", "protocol": "", "path": "", "connection_id": "", "viewer_ip": "10.0.0.9", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.574164Z", "correlation_id": "-"}
+_____________ test_viewer_play_token_cannot_administer_the_gateway _____________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "f3307f040b394a6bb6a8ee660bd39d3e", "session_id": "8142bcb771ed40f19af47cc23b74a81a", "role": "main", "reason": "only stream available", "user_id": "2ecd56da87904f42be6d07bcfda65451", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.671306Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "service_credentials_invalid", "action": "api", "protocol": "webrtc", "path": "cam_f3307f040b394a6bb6a8ee660bd39d3e_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.680570Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "f3307f040b394a6bb6a8ee660bd39d3e", "session_id": "8142bcb771ed40f19af47cc23b74a81a", "role": "main", "reason": "only stream available", "user_id": "2ecd56da87904f42be6d07bcfda65451", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.671306Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "service_credentials_invalid", "action": "api", "protocol": "webrtc", "path": "cam_f3307f040b394a6bb6a8ee660bd39d3e_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.680570Z", "correlation_id": "-"}
+________________ test_other_actions_are_never_admitted[publish] ________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "043385ecbd09439b9ac1b1a0b189fac6", "session_id": "755f783f6ec34b36a028237bb7af67a0", "role": "main", "reason": "only stream available", "user_id": "a6af0ecbc3334f258a2fe734ad166d17", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.791881Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "action_not_permitted", "action": "publish", "protocol": "webrtc", "path": "cam_043385ecbd09439b9ac1b1a0b189fac6_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.801982Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "043385ecbd09439b9ac1b1a0b189fac6", "session_id": "755f783f6ec34b36a028237bb7af67a0", "role": "main", "reason": "only stream available", "user_id": "a6af0ecbc3334f258a2fe734ad166d17", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.791881Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "action_not_permitted", "action": "publish", "protocol": "webrtc", "path": "cam_043385ecbd09439b9ac1b1a0b189fac6_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.801982Z", "correlation_id": "-"}
+_______________ test_other_actions_are_never_admitted[playback] ________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "61b8e19506334eb7802e9750589ca4fa", "session_id": "65dc9bce693642128241849150c82638", "role": "main", "reason": "only stream available", "user_id": "ea18513c6d094cc1b9e2def07a0e2ae0", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.905593Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "action_not_permitted", "action": "playback", "protocol": "webrtc", "path": "cam_61b8e19506334eb7802e9750589ca4fa_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.914972Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "61b8e19506334eb7802e9750589ca4fa", "session_id": "65dc9bce693642128241849150c82638", "role": "main", "reason": "only stream available", "user_id": "ea18513c6d094cc1b9e2def07a0e2ae0", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:04.905593Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "action_not_permitted", "action": "playback", "protocol": "webrtc", "path": "cam_61b8e19506334eb7802e9750589ca4fa_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:04.914972Z", "correlation_id": "-"}
+________________ test_other_actions_are_never_admitted[metrics] ________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "5df7ac31319e409a8c3c2ec938661ea7", "session_id": "5454583bc7084f849a629f96bb11b0eb", "role": "main", "reason": "only stream available", "user_id": "06790f47b8d44b8bbb664ae8eb671cb2", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:05.008355Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "action_not_permitted", "action": "metrics", "protocol": "webrtc", "path": "cam_5df7ac31319e409a8c3c2ec938661ea7_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.018977Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "5df7ac31319e409a8c3c2ec938661ea7", "session_id": "5454583bc7084f849a629f96bb11b0eb", "role": "main", "reason": "only stream available", "user_id": "06790f47b8d44b8bbb664ae8eb671cb2", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:05.008355Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "action_not_permitted", "action": "metrics", "protocol": "webrtc", "path": "cam_5df7ac31319e409a8c3c2ec938661ea7_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.018977Z", "correlation_id": "-"}
+_________________ test_other_actions_are_never_admitted[pprof] _________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "f2c0e07d93254a5a92c424688e7d3aa8", "session_id": "9fbec6fd0c034b0d9ee0d73eadbd514b", "role": "main", "reason": "only stream available", "user_id": "36f7d555d670425e9b0b3ce607983a3e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:05.131162Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "action_not_permitted", "action": "pprof", "protocol": "webrtc", "path": "cam_f2c0e07d93254a5a92c424688e7d3aa8_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.144530Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "f2c0e07d93254a5a92c424688e7d3aa8", "session_id": "9fbec6fd0c034b0d9ee0d73eadbd514b", "role": "main", "reason": "only stream available", "user_id": "36f7d555d670425e9b0b3ce607983a3e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:05.131162Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "action_not_permitted", "action": "pprof", "protocol": "webrtc", "path": "cam_f2c0e07d93254a5a92c424688e7d3aa8_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.144530Z", "correlation_id": "-"}
+_________________ test_other_actions_are_never_admitted[other] _________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "14a1a6c7699b47c1bbef4ce10563bd07", "session_id": "df9149e717e8407d94be1e8163614495", "role": "main", "reason": "only stream available", "user_id": "bdd924076f65459b990102f3a74998ec", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:05.245503Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "action_not_permitted", "action": "other", "protocol": "webrtc", "path": "cam_14a1a6c7699b47c1bbef4ce10563bd07_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.254070Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "14a1a6c7699b47c1bbef4ce10563bd07", "session_id": "df9149e717e8407d94be1e8163614495", "role": "main", "reason": "only stream available", "user_id": "bdd924076f65459b990102f3a74998ec", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:05.245503Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "action_not_permitted", "action": "other", "protocol": "webrtc", "path": "cam_14a1a6c7699b47c1bbef4ce10563bd07_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.254070Z", "correlation_id": "-"}
+______________________ test_unexposed_protocol_is_denied _______________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "be89c6316a8a4f4085a9b6bc873617c5", "session_id": "2eb4dd81b9ae4c4da64103044e2ef10c", "role": "main", "reason": "only stream available", "user_id": "53dd7082bad04e4da36177fa82d3e7bf", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:05.363962Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "protocol_not_exposed", "action": "read", "protocol": "srt", "path": "cam_be89c6316a8a4f4085a9b6bc873617c5_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.373363Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "be89c6316a8a4f4085a9b6bc873617c5", "session_id": "2eb4dd81b9ae4c4da64103044e2ef10c", "role": "main", "reason": "only stream available", "user_id": "53dd7082bad04e4da36177fa82d3e7bf", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:05.363962Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "protocol_not_exposed", "action": "read", "protocol": "srt", "path": "cam_be89c6316a8a4f4085a9b6bc873617c5_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.373363Z", "correlation_id": "-"}
+_____________ test_ensure_path_refuses_legacy_per_path_credentials _____________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+_____________________ test_malformed_payloads_are_denied[] _____________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.470536Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.470536Z", "correlation_id": "-"}
+_________________ test_malformed_payloads_are_denied[not json] _________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.567805Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.567805Z", "correlation_id": "-"}
+____________________ test_malformed_payloads_are_denied[[]] ____________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.688297Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.688297Z", "correlation_id": "-"}
+______________ test_malformed_payloads_are_denied[{"action": 5}] _______________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.796178Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.796178Z", "correlation_id": "-"}
+_ test_malformed_payloads_are_denied[{"token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}] _
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.895730Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "malformed_request", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:05.895730Z", "correlation_id": "-"}
+__________________ test_missing_application_container_denies ___________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "e19e5ce85079410096949b1cfd3bfd8d", "session_id": "8e3e5ec9fbd24a0c9c4f83b5fdf82ab1", "role": "main", "reason": "only stream available", "user_id": "bee3bbf0d8c64e0c9cb850612e5ae2d9", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.005850Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.016187Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "e19e5ce85079410096949b1cfd3bfd8d", "session_id": "8e3e5ec9fbd24a0c9c4f83b5fdf82ab1", "role": "main", "reason": "only stream available", "user_id": "bee3bbf0d8c64e0c9cb850612e5ae2d9", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.005850Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "config_invalid", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.016187Z", "correlation_id": "-"}
+____________ test_broker_failure_denies_and_never_logs_secret_text _____________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "6fa83ee406484821a7696fe01e92f410", "session_id": "f1981d13f22647dc8a65b3fa7da51c3f", "role": "main", "reason": "only stream available", "user_id": "a72e8181087e4bf0ad246ed74c02f26c", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.119725Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"error_type": "RuntimeError", "event": "media_auth.failed_closed", "service": "control-api", "level": "error", "timestamp": "2026-10-22T04:39:06.129192Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "6fa83ee406484821a7696fe01e92f410", "session_id": "f1981d13f22647dc8a65b3fa7da51c3f", "role": "main", "reason": "only stream available", "user_id": "a72e8181087e4bf0ad246ed74c02f26c", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.119725Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+ERROR    media.auth_hook:media_auth.py:126 {"error_type": "RuntimeError", "event": "media_auth.failed_closed", "service": "control-api", "level": "error", "timestamp": "2026-10-22T04:39:06.129192Z", "correlation_id": "-"}
+______________ test_denials_never_log_presented_tokens_or_queries ______________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "58eaa0addfd44500b921d362b354ccb1", "session_id": "038c9f38abb3456f882cf40fadaae6d9", "role": "main", "reason": "only stream available", "user_id": "c6fb0c8a14324681aa2ba0dbfb1827f1", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.225234Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_58eaa0addfd44500b921d362b354ccb1_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.238205Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_58eaa0addfd44500b921d362b354ccb1_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.241063Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.243168Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "58eaa0addfd44500b921d362b354ccb1", "session_id": "038c9f38abb3456f882cf40fadaae6d9", "role": "main", "reason": "only stream available", "user_id": "c6fb0c8a14324681aa2ba0dbfb1827f1", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.225234Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "session_invalid_expired_closed_or_wrong_path", "action": "read", "protocol": "webrtc", "path": "cam_58eaa0addfd44500b921d362b354ccb1_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.238205Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "url_credential_rejected", "action": "read", "protocol": "webrtc", "path": "cam_58eaa0addfd44500b921d362b354ccb1_main", "connection_id": "conn-1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.241063Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "untrusted_caller", "action": null, "protocol": null, "path": null, "connection_id": null, "viewer_ip": null, "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.243168Z", "correlation_id": "-"}
+________________ test_denied_request_does_not_persist_a_binding ________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "2cbec08b8a394fd89acd2a32ad9d7045", "session_id": "de1e92385a68442785db1743fa256c47", "role": "main", "reason": "only stream available", "user_id": "f90c6cfa164d45c9a4d131f2b456e8f8", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.350372Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "permission_revoked", "action": "read", "protocol": "webrtc", "path": "cam_2cbec08b8a394fd89acd2a32ad9d7045_main", "connection_id": "never", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.376723Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "2cbec08b8a394fd89acd2a32ad9d7045", "session_id": "de1e92385a68442785db1743fa256c47", "role": "main", "reason": "only stream available", "user_id": "f90c6cfa164d45c9a4d131f2b456e8f8", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.350372Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "permission_revoked", "action": "read", "protocol": "webrtc", "path": "cam_2cbec08b8a394fd89acd2a32ad9d7045_main", "connection_id": "never", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:06.376723Z", "correlation_id": "-"}
+_______________ test_closing_one_session_kicks_only_that_viewer ________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "c85da23cd1684723896d12bcd5bf377c", "session_id": "a12bb713e1084b81b9e4e12104752497", "role": "main", "reason": "only stream available", "user_id": "2724850f7c724fa9914ea9f2a29ef287", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.477682Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "c85da23cd1684723896d12bcd5bf377c", "session_id": "64b3e576254d477db6b203c4409cda60", "role": "main", "reason": "only stream available", "user_id": "b2c36d4e6cb54f7baed8711705e43f27", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.488071Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_c85da23cd1684723896d12bcd5bf377c_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "a12bb713e1084b81b9e4e12104752497", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.526422Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_c85da23cd1684723896d12bcd5bf377c_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "64b3e576254d477db6b203c4409cda60", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.541431Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "530feb4ecd6d4d8a839e57ea1b09eb29", "protocol": "webrtc", "live_session_id": "a12bb713e1084b81b9e4e12104752497", "reason": "session_client_closed", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.549209Z", "correlation_id": "-"}
+{"session_id": "a12bb713e1084b81b9e4e12104752497", "reason": "client_closed", "event": "live.session_closed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.550321Z", "correlation_id": "-"}
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "c85da23cd1684723896d12bcd5bf377c", "session_id": "a12bb713e1084b81b9e4e12104752497", "role": "main", "reason": "only stream available", "user_id": "2724850f7c724fa9914ea9f2a29ef287", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.477682Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "c85da23cd1684723896d12bcd5bf377c", "session_id": "64b3e576254d477db6b203c4409cda60", "role": "main", "reason": "only stream available", "user_id": "b2c36d4e6cb54f7baed8711705e43f27", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.488071Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_c85da23cd1684723896d12bcd5bf377c_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "a12bb713e1084b81b9e4e12104752497", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.526422Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_c85da23cd1684723896d12bcd5bf377c_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "64b3e576254d477db6b203c4409cda60", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.541431Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "530feb4ecd6d4d8a839e57ea1b09eb29", "protocol": "webrtc", "live_session_id": "a12bb713e1084b81b9e4e12104752497", "reason": "session_client_closed", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.549209Z", "correlation_id": "-"}
+INFO     media.sessions:session_broker.py:194 {"session_id": "a12bb713e1084b81b9e4e12104752497", "reason": "client_closed", "event": "live.session_closed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.550321Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+__________ test_logout_revocation_from_sync_code_is_enforced_by_cycle __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "10a28acd6430431ca64b51aecd8cc342", "session_id": "8531758da9b24d1ebf8115d2cfe7dd93", "role": "main", "reason": "only stream available", "user_id": "0123db3753dc49b7ab0602b087846ffd", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.691402Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "10a28acd6430431ca64b51aecd8cc342", "session_id": "362440081a2249ed91295f605d3a1af1", "role": "main", "reason": "only stream available", "user_id": "7bb03dfa4a8f44e7a00aaa0e30216782", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.703693Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_10a28acd6430431ca64b51aecd8cc342_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "8531758da9b24d1ebf8115d2cfe7dd93", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.918242Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_10a28acd6430431ca64b51aecd8cc342_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "362440081a2249ed91295f605d3a1af1", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.935719Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "7f8f474f9acd49a09a8cf3822ecc686a", "protocol": "webrtc", "live_session_id": "8531758da9b24d1ebf8115d2cfe7dd93", "reason": "session_logout", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.955131Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "10a28acd6430431ca64b51aecd8cc342", "session_id": "8531758da9b24d1ebf8115d2cfe7dd93", "role": "main", "reason": "only stream available", "user_id": "0123db3753dc49b7ab0602b087846ffd", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.691402Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "10a28acd6430431ca64b51aecd8cc342", "session_id": "362440081a2249ed91295f605d3a1af1", "role": "main", "reason": "only stream available", "user_id": "7bb03dfa4a8f44e7a00aaa0e30216782", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.703693Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_10a28acd6430431ca64b51aecd8cc342_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "8531758da9b24d1ebf8115d2cfe7dd93", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.918242Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_10a28acd6430431ca64b51aecd8cc342_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "362440081a2249ed91295f605d3a1af1", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.935719Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "7f8f474f9acd49a09a8cf3822ecc686a", "protocol": "webrtc", "live_session_id": "8531758da9b24d1ebf8115d2cfe7dd93", "reason": "session_logout", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:06.955131Z", "correlation_id": "-"}
+_____________ test_permission_change_kicks_and_closes_the_session ______________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "473e66e3bfe745998857cf2ecd3814f7", "session_id": "662c851047ef43f88b8f7a81aec996bf", "role": "main", "reason": "only stream available", "user_id": "4b0ecf79d3d04ea7b8673286385e491e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.066601Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "473e66e3bfe745998857cf2ecd3814f7", "session_id": "9f210e4ab4c3403da3813b78bdd91479", "role": "main", "reason": "only stream available", "user_id": "4969319ec34e48dab42046a9e2092a90", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.076857Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_473e66e3bfe745998857cf2ecd3814f7_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "662c851047ef43f88b8f7a81aec996bf", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.119360Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_473e66e3bfe745998857cf2ecd3814f7_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "9f210e4ab4c3403da3813b78bdd91479", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.136204Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "5df921d6116046858535287b273e0981", "protocol": "webrtc", "live_session_id": "662c851047ef43f88b8f7a81aec996bf", "reason": "permission_revoked", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.156632Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "473e66e3bfe745998857cf2ecd3814f7", "session_id": "662c851047ef43f88b8f7a81aec996bf", "role": "main", "reason": "only stream available", "user_id": "4b0ecf79d3d04ea7b8673286385e491e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.066601Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "473e66e3bfe745998857cf2ecd3814f7", "session_id": "9f210e4ab4c3403da3813b78bdd91479", "role": "main", "reason": "only stream available", "user_id": "4969319ec34e48dab42046a9e2092a90", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.076857Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_473e66e3bfe745998857cf2ecd3814f7_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "662c851047ef43f88b8f7a81aec996bf", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.119360Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_473e66e3bfe745998857cf2ecd3814f7_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "9f210e4ab4c3403da3813b78bdd91479", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.136204Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "5df921d6116046858535287b273e0981", "protocol": "webrtc", "live_session_id": "662c851047ef43f88b8f7a81aec996bf", "reason": "permission_revoked", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.156632Z", "correlation_id": "-"}
+_________ test_permission_change_is_seen_even_through_a_stale_session __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "eb381d8c1ed141dfa7fe2c9f52adcd35", "session_id": "6978598e11ce4929aece648055c589b6", "role": "main", "reason": "only stream available", "user_id": "1aa764df7e4b41e5a17613fb4613a1a4", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.278986Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "eb381d8c1ed141dfa7fe2c9f52adcd35", "session_id": "59888155d6034f928dfd033f4e846284", "role": "main", "reason": "only stream available", "user_id": "34755b3b46b6468f957ddcd1cd578cc8", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.287381Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_eb381d8c1ed141dfa7fe2c9f52adcd35_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "6978598e11ce4929aece648055c589b6", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.321677Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_eb381d8c1ed141dfa7fe2c9f52adcd35_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "59888155d6034f928dfd033f4e846284", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.338677Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "ecaa1c70ca69494eaa9add74366bf428", "protocol": "webrtc", "live_session_id": "6978598e11ce4929aece648055c589b6", "reason": "permission_revoked", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.358860Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "eb381d8c1ed141dfa7fe2c9f52adcd35", "session_id": "6978598e11ce4929aece648055c589b6", "role": "main", "reason": "only stream available", "user_id": "1aa764df7e4b41e5a17613fb4613a1a4", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.278986Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "eb381d8c1ed141dfa7fe2c9f52adcd35", "session_id": "59888155d6034f928dfd033f4e846284", "role": "main", "reason": "only stream available", "user_id": "34755b3b46b6468f957ddcd1cd578cc8", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.287381Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_eb381d8c1ed141dfa7fe2c9f52adcd35_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "6978598e11ce4929aece648055c589b6", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.321677Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_eb381d8c1ed141dfa7fe2c9f52adcd35_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "59888155d6034f928dfd033f4e846284", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.338677Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "ecaa1c70ca69494eaa9add74366bf428", "protocol": "webrtc", "live_session_id": "6978598e11ce4929aece648055c589b6", "reason": "permission_revoked", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.358860Z", "correlation_id": "-"}
+________________ test_account_disablement_kicks_existing_viewer ________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "24379973df39463cb27b4241ab8e2655", "session_id": "2560684e6bc64432b0f67b5d4d7b7893", "role": "main", "reason": "only stream available", "user_id": "02359dd3684e44219e9a181530934fd0", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.458923Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "24379973df39463cb27b4241ab8e2655", "session_id": "6d8271b9310b439099b8485b558b4775", "role": "main", "reason": "only stream available", "user_id": "d940a954e91f4259aaa31d522f6bd386", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.467844Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_24379973df39463cb27b4241ab8e2655_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "2560684e6bc64432b0f67b5d4d7b7893", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.504205Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_24379973df39463cb27b4241ab8e2655_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "6d8271b9310b439099b8485b558b4775", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.523048Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "9c07de2a6aa04d2db9755f2aaa047e92", "protocol": "webrtc", "live_session_id": "2560684e6bc64432b0f67b5d4d7b7893", "reason": "permission_revoked", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.548843Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "24379973df39463cb27b4241ab8e2655", "session_id": "2560684e6bc64432b0f67b5d4d7b7893", "role": "main", "reason": "only stream available", "user_id": "02359dd3684e44219e9a181530934fd0", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.458923Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "24379973df39463cb27b4241ab8e2655", "session_id": "6d8271b9310b439099b8485b558b4775", "role": "main", "reason": "only stream available", "user_id": "d940a954e91f4259aaa31d522f6bd386", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.467844Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_24379973df39463cb27b4241ab8e2655_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "2560684e6bc64432b0f67b5d4d7b7893", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.504205Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_24379973df39463cb27b4241ab8e2655_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "6d8271b9310b439099b8485b558b4775", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.523048Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "9c07de2a6aa04d2db9755f2aaa047e92", "protocol": "webrtc", "live_session_id": "2560684e6bc64432b0f67b5d4d7b7893", "reason": "permission_revoked", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.548843Z", "correlation_id": "-"}
+_______________ test_session_expiry_kicks_established_connection _______________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "b615f60b098443539397d5c543b13044", "session_id": "249de70845a443c692dd5e57e84c1b1e", "role": "main", "reason": "only stream available", "user_id": "89989b73d26e4cd8a74b88e3726c6f3a", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.651560Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "b615f60b098443539397d5c543b13044", "session_id": "a5c3321a7a1949d4bc16390e9e2192e7", "role": "main", "reason": "only stream available", "user_id": "81b253360bd447d6bbb0190a460e9706", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.659698Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b615f60b098443539397d5c543b13044_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "249de70845a443c692dd5e57e84c1b1e", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.688266Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b615f60b098443539397d5c543b13044_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "a5c3321a7a1949d4bc16390e9e2192e7", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.706018Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "47a424d7a02e45aa8f31a55a3b45aec2", "protocol": "webrtc", "live_session_id": "249de70845a443c692dd5e57e84c1b1e", "reason": "session_expired", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.725195Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "b615f60b098443539397d5c543b13044", "session_id": "249de70845a443c692dd5e57e84c1b1e", "role": "main", "reason": "only stream available", "user_id": "89989b73d26e4cd8a74b88e3726c6f3a", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.651560Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "b615f60b098443539397d5c543b13044", "session_id": "a5c3321a7a1949d4bc16390e9e2192e7", "role": "main", "reason": "only stream available", "user_id": "81b253360bd447d6bbb0190a460e9706", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.659698Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b615f60b098443539397d5c543b13044_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "249de70845a443c692dd5e57e84c1b1e", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.688266Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b615f60b098443539397d5c543b13044_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "a5c3321a7a1949d4bc16390e9e2192e7", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.706018Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "47a424d7a02e45aa8f31a55a3b45aec2", "protocol": "webrtc", "live_session_id": "249de70845a443c692dd5e57e84c1b1e", "reason": "session_expired", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.725195Z", "correlation_id": "-"}
+_________________ test_revocation_survives_control_api_restart _________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "e5d3ddeac8e0428ea669bfcd513eb954", "session_id": "cc98452b42d24ba69dd3c544301aac32", "role": "main", "reason": "only stream available", "user_id": "25d86c7473ea40a3b09198dec563d7a7", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.821922Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "e5d3ddeac8e0428ea669bfcd513eb954", "session_id": "30c73b06772a4e7e9114852d4a323a82", "role": "main", "reason": "only stream available", "user_id": "9c91603a9d4a4392a3e43a7116f7f861", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.830195Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_e5d3ddeac8e0428ea669bfcd513eb954_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "cc98452b42d24ba69dd3c544301aac32", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.861132Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_e5d3ddeac8e0428ea669bfcd513eb954_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "30c73b06772a4e7e9114852d4a323a82", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.876249Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "68429f51896041a2b8ab0d16838afb9d", "protocol": "webrtc", "live_session_id": "cc98452b42d24ba69dd3c544301aac32", "reason": "session_deactivated", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.894124Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "e5d3ddeac8e0428ea669bfcd513eb954", "session_id": "cc98452b42d24ba69dd3c544301aac32", "role": "main", "reason": "only stream available", "user_id": "25d86c7473ea40a3b09198dec563d7a7", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.821922Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "e5d3ddeac8e0428ea669bfcd513eb954", "session_id": "30c73b06772a4e7e9114852d4a323a82", "role": "main", "reason": "only stream available", "user_id": "9c91603a9d4a4392a3e43a7116f7f861", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.830195Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_e5d3ddeac8e0428ea669bfcd513eb954_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "cc98452b42d24ba69dd3c544301aac32", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.861132Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_e5d3ddeac8e0428ea669bfcd513eb954_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "30c73b06772a4e7e9114852d4a323a82", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.876249Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "68429f51896041a2b8ab0d16838afb9d", "protocol": "webrtc", "live_session_id": "cc98452b42d24ba69dd3c544301aac32", "reason": "session_deactivated", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.894124Z", "correlation_id": "-"}
+_____________ test_failed_kicks_are_retried_then_abandoned_loudly ______________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "b652a8b825134e6889efa2727b535a91", "session_id": "b4659c02a264443fa1205787d328a116", "role": "main", "reason": "only stream available", "user_id": "5b8018c3694f4ca190905e07b7c64eab", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.995842Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "b652a8b825134e6889efa2727b535a91", "session_id": "7b1e2a54967842d398cf274495f26587", "role": "main", "reason": "only stream available", "user_id": "a8552161b3f8403f943684aa1f05eacb", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.005686Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b652a8b825134e6889efa2727b535a91_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "b4659c02a264443fa1205787d328a116", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.037321Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b652a8b825134e6889efa2727b535a91_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "7b1e2a54967842d398cf274495f26587", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.051282Z", "correlation_id": "-"}
+Using selector: EpollSelector
+Using selector: EpollSelector
+Using selector: EpollSelector
+{"binding_id": "b9aa20b493c844b7b8377e77343a114f", "protocol": "webrtc", "live_session_id": "b4659c02a264443fa1205787d328a116", "attempts": 3, "error_type": "GatewayError", "event": "media.revocation_kick_abandoned", "service": "control-api", "level": "error", "timestamp": "2026-10-22T04:39:08.098446Z", "correlation_id": "-"}
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "b652a8b825134e6889efa2727b535a91", "session_id": "b4659c02a264443fa1205787d328a116", "role": "main", "reason": "only stream available", "user_id": "5b8018c3694f4ca190905e07b7c64eab", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:07.995842Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "b652a8b825134e6889efa2727b535a91", "session_id": "7b1e2a54967842d398cf274495f26587", "role": "main", "reason": "only stream available", "user_id": "a8552161b3f8403f943684aa1f05eacb", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.005686Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b652a8b825134e6889efa2727b535a91_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "b4659c02a264443fa1205787d328a116", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.037321Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b652a8b825134e6889efa2727b535a91_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "7b1e2a54967842d398cf274495f26587", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.051282Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+ERROR    media.connections:connection_registry.py:221 {"binding_id": "b9aa20b493c844b7b8377e77343a114f", "protocol": "webrtc", "live_session_id": "b4659c02a264443fa1205787d328a116", "attempts": 3, "error_type": "GatewayError", "event": "media.revocation_kick_abandoned", "service": "control-api", "level": "error", "timestamp": "2026-10-22T04:39:08.098446Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+____________ test_reconnects_beyond_the_bound_supersede_the_oldest _____________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "391f555b6bd94abf952e2a1015f749d7", "session_id": "4deea02af1974f6dac56379a601f9091", "role": "main", "reason": "only stream available", "user_id": "ae1fb4c098724b1785ff6ac78128c5e8", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.214524Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_391f555b6bd94abf952e2a1015f749d7_main", "connection_id": "r1", "viewer_ip": "10.0.0.50", "live_session_id": "4deea02af1974f6dac56379a601f9091", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.244844Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_391f555b6bd94abf952e2a1015f749d7_main", "connection_id": "r2", "viewer_ip": "10.0.0.50", "live_session_id": "4deea02af1974f6dac56379a601f9091", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.260713Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_391f555b6bd94abf952e2a1015f749d7_main", "connection_id": "r3", "viewer_ip": "10.0.0.50", "live_session_id": "4deea02af1974f6dac56379a601f9091", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.278511Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "7e662a8af0e64db2b348b0ea15844afb", "protocol": "webrtc", "live_session_id": "4deea02af1974f6dac56379a601f9091", "reason": "superseded", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.304001Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "391f555b6bd94abf952e2a1015f749d7", "session_id": "4deea02af1974f6dac56379a601f9091", "role": "main", "reason": "only stream available", "user_id": "ae1fb4c098724b1785ff6ac78128c5e8", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.214524Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_391f555b6bd94abf952e2a1015f749d7_main", "connection_id": "r1", "viewer_ip": "10.0.0.50", "live_session_id": "4deea02af1974f6dac56379a601f9091", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.244844Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_391f555b6bd94abf952e2a1015f749d7_main", "connection_id": "r2", "viewer_ip": "10.0.0.50", "live_session_id": "4deea02af1974f6dac56379a601f9091", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.260713Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_391f555b6bd94abf952e2a1015f749d7_main", "connection_id": "r3", "viewer_ip": "10.0.0.50", "live_session_id": "4deea02af1974f6dac56379a601f9091", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.278511Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "7e662a8af0e64db2b348b0ea15844afb", "protocol": "webrtc", "live_session_id": "4deea02af1974f6dac56379a601f9091", "reason": "superseded", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.304001Z", "correlation_id": "-"}
+___________ test_reauthentication_of_a_revoked_connection_is_denied ____________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "a444161c4d8c4f5a99a64526e3a43d57", "session_id": "b7e5517ccb864191b36facd940424d69", "role": "main", "reason": "only stream available", "user_id": "9003f5bfd04b4576b8e19756e1e9a2a1", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.413481Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "a444161c4d8c4f5a99a64526e3a43d57", "session_id": "5035ccb034224c8b9af811f0e78dd072", "role": "main", "reason": "only stream available", "user_id": "5d04f08a666b4593b305a253bdd011ce", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.422693Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_a444161c4d8c4f5a99a64526e3a43d57_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "b7e5517ccb864191b36facd940424d69", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.454784Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_a444161c4d8c4f5a99a64526e3a43d57_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "5035ccb034224c8b9af811f0e78dd072", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.470783Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "38fa1b8b3e5d4d1c8ed31d3422b310e5", "protocol": "webrtc", "live_session_id": "b7e5517ccb864191b36facd940424d69", "reason": "session_logout", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.499456Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "a444161c4d8c4f5a99a64526e3a43d57", "session_id": "2d58931f1348466987f3c6e412c366c8", "role": "main", "reason": "only stream available", "user_id": "9003f5bfd04b4576b8e19756e1e9a2a1", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.515336Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "connection_id_rebound", "action": "read", "protocol": "webrtc", "path": "cam_a444161c4d8c4f5a99a64526e3a43d57_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:08.534218Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "a444161c4d8c4f5a99a64526e3a43d57", "session_id": "b7e5517ccb864191b36facd940424d69", "role": "main", "reason": "only stream available", "user_id": "9003f5bfd04b4576b8e19756e1e9a2a1", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.413481Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "a444161c4d8c4f5a99a64526e3a43d57", "session_id": "5035ccb034224c8b9af811f0e78dd072", "role": "main", "reason": "only stream available", "user_id": "5d04f08a666b4593b305a253bdd011ce", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.422693Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_a444161c4d8c4f5a99a64526e3a43d57_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "b7e5517ccb864191b36facd940424d69", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.454784Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_a444161c4d8c4f5a99a64526e3a43d57_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "5035ccb034224c8b9af811f0e78dd072", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.470783Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "38fa1b8b3e5d4d1c8ed31d3422b310e5", "protocol": "webrtc", "live_session_id": "b7e5517ccb864191b36facd940424d69", "reason": "session_logout", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.499456Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "a444161c4d8c4f5a99a64526e3a43d57", "session_id": "2d58931f1348466987f3c6e412c366c8", "role": "main", "reason": "only stream available", "user_id": "9003f5bfd04b4576b8e19756e1e9a2a1", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.515336Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "connection_id_rebound", "action": "read", "protocol": "webrtc", "path": "cam_a444161c4d8c4f5a99a64526e3a43d57_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:08.534218Z", "correlation_id": "-"}
+___________ test_connection_id_cannot_be_rebound_to_another_session ____________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "20b105d7684c49e1ba5ead7edea309c6", "session_id": "427dd44e7b04494fb9ef1ffef5357e53", "role": "main", "reason": "only stream available", "user_id": "b787a34e851b47d29b2c1feeb8e1c830", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.623124Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "20b105d7684c49e1ba5ead7edea309c6", "session_id": "e4e773b0e9a14e358a763b79128f7e8e", "role": "main", "reason": "only stream available", "user_id": "6855c86b63be4018b2332f977cf950c0", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.632211Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_20b105d7684c49e1ba5ead7edea309c6_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "427dd44e7b04494fb9ef1ffef5357e53", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.667681Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_20b105d7684c49e1ba5ead7edea309c6_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "e4e773b0e9a14e358a763b79128f7e8e", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.686993Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"reason": "connection_id_rebound", "action": "read", "protocol": "webrtc", "path": "cam_20b105d7684c49e1ba5ead7edea309c6_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:08.699984Z", "correlation_id": "-"}
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "20b105d7684c49e1ba5ead7edea309c6", "session_id": "427dd44e7b04494fb9ef1ffef5357e53", "role": "main", "reason": "only stream available", "user_id": "b787a34e851b47d29b2c1feeb8e1c830", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.623124Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "20b105d7684c49e1ba5ead7edea309c6", "session_id": "e4e773b0e9a14e358a763b79128f7e8e", "role": "main", "reason": "only stream available", "user_id": "6855c86b63be4018b2332f977cf950c0", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.632211Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_20b105d7684c49e1ba5ead7edea309c6_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "427dd44e7b04494fb9ef1ffef5357e53", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.667681Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_20b105d7684c49e1ba5ead7edea309c6_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "e4e773b0e9a14e358a763b79128f7e8e", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.686993Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+WARNING  media.auth_hook:media_auth.py:70 {"reason": "connection_id_rebound", "action": "read", "protocol": "webrtc", "path": "cam_20b105d7684c49e1ba5ead7edea309c6_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": null, "event": "media_auth.denied", "service": "control-api", "level": "warning", "timestamp": "2026-10-22T04:39:08.699984Z", "correlation_id": "-"}
+_______________ test_closed_bindings_are_purged_after_retention ________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+{"camera_id": "b763c682892d4aacb3f408114baf49ad", "session_id": "528fccf4c6174830a378470a2cb08e47", "role": "main", "reason": "only stream available", "user_id": "0b1aebe5b3ac453984215d1f472dde1e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.796940Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"camera_id": "b763c682892d4aacb3f408114baf49ad", "session_id": "60b3adeb14834c168b9684a931cc371d", "role": "main", "reason": "only stream available", "user_id": "7ae6521c92c24dcc8bc49bda8e4b4f85", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.812854Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b763c682892d4aacb3f408114baf49ad_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "528fccf4c6174830a378470a2cb08e47", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.844392Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b763c682892d4aacb3f408114baf49ad_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "60b3adeb14834c168b9684a931cc371d", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.861984Z", "correlation_id": "-"}
+Using selector: EpollSelector
+{"binding_id": "c9775222eec742768bbfc6994fd4d5a6", "protocol": "webrtc", "live_session_id": "528fccf4c6174830a378470a2cb08e47", "reason": "session_logout", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.882056Z", "correlation_id": "-"}
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "b763c682892d4aacb3f408114baf49ad", "session_id": "528fccf4c6174830a378470a2cb08e47", "role": "main", "reason": "only stream available", "user_id": "0b1aebe5b3ac453984215d1f472dde1e", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.796940Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.sessions:session_broker.py:149 {"camera_id": "b763c682892d4aacb3f408114baf49ad", "session_id": "60b3adeb14834c168b9684a931cc371d", "role": "main", "reason": "only stream available", "user_id": "7ae6521c92c24dcc8bc49bda8e4b4f85", "event": "live.session_opened", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.812854Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b763c682892d4aacb3f408114baf49ad_main", "connection_id": "conn-v1", "viewer_ip": "10.0.0.50", "live_session_id": "528fccf4c6174830a378470a2cb08e47", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.844392Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.auth_hook:media_auth.py:66 {"bound": true, "action": "read", "protocol": "webrtc", "path": "cam_b763c682892d4aacb3f408114baf49ad_main", "connection_id": "conn-v2", "viewer_ip": "10.0.0.50", "live_session_id": "60b3adeb14834c168b9684a931cc371d", "event": "media_auth.allowed", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.861984Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+INFO     media.connections:connection_registry.py:231 {"binding_id": "c9775222eec742768bbfc6994fd4d5a6", "protocol": "webrtc", "live_session_id": "528fccf4c6174830a378470a2cb08e47", "reason": "session_logout", "event": "media.connection_revoked", "service": "control-api", "level": "info", "timestamp": "2026-10-22T04:39:08.882056Z", "correlation_id": "-"}
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+____________ test_kick_targets_one_session_with_service_credentials ____________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+_________________ test_kick_of_vanished_session_counts_as_done _________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+__________________ test_kick_when_gateway_errors_is_retryable __________________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+__________ test_kick_rejects_unkickable_protocols_and_bad_ids[hls-x] ___________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+_____ test_kick_rejects_unkickable_protocols_and_bad_ids[webrtc-../paths] ______
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+_________ test_kick_rejects_unkickable_protocols_and_bad_ids[webrtc-] __________
+----------------------------- Captured stdout call -----------------------------
+Using selector: EpollSelector
+------------------------------ Captured log call -------------------------------
+DEBUG    asyncio:selector_events.py:64 Using selector: EpollSelector
+- generated xml file: /home/claude/work/intelligent-vms-v2/docs/verification/batch1-junit.xml -
+=========================== short test summary info ============================
+PASSED tests/unit/test_media_gateway_admission.py::test_valid_webrtc_bearer_session_is_admitted_and_bound
+PASSED tests/unit/test_media_gateway_admission.py::test_valid_rtsp_basic_session_is_admitted
+PASSED tests/unit/test_media_gateway_admission.py::test_valid_hls_read_is_admitted_but_not_bound
+PASSED tests/unit/test_media_gateway_admission.py::test_missing_malformed_or_wrong_token_is_denied[change0]
+PASSED tests/unit/test_media_gateway_admission.py::test_missing_malformed_or_wrong_token_is_denied[change1]
+PASSED tests/unit/test_media_gateway_admission.py::test_missing_malformed_or_wrong_token_is_denied[change2]
+PASSED tests/unit/test_media_gateway_admission.py::test_valid_token_for_another_camera_path_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_expired_session_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_closed_session_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_disabled_account_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_locked_account_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_permission_removed_after_issue_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_disabled_camera_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_basic_user_must_match_the_session
+PASSED tests/unit/test_media_gateway_admission.py::test_rest_access_token_is_not_media_authority
+PASSED tests/unit/test_media_gateway_admission.py::test_play_token_is_not_rest_authority
+PASSED tests/unit/test_media_gateway_admission.py::test_credentials_in_url_query_are_rejected_even_when_valid[token={tok}]
+PASSED tests/unit/test_media_gateway_admission.py::test_credentials_in_url_query_are_rejected_even_when_valid[pass={tok}]
+PASSED tests/unit/test_media_gateway_admission.py::test_credentials_in_url_query_are_rejected_even_when_valid[jwt=abc]
+PASSED tests/unit/test_media_gateway_admission.py::test_credentials_in_url_query_are_rejected_even_when_valid[a=1&Token=x]
+PASSED tests/unit/test_media_gateway_admission.py::test_harmless_query_parameters_are_allowed
+PASSED tests/unit/test_media_gateway_admission.py::test_kickable_protocol_without_connection_id_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_caller_without_basic_credentials_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_caller_with_wrong_hook_secret_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_caller_outside_allowed_network_is_denied_even_with_secret
+PASSED tests/unit/test_media_gateway_admission.py::test_forwarded_header_and_payload_ip_do_not_establish_trust
+PASSED tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change0]
+PASSED tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change1]
+PASSED tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change2]
+PASSED tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change3]
+PASSED tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change4]
+PASSED tests/unit/test_media_gateway_admission.py::test_invalid_trust_configuration_denies_everything[change5]
+PASSED tests/unit/test_media_gateway_admission.py::test_shipped_defaults_are_not_trusted
+PASSED tests/unit/test_media_gateway_admission.py::test_control_plane_api_action_with_service_credentials_is_admitted
+PASSED tests/unit/test_media_gateway_admission.py::test_api_action_without_service_credentials_is_denied[-]
+PASSED tests/unit/test_media_gateway_admission.py::test_api_action_without_service_credentials_is_denied[vms-control-wrong]
+PASSED tests/unit/test_media_gateway_admission.py::test_api_action_without_service_credentials_is_denied[admin-gateway-admin-password-0123]
+PASSED tests/unit/test_media_gateway_admission.py::test_viewer_play_token_cannot_administer_the_gateway
+PASSED tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[publish]
+PASSED tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[playback]
+PASSED tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[metrics]
+PASSED tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[pprof]
+PASSED tests/unit/test_media_gateway_admission.py::test_other_actions_are_never_admitted[other]
+PASSED tests/unit/test_media_gateway_admission.py::test_unexposed_protocol_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_ensure_path_refuses_legacy_per_path_credentials
+PASSED tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[]
+PASSED tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[not json]
+PASSED tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[[]]
+PASSED tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[{"action": 5}]
+PASSED tests/unit/test_media_gateway_admission.py::test_malformed_payloads_are_denied[{"token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}]
+PASSED tests/unit/test_media_gateway_admission.py::test_missing_application_container_denies
+PASSED tests/unit/test_media_gateway_admission.py::test_broker_failure_denies_and_never_logs_secret_text
+PASSED tests/unit/test_media_gateway_admission.py::test_denials_never_log_presented_tokens_or_queries
+PASSED tests/unit/test_media_gateway_admission.py::test_denied_request_does_not_persist_a_binding
+PASSED tests/unit/test_media_gateway_admission.py::test_closing_one_session_kicks_only_that_viewer
+PASSED tests/unit/test_media_gateway_admission.py::test_logout_revocation_from_sync_code_is_enforced_by_cycle
+PASSED tests/unit/test_media_gateway_admission.py::test_permission_change_kicks_and_closes_the_session
+PASSED tests/unit/test_media_gateway_admission.py::test_permission_change_is_seen_even_through_a_stale_session
+PASSED tests/unit/test_media_gateway_admission.py::test_account_disablement_kicks_existing_viewer
+PASSED tests/unit/test_media_gateway_admission.py::test_session_expiry_kicks_established_connection
+PASSED tests/unit/test_media_gateway_admission.py::test_revocation_survives_control_api_restart
+PASSED tests/unit/test_media_gateway_admission.py::test_failed_kicks_are_retried_then_abandoned_loudly
+PASSED tests/unit/test_media_gateway_admission.py::test_reconnects_beyond_the_bound_supersede_the_oldest
+PASSED tests/unit/test_media_gateway_admission.py::test_reauthentication_of_a_revoked_connection_is_denied
+PASSED tests/unit/test_media_gateway_admission.py::test_connection_id_cannot_be_rebound_to_another_session
+PASSED tests/unit/test_media_gateway_admission.py::test_closed_bindings_are_purged_after_retention
+PASSED tests/unit/test_media_gateway_admission.py::test_kick_targets_one_session_with_service_credentials
+PASSED tests/unit/test_media_gateway_admission.py::test_kick_of_vanished_session_counts_as_done
+PASSED tests/unit/test_media_gateway_admission.py::test_kick_when_gateway_errors_is_retryable
+PASSED tests/unit/test_media_gateway_admission.py::test_kick_rejects_unkickable_protocols_and_bad_ids[hls-x]
+PASSED tests/unit/test_media_gateway_admission.py::test_kick_rejects_unkickable_protocols_and_bad_ids[webrtc-../paths]
+PASSED tests/unit/test_media_gateway_admission.py::test_kick_rejects_unkickable_protocols_and_bad_ids[webrtc-]
+PASSED tests/unit/test_deploy_config.py::test_gateway_delegates_every_action_to_the_hook
+PASSED tests/unit/test_deploy_config.py::test_gateway_file_holds_no_hook_secret_and_fails_closed
+PASSED tests/unit/test_deploy_config.py::test_gateway_has_no_legacy_credential_keys
+PASSED tests/unit/test_deploy_config.py::test_gateway_admin_surfaces
+PASSED tests/unit/test_deploy_config.py::test_gateway_image_is_pinned
+PASSED tests/unit/test_deploy_config.py::test_admin_ports_are_never_published
+PASSED tests/unit/test_deploy_config.py::test_hook_callback_matches_listener_route_and_trust
+PASSED tests/unit/test_deploy_config.py::test_admin_network_is_internal
+PASSED tests/unit/test_deploy_config.py::test_hook_route_is_registered_where_the_gateway_calls_it
+PASSED tests/unit/test_security_defaults.py::test_shipped_argon2_defaults_follow_owasp
+PASSED tests/unit/test_security_defaults.py::test_production_requires_strong_secret
+PASSED tests/unit/test_security_defaults.py::test_production_rejects_sqlite
+PASSED tests/unit/test_security_defaults.py::test_production_rejects_wildcard_trusted_hosts
+PASSED tests/unit/test_security_defaults.py::test_production_rejects_weak_password_hashing
+PASSED tests/unit/test_security_defaults.py::test_production_rejects_unimplemented_ldap
+PASSED tests/unit/test_security_defaults.py::test_development_defaults_are_permissive_but_sqlite_only_locally
+SKIPPED [1] tests/gateway/test_mediamtx_gateway.py:223: set VMS_IT_MEDIAMTX_BIN to a pinned MediaMTX binary
+SKIPPED [1] tests/gateway/test_mediamtx_gateway.py:229: set VMS_IT_MEDIAMTX_BIN to a pinned MediaMTX binary
+SKIPPED [1] tests/gateway/test_mediamtx_gateway.py:238: set VMS_IT_MEDIAMTX_BIN to a pinned MediaMTX binary
+SKIPPED [1] tests/gateway/test_mediamtx_gateway.py:244: set VMS_IT_MEDIAMTX_BIN to a pinned MediaMTX binary
+SKIPPED [1] tests/gateway/test_mediamtx_gateway.py:254: set VMS_IT_MEDIAMTX_BIN to a pinned MediaMTX binary
+SKIPPED [1] tests/gateway/test_mediamtx_gateway.py:289: set VMS_IT_MEDIAMTX_BIN to a pinned MediaMTX binary
+================== 88 passed, 6 skipped, 1 warning in 15.78s ===================

@@ -1,0 +1,13 @@
+# Each line: a security control deliberately broken in a throwaway copy of the tree,
+# then tests/unit/test_media_gateway_admission.py run. A mutation is "caught" when tests fail.
+# The real tree was never edited. (Count: 72 tests in that module at the time of the run.)
+MUTATION 1: drop populate_existing in revocation -> 1 failed, 71 passed, 1 warning in 13.40s
+MUTATION 2: trust any caller -> 4 failed, 68 passed, 1 warning in 14.54s
+MUTATION 3: skip URL credential policy -> 4 failed, 68 passed, 1 warning in 22.27s
+MUTATION 4: skip RBAC re-check at admission -> 3 failed, 69 passed, 1 warning in 19.73s
+MUTATION 5: admit without connection id -> 1 failed, 71 passed, 1 warning in 14.39s
+MUTATION 6: allow publish action -> 1 failed, 71 passed, 1 warning in 15.23s
+MUTATION 7: revoke every viewer of the path -> 1 failed, 71 passed, 1 warning in 14.46s
+MUTATION 8: log exception text -> 1 failed, 71 passed, 1 warning in 14.21s
+MUTATION 9: unbounded kick retries -> 1 failed, 71 passed, 1 warning in 14.90s
+DONE

@@ -20,3 +20,4 @@ downside has not been thought through.
 | [0012](ADR-0012-analytics-source-honesty.md) | Analytics provenance is a first-class, non-negotiable field |
 | [0013](ADR-0013-recorder-process.md) | Recording runs in a separate OS process |
 | [0014](ADR-0014-evidence-integrity.md) | Stream-copy exports with SHA-256 and chain of custody |
+| [0015](ADR-0015-media-gateway-authorization.md) | Authenticate media-gateway requests and revoke established viewer sessions |

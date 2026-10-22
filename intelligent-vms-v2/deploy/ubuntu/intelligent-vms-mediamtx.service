@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=exec
 User=vms
 Group=vms
+EnvironmentFile=/etc/intelligent-vms/vms.env
 ExecStart=/usr/local/bin/mediamtx /etc/intelligent-vms/mediamtx.yml
 Restart=always
 RestartSec=5s

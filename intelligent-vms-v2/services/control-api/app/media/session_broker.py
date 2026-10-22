@@ -35,6 +35,7 @@ from app.core.errors import (
 from app.core.timeutil import utcnow
 from app.db.models import Camera, CameraStream, LiveSession
 from app.logging_setup import get_logger
+from app.media.connection_registry import MediaConnectionRegistry
 from app.media.mediamtx_client import GatewayError, MediaGatewayClient
 from app.media.stream_policy import StreamOption, select_stream
 from app.media.url_builder import gateway_path
@@ -58,6 +59,8 @@ class SessionBroker:
         self.gateway = gateway
         self.credentials = credential_store
         self.settings = settings or get_settings()
+        # Per-viewer gateway bindings and active revocation (ADR-0015 s6).
+        self.connections = MediaConnectionRegistry(gateway, self.settings)
 
     def _count_active(self, session: Session, user_id: str | None = None) -> int:
         stmt = select(func.count()).select_from(LiveSession).where(
@@ -182,6 +185,11 @@ class SessionBroker:
             return False
         record.closed_at = utcnow()
         record.close_reason = reason
+        # Disconnect THIS session's gateway connections now; other viewers of
+        # the same path are untouched. Failures are retried by the
+        # revocation loop, which also covers callers that cannot await.
+        await self.connections.revoke_sessions_now(session, [session_id],
+                                                   f"session_{reason}"[:64])
         await self._maybe_release_path(session, record.path)
         log.info("live.session_closed", session_id=session_id, reason=reason)
         return True

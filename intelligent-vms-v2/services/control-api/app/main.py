@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from vms_contracts.version import API_PREFIX
 
+from app.api.internal import media_auth as internal_media_auth
 from app.api.v1 import api_router
 from app.config import Settings, get_settings
 from app.container import Container, build_container
@@ -115,6 +116,10 @@ def create_app(settings: Settings | None = None,
                         "when contacting support.")
 
     app.include_router(api_router, prefix=API_PREFIX)
+    # Gateway admission hook (ADR-0015). Outside /api/v1, excluded from the
+    # OpenAPI contract, and protected by caller authentication -- not by
+    # being undocumented.
+    app.include_router(internal_media_auth.router)
 
     @app.get("/healthz", tags=["health"], summary="Liveness probe")
     async def liveness() -> dict:
@@ -150,7 +155,9 @@ def run() -> None:  # pragma: no cover - process entry point
     db.get_engine(settings)
     uvicorn.run("app.main:create_app", factory=True, host=settings.api_host,
                 port=settings.api_port, log_config=None, proxy_headers=True,
-                forwarded_allow_ips="*")
+                # "*" would let any client rewrite its apparent source address
+                # with X-Forwarded-For. Trust only configured proxies.
+                forwarded_allow_ips=settings.forwarded_allow_ips)
 
 
 if __name__ == "__main__":  # pragma: no cover
