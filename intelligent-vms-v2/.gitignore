@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage*
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# .NET
+bin/
+obj/
+*.user
+
+# Build / release artifacts
+release/out/
+installers/build/
+*.msi
+*.deb
+
+# Local runtime state (never commit)
+var/
+data/
+recordings/
+/exports/
+snapshots/
+spool/
+logs/
+*.log
+*.db
+*.sqlite3
+
+# Secrets and machine-specific config (NEVER commit)
+.env
+.env.*
+!.env.example
+config/local.*
+secrets/
+*.pem
+*.key
+vms-master.key
+license.json
+first-run-credentials.txt
+
+# OS
+.DS_Store
+Thumbs.db

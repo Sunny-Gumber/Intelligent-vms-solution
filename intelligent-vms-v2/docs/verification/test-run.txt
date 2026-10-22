@@ -1,0 +1,10 @@
+........................................................................ [ 45%]
+........................................................................ [ 91%]
+.............                                                            [100%]
+=============================== warnings summary ===============================
+tests/integration/test_api_flows.py::test_service_banner_declares_alpha
+  /mnt/runtime-envs/oai56-py312/python/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+157 passed, 1 warning in 105.69s (0:01:45)

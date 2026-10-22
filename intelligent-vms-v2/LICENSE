@@ -1,0 +1,21 @@
+Intelligent VMS - Commercial Software License (PLACEHOLDER)
+
+Copyright (c) 2026 Sunny Gumber. All rights reserved.
+
+This source tree is a proprietary commercial software project delivered to the
+repository owner ("Sunny-Gumber") for internal development and productization.
+
+No permission is granted to redistribute, sublicense or publish this source
+code until the owner selects and applies a final license text.
+
+ACTION REQUIRED BEFORE COMMERCIAL DISTRIBUTION
+----------------------------------------------
+1. Replace this placeholder with the final chosen license (commercial EULA,
+   dual-license, or an OSI license).
+2. Review NOTICE and docs/operations/third-party-licenses.md for the
+   obligations of bundled open-source components (notably FFmpeg, MediaMTX,
+   PostgreSQL).
+3. Confirm codec and patent-pool obligations (H.264 / H.265) with legal
+   counsel before shipping binaries containing encoders or decoders.
+
+This file is NOT legal advice.

@@ -1,0 +1,166 @@
+name: Intelligent VMS V2 CI
+
+on:
+  push:
+    branches: [feature/intelligent-vms-v2]
+    paths: ['intelligent-vms-v2/**', '.github/workflows/intelligent-vms-v2-ci.yml']
+  pull_request:
+    branches: [main]
+    paths: ['intelligent-vms-v2/**', '.github/workflows/intelligent-vms-v2-ci.yml']
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: intelligent-vms-v2
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: intelligent-vms-v2/**/pyproject.toml
+
+      - name: Install FFmpeg
+        # Required: several tests record and export REAL media rather than mocks.
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e packages/shared-contracts
+          pip install -e services/control-api
+          pip install -e services/recording-service
+          pip install pytest pytest-asyncio PyYAML ruff
+
+      - name: Lint
+        run: ruff check services packages tools tests
+
+      - name: Verify the feature matrix is not stale
+        # The published matrix is generated from requirements.yaml. If someone
+        # edits one without the other, CI fails rather than letting the
+        # advertised status drift from the traceability source.
+        run: python tools/generate_feature_matrix.py --check
+
+      - name: Tests
+        run: |
+          set -o pipefail
+          mkdir -p docs/verification
+          python -m pytest -q --junitxml=docs/verification/junit.xml 2>&1 | tee docs/verification/ci-test-run.txt
+
+      - name: Verify the OpenAPI contract is current
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          sys.path[:0] = ['services/control-api', 'packages/shared-contracts']
+          os.environ.update(VMS_DATA_ROOT='/tmp/vms',
+                            VMS_DATABASE_URL='sqlite+pysqlite:////tmp/vms/ci.db',
+                            VMS_SECRET_KEY='ci-secret-key-0123456789abcdefghij')
+          from app.config import get_settings
+          settings = get_settings(); settings.ensure_directories()
+          from app.main import create_app
+          current = json.dumps(create_app(settings).openapi(), indent=2, sort_keys=True)
+          committed = open('contracts/openapi.json').read()
+          if current.strip() != committed.strip():
+              print('contracts/openapi.json is stale; regenerate it', file=sys.stderr)
+              sys.exit(1)
+          print('OpenAPI contract is current')
+          PY
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-evidence
+          path: |
+            intelligent-vms-v2/docs/verification/ci-test-run.txt
+            intelligent-vms-v2/docs/verification/junit.xml
+
+  migration:
+    name: Migration applies cleanly to PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: vms
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ['5432:5432']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install -e packages/shared-contracts -e services/control-api
+          pip install "psycopg[binary]"
+      - name: alembic upgrade head
+        # SQLite is what the test suite uses; this job is what proves the
+        # schema is actually portable to the supported production database.
+        env:
+          VMS_DATABASE_URL: postgresql+psycopg://postgres:ci@localhost:5432/vms
+          VMS_DATA_ROOT: /tmp/vms
+          VMS_SECRET_KEY: ci-secret-key-0123456789abcdefghij
+        run: cd database && python -m alembic -c alembic.ini upgrade head
+
+  sbom:
+    name: Software bill of materials
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install -e packages/shared-contracts -e services/control-api
+          python tools/generate_sbom.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: intelligent-vms-v2/release/sbom/
+
+  web-client:
+    name: Web client typecheck and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: intelligent-vms-v2/apps/web-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+
+  windows-client:
+    name: Windows desktop restore and build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore
+        run: dotnet restore apps/windows-client/IntelligentVms.Client.csproj
+      - name: Build
+        run: dotnet build apps/windows-client/IntelligentVms.Client.csproj --configuration Release --no-restore
