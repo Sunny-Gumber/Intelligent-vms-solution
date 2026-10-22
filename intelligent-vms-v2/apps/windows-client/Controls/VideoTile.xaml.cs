@@ -1,6 +1,6 @@
 // Video rendering via LibVLCSharp.
 //
-// STATUS: written against the LibVLCSharp API but NEVER COMPILED OR RUN.
+// STATUS: Windows-targeted .NET build passes; runtime playback is NOT verified.
 // Hardware-accelerated decoding (D3D11/DXVA) is NOT implemented; see
 // ADR-0009 and docs/LIMITATIONS.md. VLC's own decoder selection applies.
 
@@ -15,7 +15,7 @@ namespace IntelligentVms.Client.Controls;
 
 public partial class VideoTile : UserControl, IDisposable
 {
-    private static readonly LibVLC Library = CreateLibrary();
+    private LibVLC? _library;
     private MediaPlayer? _player;
     private TileViewModel? _model;
 
@@ -26,12 +26,48 @@ public partial class VideoTile : UserControl, IDisposable
         Unloaded += (_, _) => Dispose();
     }
 
-    private static LibVLC CreateLibrary()
+    private static LibVLC CreateLibrary(string sessionId, string playToken)
     {
         Core.Initialize();
         // Low latency matters more than smoothness on a monitoring wall.
-        return new LibVLC("--network-caching=300", "--live-caching=300",
-                          "--rtsp-tcp", "--no-audio");
+        var library = new LibVLC("--network-caching=300", "--live-caching=300",
+                                 "--rtsp-tcp", "--no-audio");
+        try
+        {
+            // LibVLCSharp 3.8.2 exposes login through the native dialog callback.
+            // Keep this instance tile-scoped so concurrent tiles cannot exchange
+            // their session credentials. Never persist the short-lived token.
+            library.SetDialogHandlers(
+                (_, _) => Task.CompletedTask,
+                (dialog, _, _, _, _, cancellationToken) =>
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        dialog.Dismiss();
+                        return Task.CompletedTask;
+                    }
+
+                    dialog.PostLogin(sessionId, playToken, store: false);
+                    return Task.CompletedTask;
+                },
+                (dialog, _, _, _, _, _, _, _) =>
+                {
+                    dialog.Dismiss();
+                    return Task.CompletedTask;
+                },
+                (dialog, _, _, _, _, _, _) =>
+                {
+                    dialog.Dismiss();
+                    return Task.CompletedTask;
+                },
+                (_, _, _) => Task.CompletedTask);
+            return library;
+        }
+        catch
+        {
+            library.Dispose();
+            throw;
+        }
     }
 
     private void OnDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -54,29 +90,69 @@ public partial class VideoTile : UserControl, IDisposable
         var url = _model?.StreamUrl;
         if (string.IsNullOrWhiteSpace(url)) return;
 
+        var sessionId = _model?.SessionId;
+        var playToken = _model?.PlayToken;
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(playToken))
+        {
+            _model?.SetError("Playback authorization is unavailable.");
+            return;
+        }
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var mediaUri) ||
+            (mediaUri.Scheme != Uri.UriSchemeHttp &&
+             mediaUri.Scheme != Uri.UriSchemeHttps) ||
+            !string.IsNullOrEmpty(mediaUri.UserInfo) ||
+            !string.IsNullOrEmpty(mediaUri.Query) ||
+            !string.IsNullOrEmpty(mediaUri.Fragment))
+        {
+            _model?.SetError("Playback URL is invalid.");
+            return;
+        }
+
+        if (!IsPlaybackTransportAllowed(mediaUri))
+        {
+            _model?.SetError("Playback requires HTTPS except for loopback development URLs.");
+            return;
+        }
+
         try
         {
-            _player = new MediaPlayer(Library);
+            _library = CreateLibrary(sessionId, playToken);
+            _player = new MediaPlayer(_library);
             Player.MediaPlayer = _player;
 
-            // The token authorises this viewer at the gateway. The camera's
-            // own RTSP URL and credentials are never known to this client.
-            using var media = new Media(Library, new Uri($"{url}?token={_model!.PlayToken}"));
+            // The session id and token are supplied only in the HTTP Basic
+            // challenge response; the media URL contains no credentials.
+            using var media = new Media(_library, mediaUri);
             _player.Play(media);
         }
         catch (Exception ex)
         {
+            StopPlayer();
             _model?.SetError($"Playback failed: {ex.Message}");
         }
     }
 
+    private static bool IsPlaybackTransportAllowed(Uri mediaUri) =>
+        mediaUri.Scheme == Uri.UriSchemeHttps ||
+        (mediaUri.Scheme == Uri.UriSchemeHttp && mediaUri.IsLoopback);
+
     private void StopPlayer()
     {
-        if (_player is null) return;
-        try { _player.Stop(); } catch { /* teardown must not throw */ }
-        _player.Dispose();
+        if (_player is not null)
+        {
+            try { _player.Stop(); } catch { /* teardown must not throw */ }
+            _player.Dispose();
+        }
         _player = null;
         Player.MediaPlayer = null;
+
+        if (_library is not null)
+        {
+            _library.UnsetDialogHandlers();
+            _library.Dispose();
+            _library = null;
+        }
     }
 
     public void Dispose()
