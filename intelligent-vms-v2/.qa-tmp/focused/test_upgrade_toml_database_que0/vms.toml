@@ -1,0 +1,2 @@
+[vms]
+database_url = "postgresql+psycopg:///vms?host=toml-target.example&port=5546&sslmode=verify-ca"

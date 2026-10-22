@@ -1,0 +1,12 @@
+[vms]
+environment = "production"
+secret_key = "native-test-secret-key-with-more-than-32-characters"
+database_url = "postgresql+psycopg://localhost/vms"
+trusted_hosts = ["localhost", "127.0.0.1"]
+[media]
+gateway_url = "http://127.0.0.1:9997"
+gateway_user = "vms-control"
+gateway_password = "native-gateway-password-1234"
+auth_hook_user = "mediamtx"
+auth_hook_secret = "native-hook-secret-long-enough-1234567890"
+auth_allowed_callers = ["127.0.0.1/32"]

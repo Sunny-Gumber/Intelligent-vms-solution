@@ -1,0 +1,501 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:23f406c5-9f73-440d-a5dd-a52ce5c81966",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-22T09:09:44.401468+00:00",
+    "tools": [
+      {
+        "vendor": "Intelligent VMS",
+        "name": "generate_sbom.py",
+        "version": "1.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "name": "Intelligent VMS",
+      "version": "0.1.0-alpha"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "alembic",
+      "version": "1.20.1",
+      "purl": "pkg:pypi/alembic@1.20.1",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "argon2-cffi",
+      "version": "25.1.0",
+      "purl": "pkg:pypi/argon2-cffi@25.1.0",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "cryptography",
+      "version": "50.0.2",
+      "purl": "pkg:pypi/cryptography@50.0.2",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "defusedxml",
+      "version": "0.7.1",
+      "purl": "pkg:pypi/defusedxml@0.7.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "PSFL"
+          }
+        },
+        {
+          "license": {
+            "name": "Python Software Foundation License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/tiran/defusedxml"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "fastapi",
+      "version": "0.159.1",
+      "purl": "pkg:pypi/fastapi@0.159.1",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "httpx",
+      "version": "0.28.1",
+      "purl": "pkg:pypi/httpx@0.28.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-3-Clause"
+          }
+        },
+        {
+          "license": {
+            "name": "BSD License"
+          }
+        }
+      ],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "mypy",
+      "version": "not-installed",
+      "purl": "pkg:pypi/mypy",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:status",
+          "value": "declared-not-installed"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "numpy",
+      "version": "not-installed",
+      "purl": "pkg:pypi/numpy",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:status",
+          "value": "declared-not-installed"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "onnxruntime",
+      "version": "not-installed",
+      "purl": "pkg:pypi/onnxruntime",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:status",
+          "value": "declared-not-installed"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "onnxruntime-gpu",
+      "version": "not-installed",
+      "purl": "pkg:pypi/onnxruntime-gpu",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:status",
+          "value": "declared-not-installed"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "prometheus_client",
+      "version": "0.26.0",
+      "purl": "pkg:pypi/prometheus_client@0.26.0",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "psutil",
+      "version": "7.2.2",
+      "purl": "pkg:pypi/psutil@7.2.2",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/giampaolo/psutil"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "psycopg",
+      "version": "3.3.6",
+      "purl": "pkg:pypi/psycopg@3.3.6",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "pydantic",
+      "version": "2.14.1",
+      "purl": "pkg:pypi/pydantic@2.14.1",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "pydantic-settings",
+      "version": "2.16.1",
+      "purl": "pkg:pypi/pydantic-settings@2.16.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "PyJWT",
+      "version": "2.15.1",
+      "purl": "pkg:pypi/pyjwt@2.15.1",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "pytest",
+      "version": "9.1.1",
+      "purl": "pkg:pypi/pytest@9.1.1",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "pytest-asyncio",
+      "version": "1.4.0",
+      "purl": "pkg:pypi/pytest-asyncio@1.4.0",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "python-multipart",
+      "version": "0.0.32",
+      "purl": "pkg:pypi/python-multipart@0.0.32",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache Software License"
+          }
+        }
+      ],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "PyYAML",
+      "version": "6.0.1",
+      "purl": "pkg:pypi/pyyaml@6.0.1",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        },
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pyyaml.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "ruff",
+      "version": "0.17.1",
+      "purl": "pkg:pypi/ruff@0.17.1",
+      "licenses": [],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://docs.astral.sh/ruff"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "SQLAlchemy",
+      "version": "2.1.6",
+      "purl": "pkg:pypi/sqlalchemy@2.1.6",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "structlog",
+      "version": "26.1.0",
+      "purl": "pkg:pypi/structlog@26.1.0",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache Software License"
+          }
+        },
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "uvicorn",
+      "version": "0.54.0",
+      "purl": "pkg:pypi/uvicorn@0.54.0",
+      "licenses": [],
+      "externalReferences": []
+    },
+    {
+      "type": "library",
+      "name": "react",
+      "version": "18.3.1",
+      "purl": "pkg:npm/react@18.3.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:scope",
+          "value": "dependencies"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "react-dom",
+      "version": "18.3.1",
+      "purl": "pkg:npm/react-dom@18.3.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:scope",
+          "value": "dependencies"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "react-router-dom",
+      "version": "6.26.0",
+      "purl": "pkg:npm/react-router-dom@6.26.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:scope",
+          "value": "dependencies"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@tanstack/react-query",
+      "version": "5.51.0",
+      "purl": "pkg:npm/@tanstack/react-query@5.51.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:scope",
+          "value": "dependencies"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@types/react",
+      "version": "18.3.3",
+      "purl": "pkg:npm/@types/react@18.3.3",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:scope",
+          "value": "devDependencies"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@types/react-dom",
+      "version": "18.3.0",
+      "purl": "pkg:npm/@types/react-dom@18.3.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:scope",
+          "value": "devDependencies"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vitejs/plugin-react",
+      "version": "4.3.1",
+      "purl": "pkg:npm/@vitejs/plugin-react@4.3.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:scope",
+          "value": "devDependencies"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "typescript",
+      "version": "5.5.4",
+      "purl": "pkg:npm/typescript@5.5.4",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:scope",
+          "value": "devDependencies"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "vite",
+      "version": "5.4.0",
+      "purl": "pkg:npm/vite@5.4.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "vms:scope",
+          "value": "devDependencies"
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "ffmpeg",
+      "version": "unpinned-system",
+      "purl": "pkg:generic/ffmpeg",
+      "licenses": [
+        {
+          "license": {
+            "name": "LGPL-2.1-or-later OR GPL-2.0-or-later"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "vms:note",
+          "value": "Invoked as a separate process; not linked. The effective licence depends on the build flags of the binary you ship. Confirm H.264/H.265 patent obligations separately."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "mediamtx",
+      "version": "unpinned-system",
+      "purl": "pkg:generic/mediamtx",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "vms:note",
+          "value": "Media gateway; separate process with an HTTP control API."
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "name": "postgresql",
+      "version": ">=14",
+      "purl": "pkg:generic/postgresql",
+      "licenses": [
+        {
+          "license": {
+            "name": "PostgreSQL"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "vms:note",
+          "value": "Supported production database."
+        }
+      ]
+    }
+  ],
+  "properties": [
+    {
+      "name": "vms:unresolved-declared-dependencies",
+      "value": "4"
+    },
+    {
+      "name": "vms:note",
+      "value": "External process components (FFmpeg, MediaMTX, PostgreSQL) are included because they ship with or are required by the product even though they are not Python packages."
+    }
+  ]
+}
