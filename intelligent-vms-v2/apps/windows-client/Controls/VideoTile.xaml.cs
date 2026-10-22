@@ -109,6 +109,12 @@ public partial class VideoTile : UserControl, IDisposable
             return;
         }
 
+        if (!IsPlaybackTransportAllowed(mediaUri))
+        {
+            _model?.SetError("Playback requires HTTPS except for loopback development URLs.");
+            return;
+        }
+
         try
         {
             _library = CreateLibrary(sessionId, playToken);
@@ -126,6 +132,10 @@ public partial class VideoTile : UserControl, IDisposable
             _model?.SetError($"Playback failed: {ex.Message}");
         }
     }
+
+    private static bool IsPlaybackTransportAllowed(Uri mediaUri) =>
+        mediaUri.Scheme == Uri.UriSchemeHttps ||
+        (mediaUri.Scheme == Uri.UriSchemeHttp && mediaUri.IsLoopback);
 
     private void StopPlayer()
     {

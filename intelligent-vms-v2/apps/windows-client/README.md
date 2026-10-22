@@ -44,6 +44,8 @@ path and a short-lived play token. It never sees an RTSP URL or camera password.
 For HLS playback, LibVLC answers the gateway's HTTP Basic challenge with the
 live session id and play token. Each tile owns its LibVLC instance so credentials
 cannot cross between viewers; they are not stored in the media URL or persisted.
+Non-loopback playback URLs must use HTTPS; plain HTTP is allowed only for
+loopback development endpoints. Query-string media credentials remain forbidden.
 
 **PTZ safety.** The client refreshes its PTZ control lock while a button is
 held. If this process dies mid-movement, the lock expires and the server's
