@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "dgSpecHash": "Us5no5bMDGM=",
+  "success": true,
+  "projectFilePath": "/home/runner/work/Intelligent-vms-solution/Intelligent-vms-solution/intelligent-vms-v1/clients/windows/tests/IntelligentVMS.Desktop.Tests/IntelligentVMS.Desktop.Tests.csproj",
+  "expectedPackageFiles": [
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/duende.identitymodel/8.1.0/duende.identitymodel.8.1.0.nupkg.sha512",
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/duende.identitymodel.oidcclient/7.1.0/duende.identitymodel.oidcclient.7.1.0.nupkg.sha512",
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/microsoft.extensions.dependencyinjection.abstractions/10.0.4/microsoft.extensions.dependencyinjection.abstractions.10.0.4.nupkg.sha512",
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/microsoft.extensions.logging.abstractions/10.0.4/microsoft.extensions.logging.abstractions.10.0.4.nupkg.sha512",
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/microsoft.web.webview2/1.0.4191.47/microsoft.web.webview2.1.0.4191.47.nupkg.sha512",
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/microsoft.netcore.app.ref/10.0.12/microsoft.netcore.app.ref.10.0.12.nupkg.sha512",
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/microsoft.windowsdesktop.app.ref/10.0.12/microsoft.windowsdesktop.app.ref.10.0.12.nupkg.sha512",
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/microsoft.aspnetcore.app.ref/10.0.12/microsoft.aspnetcore.app.ref.10.0.12.nupkg.sha512",
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/microsoft.netcore.app.host.linux-x64/10.0.12/microsoft.netcore.app.host.linux-x64.10.0.12.nupkg.sha512",
+    "/tmp/codeql-scratch-e58c579df740282b/dbs/csharp/working/packages/microsoft.windows.sdk.net.ref/10.0.17763.57/microsoft.windows.sdk.net.ref.10.0.17763.57.nupkg.sha512"
+  ],
+  "logs": []
+}
