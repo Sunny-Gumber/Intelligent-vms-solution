@@ -8,11 +8,12 @@ browser anywhere in the codebase.
 
 ## Build status — read this first
 
-**This client has never been compiled.** No .NET SDK was available in the
-environment that produced this source tree. `dotnet build` is Gate 4 of
-`docs/verification/external-qualification-plan.md`. Every Module 13
-requirement is therefore marked *"Partial — source delivered, not built"* in
-the feature matrix rather than claimed as working.
+**Build status:** the `net8.0-windows` target now builds in Release from Linux
+with Windows targeting enabled. The application has not been run on Windows,
+and video playback has not been exercised against a live gateway. A successful
+compile does not qualify runtime behavior; Module 13 requirements remain
+partial until their applicable checks in
+`docs/verification/external-qualification-plan.md` pass.
 
 ## Building
 
@@ -38,8 +39,11 @@ dotnet run --project IntelligentVms.Client.csproj
 state. A camera that fails shows an error in its own tile; the rest of the wall
 keeps running, and no unrelated stream is restarted (M3-R06, M3-R10).
 
-**Credentials never reach this process.** The client receives a gateway path
-and a short-lived play token. It never sees an RTSP URL or a camera password.
+**Camera credentials never reach this process.** The client receives a gateway
+path and a short-lived play token. It never sees an RTSP URL or camera password.
+For HLS playback, LibVLC answers the gateway's HTTP Basic challenge with the
+live session id and play token. Each tile owns its LibVLC instance so credentials
+cannot cross between viewers; they are not stored in the media URL or persisted.
 
 **PTZ safety.** The client refreshes its PTZ control lock while a button is
 held. If this process dies mid-movement, the lock expires and the server's

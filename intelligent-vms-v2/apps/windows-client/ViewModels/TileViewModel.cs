@@ -34,6 +34,7 @@ public sealed class TileViewModel : ViewModelBase
     public string? Error { get => _error; private set => SetField(ref _error, value); }
     public string? CameraName { get => _cameraName; private set => SetField(ref _cameraName, value); }
     public string? StreamUrl => _session?.HlsUrl;
+    public string? SessionId => _session?.SessionId;
     public string? PlayToken => _session?.PlayToken;
 
     public TileViewModel(ApiClient api, int index)
@@ -70,6 +71,7 @@ public sealed class TileViewModel : ViewModelBase
             Status = "Live";
             Error = null;
             _attempt = 0;
+            OnPropertyChanged(nameof(SessionId));
             OnPropertyChanged(nameof(StreamUrl));
             OnPropertyChanged(nameof(PlayToken));
         }
@@ -142,6 +144,7 @@ public sealed class TileViewModel : ViewModelBase
         CameraName = null;
         Status = "Empty";
         Error = null;
+        OnPropertyChanged(nameof(SessionId));
         OnPropertyChanged(nameof(StreamUrl));
     }
 }
