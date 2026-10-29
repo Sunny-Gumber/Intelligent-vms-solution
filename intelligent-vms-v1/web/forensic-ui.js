@@ -47,11 +47,20 @@
       item.generation === playbackState.playGeneration && item.cameraId === playbackState.cameraId &&
       item.cameraId === activeCameraId();
   }
+  function matchesPlayback(selection) {
+    if (!selection || !player.currentSrc) return false;
+    const source = new URL(player.currentSrc, location.href);
+    const expected = '/api/v1/recordings/cameras/' + encodeURIComponent(selection.cameraId) + '/play';
+    return source.origin === location.origin && source.pathname === expected &&
+      source.searchParams.get('start') === selection.start &&
+      source.searchParams.get('duration') === String(selection.duration) &&
+      source.searchParams.get('format') === 'mp4';
+  }
   function updateCapture() {
     const selection = playbackSelection;
     button.disabled = !(authenticated && operator && selection &&
       selection.cameraId === playbackState.cameraId && selection.cameraId === activeCameraId() &&
-      player.readyState >= 2 && player.videoWidth > 0);
+      player.readyState >= 2 && player.videoWidth > 0 && matchesPlayback(selection));
   }
   function reset() {
     frame = null;
@@ -105,10 +114,8 @@
       el('pbmsg').textContent = 'Play authorized footage before capturing an investigation frame.';
       return;
     }
-    const source = new URL(player.currentSrc, location.href);
-    const expected = '/api/v1/recordings/cameras/' + encodeURIComponent(selection.cameraId) + '/play';
-    if (source.origin !== location.origin || source.pathname !== expected) {
-      el('pbmsg').textContent = 'Only same-origin VMS playback is eligible for inspection.';
+    if (!matchesPlayback(selection)) {
+      el('pbmsg').textContent = 'Playback source or selected recorded interval changed; play this selection first.';
       return;
     }
     const width = player.videoWidth, height = player.videoHeight;
