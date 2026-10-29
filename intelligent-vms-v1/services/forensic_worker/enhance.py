@@ -231,10 +231,10 @@ def _safe_paths(source_path: str, output_path: str) -> tuple[Path, Path, Path]:
     if output.suffix.lower() != expected:
         raise EnhancementError(f"Derivative must use {expected} extension")
     manifest = Path(str(output) + ".forensic.json")
-    if any(path.exists() or path.is_symlink() for path in (output, manifest)):
-        raise EnhancementError("Derivative or manifest already exists; refusing overwrite")
     if output.resolve() == source:
         raise EnhancementError("Original evidence cannot be overwritten")
+    if any(path.exists() or path.is_symlink() for path in (output, manifest)):
+        raise EnhancementError("Derivative or manifest already exists; refusing overwrite")
     return source, output, manifest
 
 
