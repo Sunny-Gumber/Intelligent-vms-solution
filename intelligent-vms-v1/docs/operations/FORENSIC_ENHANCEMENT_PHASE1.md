@@ -1,4 +1,4 @@
-# Intelligent VMS Forensic Enhancement — Phase 1 Offline Worker
+# Intelligent VMS Forensic Enhancement â€” Phase 1 Offline Worker
 
 **Status: implementation candidate, not field qualified.** Product feature F11-010 remains TARGET until API/client integration, independent QA, CI verification and external qualification.
 
@@ -77,3 +77,81 @@ Always-on tests cover bounds, filter order, ROI validation, unsafe output refusa
 7. Complete security and licence reviews, CI, independent reviewer sign-off and real camera qualification before changing F11-010 from TARGET.
 
 Do not merge/deploy or claim production readiness based solely on this offline worker.
+
+
+## Server job continuation — 2026-10-29
+
+An opt-in `/api/v1/forensic/jobs` API stages a complete clip through the existing
+recording export authorization path. Every job operation rechecks owner and current
+camera tenant/site authorization. Requests accept bounded numeric settings, never
+server paths, URLs, executable names or arbitrary filter graphs.
+
+The experimental single-process executor retains at most four jobs, two per tenant,
+one per operator, and processes one at a time. Retained jobs consume admission slots
+until explicitly deleted; it rejects admission rather than silently evicting evidence.
+A private spool and immutable worker image digest must be configured explicitly.
+The feature is disabled by default. A dedicated Docker host is required; do not give
+a production control API access to a shared recording/media Docker daemon.
+
+The worker container has no network, a read-only source mount/root filesystem,
+1 CPU, 512 MiB memory, 64 PIDs and bounded temporary filesystems. API export staging
+has a 60-second deadline and 512 MiB source ceiling. Cancellation waits for container
+removal; uncertain removal prevents deletion/admission reuse. Restart with spool
+leftovers fails closed for administrator recovery. This is not a distributed durable
+scheduler or an immutable evidence vault. Forward audit logs to the organization's
+retained audit sink before enabling it. Deletion removes local job files.
+
+Browser preview now supports ROI selection in captured original pixel coordinates.
+Reports bind ROI, algorithm version/settings, recording interval and approximate
+playback offset to exported PNG hashes. Preview and FFmpeg algorithms remain distinct.
+Hashes support integrity comparison, not authenticity or legal admissibility.
+
+Worker hardening restricts demuxers/protocols, bounds output/threads/frames/time,
+rejects shortened clips and publishes without clobbering competing output files.
+The frontend gate now parses approved local forensic scripts; unapproved/remote
+script URLs still fail closed. Forensic CI includes Ubuntu and Windows jobs.
+
+Qualification still requires actual isolated-container execution, green latest-head
+CI/security/field tests, independent review, named-camera evidence and licence
+approval for the exact FFmpeg build. No deployment or production qualification is
+claimed. The development worker image recipe is not an approved distributed binary.
+
+
+Configuration: FORENSIC_JOBS_ENABLED=false (default), FORENSIC_SPOOL_DIR
+(existing empty private absolute path), FORENSIC_WORKER_IMAGE (immutable digest,
+already built/reviewed/present). Browser controls support create, recover owned
+jobs, refresh, cancel, report/artifact download and delete without polling.
+
+Windows Python3.12 combined forensic/API/frontend/export/FIX038 run:74 passed,
+1 PostgreSQL skipped (database absent). Node algorithm and DOM interaction tests,
+Ruff, public docstrings and compile checks passed. Full suite attempted:109 passes
+then child-process Windows _overlapped initialization failed with WinError10106;
+this is not a full-suite PASS. Docker/WSL/PostgreSQL unavailable locally.
+
+Local FFmpeg9.0.2 gyan.dev full build reports --enable-gpl, --enable-version3,
+--enable-libx264. No binary redistributed. Exact-image licence notices/source
+offer, codec obligations and owner approval remain release gates.
+
+
+Additional verified fixes: MediaMTX rebuilt using Go1.26.10 and x/net0.60.0;
+two distinct source/work/compiler-cache builds on this Windows host produced
+identical ZIP5268c43c2643ddbc1ceeefc5ea26489e65055be43cc4d785bf5af7fcd9b26401
+and EXE566a0d875950527e12bfb78a4fb8206b75cbcd2b137d86a33082aedd73d43db8.
+Manifest and installer pins came from actual outputs. Runtime transport/TLS/
+redirect confinement check PASS. Independent cross-host reproducibility and a
+fresh hosted security scan remain gates. Node fence-state persistence now uses
+existing cross-platform directory flush; focused Windows durability/fencing/
+autonomy tests33PASS. Combined forensic/integrity regressions80PASS1PostgresSKIP.
+The optional real Docker regression runs on Linux CI; it skips locally because
+Docker is absent. A separate playback regression run had50PASS1FAIL: closed-port
+connect returned ConnectTimeout on this host where test expects ConnectError.
+This unresolved platform-dependent test is not reported as a passing suite.
+
+
+Final local batch:86 passed,2 skipped (real Docker and PostgreSQL absent),
+1 upstream TestClient deprecation warning. Phase7 chaos gate PASS14/14 after
+Windows flush fix, with absolute RECORDING_MOUNT_PATH configured. MediaMTX
+integrity/Windows installer suite59PASS. No full-suite/hosted-security PASS claim.
+FORENSIC_WORKER_IMAGE accepts a reviewed immutable repository digest or local
+sha256 image ID. CI builds the worker locally and exercises real container
+resource controls, source hashes, completion, cancellation and removal on Linux.

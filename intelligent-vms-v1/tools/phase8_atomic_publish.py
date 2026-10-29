@@ -374,6 +374,19 @@ def _fsync_file(path: Path) -> None:
         os.close(descriptor)
 
 
+def fsync_directory(directory: Path) -> None:
+    """Flush a renamed file's directory on POSIX or Windows, propagating failures.
+
+    Args:
+        directory: Parent directory whose metadata must be durable.
+
+    Raises:
+        OSError: Opening or flushing the directory failed. Callers must not
+            acknowledge durable state when this operation fails.
+    """
+    _fsync_directory(directory)
+
+
 def _fsync_directory(directory: Path) -> None:
     """Fsync a directory so the replaced directory entry itself is durable.
 

@@ -32,6 +32,29 @@ const VMSForensicPreview = (() => {
     return frame.width * frame.height;
   }
 
+  /** Validate an optional crop in original decoded-frame pixels; reject invalid coordinates. */
+  function validateROI(roi, width, height) {
+    if (roi == null) return {x: 0, y: 0, width, height};
+    if (!roi || !['x', 'y', 'width', 'height'].every(key => Number.isInteger(roi[key])) ||
+        roi.x < 0 || roi.y < 0 || roi.width < 1 || roi.height < 1 ||
+        roi.x + roi.width > width || roi.y + roi.height > height) {
+      throw new RangeError('ROI must be inside the original frame');
+    }
+    return {x: roi.x, y: roi.y, width: roi.width, height: roi.height};
+  }
+
+  /** Copy a validated crop without mutating or sharing the original pixel buffer. */
+  function cropFrame(frame, roi) {
+    validateFrame(frame);
+    const crop = validateROI(roi, frame.width, frame.height);
+    const data = new Uint8ClampedArray(crop.width * crop.height * 4);
+    for (let row = 0; row < crop.height; row++) {
+      const start = ((crop.y + row) * frame.width + crop.x) * 4;
+      data.set(frame.data.subarray(start, start + crop.width * 4), row * crop.width * 4);
+    }
+    return {width: crop.width, height: crop.height, data};
+  }
+
   const clamp = x => Math.max(0, Math.min(255, x));
   function luma(pixels, index) {
     return Math.round(0.2126 * pixels[index] + 0.7152 * pixels[index + 1] + 0.0722 * pixels[index + 2]);
@@ -73,7 +96,7 @@ const VMSForensicPreview = (() => {
     return {width: frame.width, height: frame.height, data: result};
   }
 
-  return Object.freeze({MAX_PIXELS, validateSettings, validateFrame, enhanceFrame});
+  return Object.freeze({MAX_PIXELS, validateSettings, validateFrame, validateROI, cropFrame, enhanceFrame});
 })();
 if (typeof window !== 'undefined') window.VMSForensicPreview = VMSForensicPreview;
 if (typeof module !== 'undefined' && module.exports) module.exports = VMSForensicPreview;

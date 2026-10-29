@@ -352,3 +352,53 @@ The 0.2.1 field-test candidate fixes defects found during the first real Windows
 - Exact fixing PR, reviewed head, accepted merge/main and post-merge CI acceptance are recorded in [issue #27](https://github.com/Sunny-Gumber/Intelligent-vms-solution/issues/27). This source document alone does not confer acceptance.
 - Operator/trust/build/regression runbook: `docs/operations/SECURE_CAMERA_SOURCES.md`. After accepted post-merge CI, STOP; upgrade the existing Ubuntu VM to the accepted SHA, configure RTSPS /0 + /1, THIRD blank, and manually verify onboarding then SUB live and MAIN recording.
 - Product remains **Release Candidate / External Qualification Pending**. No full camera, THIRD, HEVC-browser, Windows 10/11, capacity or production claim.
+
+
+## F11-010 forensic continuation — 2026-10-29
+
+Active destination PR #179 remains draft on feature/forensic-enhancement-phase1,
+continued from 4b76b969e226910b5dd64d93c8101213232c47bc. No main change/deployment.
+Implemented opt-in authorized bounded forensic job API, offline Docker executor,
+cancellation/cleanup/audit, authorized recording-export staging, owned-job recovery,
+browser ROI/server controls, and provenance reports. Originals remain read-only.
+Fixed frontend gate rejecting local forensic scripts, export cancellation slot leak,
+worker publish races/input/resource bounds, and FIX038 retention-clock nondeterminism.
+
+Executable Windows Python3.12 verification:74 passed,1 PostgreSQL skip across job,
+worker,frontend,recording-export,FIX038 tests; Node ROI/DOM/lifecycle checks PASS;
+Ruff, public docstrings, compile checks PASS. Independent worker/API/UI reviewers
+issued PASS only at deterministic experimental software boundary. Full suite attempt
+stopped after109 passes on child-process WinError10106 (_overlapped initialization).
+No full-suite PASS. Docker/WSL/PostgreSQL unavailable locally. Exact latest commit
+and hosted CI results must be read from PR179; this text does not certify CI.
+
+Server jobs remain disabled by default. Dedicated isolated Docker host, private
+spool, reviewed immutable image, external audit retention and recovery operations
+are prerequisites. Linux/container/real-camera/recording-continuity/performance and
+licensing qualification remain required. F11-010 remains TARGET and production
+qualification is not claimed. Existing security CI MediaMTX compiler/module findings
+are being corrected with verified reproducible artifacts, never waived.
+
+
+Additional verified fixes: MediaMTX rebuilt using Go1.26.10 and x/net0.60.0;
+two distinct source/work/compiler-cache builds on this Windows host produced
+identical ZIP5268c43c2643ddbc1ceeefc5ea26489e65055be43cc4d785bf5af7fcd9b26401
+and EXE566a0d875950527e12bfb78a4fb8206b75cbcd2b137d86a33082aedd73d43db8.
+Manifest and installer pins came from actual outputs. Runtime transport/TLS/
+redirect confinement check PASS. Independent cross-host reproducibility and a
+fresh hosted security scan remain gates. Node fence-state persistence now uses
+existing cross-platform directory flush; focused Windows durability/fencing/
+autonomy tests33PASS. Combined forensic/integrity regressions80PASS1PostgresSKIP.
+The optional real Docker regression runs on Linux CI; it skips locally because
+Docker is absent. A separate playback regression run had50PASS1FAIL: closed-port
+connect returned ConnectTimeout on this host where test expects ConnectError.
+This unresolved platform-dependent test is not reported as a passing suite.
+
+
+Final local batch:86 passed,2 skipped (real Docker and PostgreSQL absent),
+1 upstream TestClient deprecation warning. Phase7 chaos gate PASS14/14 after
+Windows flush fix, with absolute RECORDING_MOUNT_PATH configured. MediaMTX
+integrity/Windows installer suite59PASS. No full-suite/hosted-security PASS claim.
+FORENSIC_WORKER_IMAGE accepts a reviewed immutable repository digest or local
+sha256 image ID. CI builds the worker locally and exercises real container
+resource controls, source hashes, completion, cancellation and removal on Linux.

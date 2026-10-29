@@ -23,6 +23,8 @@ IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg"})
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv"})
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 MAX_VIDEO_SECONDS = 120.0
+MAX_OUTPUT_BYTES = 512 * 1024 * 1024
+MAX_OUTPUT_FRAMES = 7200
 MAX_PIXEL_COUNT = 3840 * 2160
 PROBE_TIMEOUT_SECONDS = 20
 PROCESS_TIMEOUT_SECONDS = 240
@@ -71,12 +73,14 @@ class Settings:
         }
         for name, (minimum, maximum) in ranges.items():
             value = getattr(self, name)
-            if not isinstance(value, (int, float)) or not math.isfinite(value):
+            if type(value) not in (int, float) or not math.isfinite(value):
                 raise EnhancementError(f"{name} must be a finite number")
             if not minimum <= value <= maximum:
                 raise EnhancementError(f"{name} must be between {minimum} and {maximum}")
         if self.roi is not None:
-            if len(self.roi) != 4 or any(type(value) is not int for value in self.roi):
+            if not isinstance(self.roi, (tuple, list)) or len(self.roi) != 4 or any(
+                type(value) is not int for value in self.roi
+            ):
                 raise EnhancementError("ROI must contain four integer coordinates")
             x, y, width, height = self.roi
             if x < 0 or y < 0 or width < 2 or height < 2:
@@ -140,7 +144,8 @@ def probe_source(source: Path) -> dict[str, object]:
         raise EnhancementError("Source size exceeds the allowed bounds")
     raw = _run(
         [
-            "ffprobe", "-v", "error", "-show_entries",
+            "ffprobe", "-v", "error", "-protocol_whitelist", "file",
+            "-format_whitelist", "png_pipe,jpeg_pipe,image2,mov,matroska,webm", "-show_entries",
             "stream=codec_type,width,height:format=duration", "-of", "json",
             str(source),
         ],
@@ -216,7 +221,7 @@ def _safe_paths(source_path: str, output_path: str) -> tuple[Path, Path, Path]:
     Raises:
         EnhancementError: When paths violate the offline export contract.
     """
-    if "://" in source_path or "://" in output_path:
+    if any("://" in value or value.startswith(("\\\\", "//")) for value in (source_path, output_path)):
         raise EnhancementError("URLs and network media sources are not accepted")
     try:
         source = Path(source_path).resolve(strict=True)
@@ -236,6 +241,23 @@ def _safe_paths(source_path: str, output_path: str) -> tuple[Path, Path, Path]:
     if any(path.exists() or path.is_symlink() for path in (output, manifest)):
         raise EnhancementError("Derivative or manifest already exists; refusing overwrite")
     return source, output, manifest
+
+
+def _publish_new(temporary: Path, destination: Path) -> None:
+    """Publish without overwriting a concurrent writer on Windows or POSIX.
+
+    Args:
+        temporary: Completed file on the destination filesystem.
+        destination: Previously unused destination path.
+
+    Raises:
+        OSError: Destination exists or filesystem cannot publish safely.
+    """
+    if os.name == "nt":
+        # Windows rename fails on existing destinations; POSIX rename replaces.
+        os.rename(temporary, destination)
+    else:
+        os.link(temporary, destination)
 
 
 def enhance(source_path: str, output_path: str, settings: Settings) -> dict[str, object]:
@@ -265,22 +287,36 @@ def enhance(source_path: str, output_path: str, settings: Settings) -> dict[str,
     os.close(descriptor)
     temporary_manifest = Path(temporary_manifest_name)
     succeeded = False
+    published_output = False
     try:
         command = [
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-threads", "1",
+            "-protocol_whitelist", "file",
+            "-format_whitelist", "png_pipe,jpeg_pipe,image2,mov,matroska,webm",
             "-i", str(source), "-map", "0:v:0", "-an", "-sn", "-dn",
+            "-filter_threads", "1", "-filter_complex_threads", "1", "-threads", "1",
+            "-fs", str(MAX_OUTPUT_BYTES),
             "-map_metadata", "-1", "-vf", graph,
         ]
         if media["is_image"]:
             command.extend(["-frames:v", "1", "-c:v", "png", "-pix_fmt", "rgb24", str(temporary)])
         else:
             command.extend([
+                "-t", str(MAX_VIDEO_SECONDS), "-frames:v", str(MAX_OUTPUT_FRAMES),
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(temporary),
             ])
         _run(command, PROCESS_TIMEOUT_SECONDS)
         if not temporary.is_file() or temporary.stat().st_size == 0:
             raise EnhancementError("Processing produced no derivative")
+        if temporary.stat().st_size >= MAX_OUTPUT_BYTES:
+            raise EnhancementError("Derivative exceeds the configured output budget")
+        derivative_media = probe_source(temporary)
+        if not media["is_image"]:
+            source_duration = float(media["duration_seconds"])
+            derivative_duration = float(derivative_media["duration_seconds"])
+            if derivative_duration + 0.1 < source_duration:
+                raise EnhancementError("Processing limits shortened the clip; derivative discarded")
         if sha256_file(source) != original_hash:
             raise EnhancementError("Source changed while processing; derivative discarded")
         record: dict[str, object] = {
@@ -291,10 +327,18 @@ def enhance(source_path: str, output_path: str, settings: Settings) -> dict[str,
             "derivative_filename": output.name,
             "derivative_sha256": sha256_file(temporary),
             "source_media": media,
+            "derivative_media": derivative_media,
             "settings": asdict(settings),
             "filter_graph": graph,
             "processor": version,
             "audio": "not included in derivative",
+            "processing_limits": {
+                "max_output_bytes": MAX_OUTPUT_BYTES,
+                "max_video_seconds": MAX_VIDEO_SECONDS,
+                "max_output_frames": MAX_OUTPUT_FRAMES,
+                "threads": 1,
+                "notice": "Shortened clips are rejected; duration tolerance is 0.1 seconds",
+            },
             "disclaimer": (
                 "Enhanced interpretation only. Original data was preserved. "
                 "Filters cannot recover details the sensor did not capture."
@@ -302,14 +346,17 @@ def enhance(source_path: str, output_path: str, settings: Settings) -> dict[str,
         }
         temporary_manifest.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         # A manifest write failure must not leave a misleading completed result.
-        os.replace(temporary, output)
-        os.replace(temporary_manifest, manifest)
+        # Non-replacing publication fails if a competing writer won.
+        # Both temporary files share the destination filesystem.
+        _publish_new(temporary, output)
+        published_output = True
+        _publish_new(temporary_manifest, manifest)
         succeeded = True
         return record
     finally:
         temporary.unlink(missing_ok=True)
         temporary_manifest.unlink(missing_ok=True)
-        if not succeeded:
+        if not succeeded and published_output:
             output.unlink(missing_ok=True)
 
 
