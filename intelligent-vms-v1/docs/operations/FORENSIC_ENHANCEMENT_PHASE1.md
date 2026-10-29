@@ -1,4 +1,4 @@
-# Camvault Forensic Enhancement — Phase 1 Offline Worker
+# Intelligent VMS Forensic Enhancement — Phase 1 Offline Worker
 
 **Status: implementation candidate, not field qualified.** Product feature F11-010 remains TARGET until API/client integration, independent QA, CI verification and external qualification.
 
