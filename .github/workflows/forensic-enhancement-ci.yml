@@ -5,6 +5,10 @@ on:
     paths:
       - "intelligent-vms-v1/services/forensic_worker/**"
       - "intelligent-vms-v1/tests/test_forensic_enhancement.py"
+      - "intelligent-vms-v1/tests/forensic_preview_test.cjs"
+      - "intelligent-vms-v1/web/index.html"
+      - "intelligent-vms-v1/web/forensic-preview.js"
+      - "intelligent-vms-v1/web/forensic-ui.js"
       - ".github/workflows/forensic-enhancement-ci.yml"
   workflow_dispatch:
 
@@ -38,3 +42,6 @@ jobs:
       - name: Run synthetic media and negative tests
         working-directory: intelligent-vms-v1
         run: python -m pytest -q tests/test_forensic_enhancement.py
+      - name: Test VMS forensic playback preview
+        working-directory: intelligent-vms-v1
+        run: node tests/forensic_preview_test.cjs
