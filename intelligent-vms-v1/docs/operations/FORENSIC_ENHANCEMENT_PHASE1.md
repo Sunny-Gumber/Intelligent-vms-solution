@@ -30,6 +30,34 @@ For PNG/JPEG inputs, supply a .png output path. The tool writes a .forensic.json
 - Temporary files are removed on handled errors; output and provenance are separate from original media.
 - This is an enhancement derivative, **not** original evidence. Contrast correction and sharpening can amplify noise, produce halos and distort detail. No identification, authenticity or court-admissibility claim is made.
 
+## VMS browser playback integration (experimental)
+
+The current VMS browser playback page now loads web/forensic-preview.js and
+web/forensic-ui.js. Admin/operator users can inspect one already decoded,
+same-origin authorized recording-playback frame using a two-canvas original
+versus enhanced preview. Controls include brightness, contrast, gamma and
+bounded global luminance histogram equalization. Processing stays in the
+operator browser and does not create another RTSP reader, recording source
+or backend processing job. The UI invalidates its frame on logout, playback
+restart, timeline selection changes and active-camera changes.
+
+The preview supports explicit downloads of the decoded original PNG,
+enhanced PNG and a separate JSON report. On a secure browser context,
+the JSON contains SHA-256 hashes of the encoded PNGs, filter settings,
+camera ID and an approximate (not frame-accurate) playback time. **It does
+not hash or authenticate the original MP4**, persist an evidence case,
+perform server-side audit, certify identity, or claim legal admissibility.
+The JavaScript histogram algorithm differs from FFmpeg's global histeq
+filter: matching numeric settings across the two paths are *not* guaranteed
+to produce bit-identical outputs. The preview is capped at 1920x1080 and
+never silently upscales or downscales the captured frame. This panel is
+a first operational UX, not the production forensic engine.
+
+The browser regression test is tests/forensic_preview_test.cjs. Run it from
+intelligent-vms-v1/ with:
+
+    node tests/forensic_preview_test.cjs
+
 ## Tests
 
 Run from intelligent-vms-v1/:
@@ -43,7 +71,7 @@ Always-on tests cover bounds, filter order, ROI validation, unsafe output refusa
 1. Build bounded regional forensic job scheduling with CPU, memory, disk, timeout, retention, cancellation and concurrency quotas, independent of recording/live media.
 2. Stage input **only** from existing authorized recording-export APIs. Never expose arbitrary user-provided server paths, URLs or FFmpeg command parameters.
 3. Bind jobs to operator identity and enforce tenant/site/camera authorization, audit events and download access.
-4. Add original-versus-derivative preview and evidence report verification to the operator UI.
+4. Connect the server-side worker to an authorized queued VMS job and add tamper-evident case provenance. The current browser preview is not a substitute.
 5. Test negative authorization, concurrent operations, disk exhaustion, codec diversity, Windows and Linux packaging, performance and failure isolation.
 6. Evaluate optional CLAHE, temporal alignment and AI restoration separately with quality benchmarks and explicit synthetic-detail warnings.
 7. Complete security and licence reviews, CI, independent reviewer sign-off and real camera qualification before changing F11-010 from TARGET.
