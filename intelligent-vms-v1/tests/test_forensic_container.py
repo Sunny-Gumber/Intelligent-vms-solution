@@ -68,7 +68,8 @@ def test_real_container_resource_controls_hashes_and_cancellation(tmp_path):
         service.command = inspect_controls
         service.transition(job, "queued")
         await service.execute(job, IMAGE)
-        assert job.state == "completed", job.snapshot()
+        assert job.state == "completed", {"state": job.state, "failure_code": job.failure_code,
+                                          "resource_controls_verified": bool(inspected)}
         assert inspected == [True]
         assert job.cleanup_confirmed
         assert (job.directory / "original.mp4").read_bytes() == original

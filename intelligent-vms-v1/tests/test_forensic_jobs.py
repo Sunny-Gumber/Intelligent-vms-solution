@@ -111,16 +111,18 @@ def test_run_completion_hashes_and_cleanup(tmp_path):
 
         async def command(*args, **kwargs):
             calls.append(args)
-            if args[0] == "cp":
-                target = Path(args[-1])
-                if target.suffix == ".mp4":
-                    target.write_bytes(b"enhanced")
-                else:
-                    target.write_text(json.dumps({"source_sha256": hashlib.sha256(b"source").hexdigest(),
-                                                 "derivative_sha256": hashlib.sha256(b"enhanced").hexdigest()}))
             return 0
 
+        async def retrieve(job, container, name, maximum):
+            target = job.directory / name
+            if target.suffix == ".mp4":
+                target.write_bytes(b"enhanced")
+            else:
+                target.write_text(json.dumps({"source_sha256": hashlib.sha256(b"source").hexdigest(),
+                                             "derivative_sha256": hashlib.sha256(b"enhanced").hexdigest()}))
+
         service.command = command
+        service.retrieve = retrieve
         service.transition(job, "queued")
         await service.execute(job, IMAGE)
         assert job.state == "completed"
@@ -131,7 +133,7 @@ def test_run_completion_hashes_and_cleanup(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("failure", ["run", "cp", "hash", "cleanup"])
+@pytest.mark.parametrize("failure", ["run", "transfer", "hash", "cleanup"])
 def test_execution_failures_never_publish_completed(tmp_path, failure):
     async def scenario():
         service = manager(tmp_path)
@@ -144,11 +146,15 @@ def test_execution_failures_never_publish_completed(tmp_path, failure):
                 return 0
             if args[0] == failure:
                 raise RuntimeError("synthetic")
-            if args[0] == "cp":
-                Path(args[-1]).write_bytes(b"bad report")
             return 0
 
+        async def retrieve(job, container, name, maximum):
+            if failure == "transfer":
+                raise RuntimeError("synthetic transfer failure")
+            (job.directory / name).write_bytes(b"bad report")
+
         service.command = command
+        service.retrieve = retrieve
         await service.execute(job, IMAGE)
         assert job.state == "failed"
         assert job.cleanup_confirmed == (failure != "cleanup")
@@ -399,3 +405,65 @@ def test_http_post_json_roi_stages_only_after_authorization(tmp_path, monkeypatc
         assert staged == [("camera", (0, 0, 20, 16))]
         assert response.json()["settings"]["gamma"] == 1.2
         assert client.post("/api/v1/forensic/jobs", json=payload).status_code == 429
+
+
+@pytest.mark.parametrize("mode", ["success", "oversized", "empty", "exit", "cancel", "timeout"])
+def test_live_artifact_reader_is_bounded_and_reaps_cli(tmp_path, monkeypatch, mode):
+    async def scenario():
+        service = manager(tmp_path)
+        job = reserve(service)
+        chunks = [b"abc", b"def"] if mode == "oversized" else [b"abc"]
+        if mode == "empty":
+            chunks = []
+        killed = []
+        calls = []
+
+        class Output:
+            """Supply bounded chunks or synthetic cancellation/timeout."""
+
+            async def read(self, size):
+                assert size == 64 * 1024
+                if mode == "cancel":
+                    raise asyncio.CancelledError()
+                if mode == "timeout":
+                    raise TimeoutError()
+                return chunks.pop(0) if chunks else b""
+
+        class Process:
+            """Track explicit cleanup of an interrupted Docker CLI."""
+
+            returncode = None
+            stdout = Output()
+
+            async def wait(self):
+                if self.returncode is None:
+                    self.returncode = 7 if mode == "exit" else 0
+                return self.returncode
+
+            def kill(self):
+                killed.append(True)
+                self.returncode = -9
+
+        async def spawn(*args, **kwargs):
+            calls.append(args)
+            assert kwargs["stderr"] == asyncio.subprocess.DEVNULL
+            return Process()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        if mode == "success":
+            await service.retrieve(job, "test-container", "enhanced.mp4", 4)
+            assert (job.directory / "enhanced.mp4").read_bytes() == b"abc"
+            assert killed == []
+        else:
+            expected = asyncio.CancelledError if mode == "cancel" else TimeoutError if mode == "timeout" else RuntimeError
+            with pytest.raises(expected):
+                await service.retrieve(job, "test-container", "enhanced.mp4", 4)
+            if mode in {"oversized", "cancel", "timeout"}:
+                assert killed == [True]
+            if (job.directory / "enhanced.mp4").exists():
+                assert (job.directory / "enhanced.mp4").stat().st_size <= 4
+        assert calls[0][:5] == ("docker", "exec", "test-container", "python", "-c")
+        assert calls[0][-2:] == ("/job/enhanced.mp4", "4")
+        with pytest.raises(RuntimeError, match="Unknown"):
+            await service.retrieve(job, "test-container", "../../unsafe", 4)
+    asyncio.run(scenario())

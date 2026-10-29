@@ -35,6 +35,15 @@ _CONTAINER_WRAPPER = (
     "pathlib.Path('/job/completed' if result.returncode==0 else '/job/failed').touch();"
     "time.sleep(3600)"
 )
+_ARTIFACT_READER = """import os,stat,sys
+fd=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+with os.fdopen(fd,'rb') as source:
+    info=os.fstat(source.fileno())
+    if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= int(sys.argv[2]):
+        sys.exit(2)
+    while block := source.read(65536):
+        sys.stdout.buffer.write(block)
+"""
 
 
 @dataclass
@@ -56,6 +65,7 @@ class ForensicJob:
     cleanup_confirmed: bool = True
     cancel_requested: bool = False
     worker_image: str = ""
+    failure_code: str | None = None
 
     def snapshot(self) -> dict:
         """Return a path-free report containing request binding and audit events."""
@@ -63,6 +73,7 @@ class ForensicJob:
             "id": self.id, "camera_id": self.camera_id, "state": self.state,
             "start": self.start, "duration": self.duration, "settings": self.settings,
             "worker_image": self.worker_image,
+            "failure_code": self.failure_code,
             "audit": list(self.events),
             "disclaimer": "Enhanced interpretation; original recordings are unchanged.",
         }
@@ -172,6 +183,36 @@ class ForensicJobs:
                 arguments.extend(["--" + key.replace("_", "-"), str(value)])
         return arguments
 
+    async def retrieve(self, job: ForensicJob, container: str, name: str, maximum: int) -> None:
+        """Stream a fixed artifact from live tmpfs with byte and total-time limits.
+
+        Docker's archive-copy endpoint cannot reliably read tmpfs mounts. Using
+        exec reads the live mount namespace instead; stdout is never buffered
+        beyond one chunk and stderr is never exposed.
+        """
+        if name not in {"enhanced.mp4", "enhanced.mp4.forensic.json"}:
+            raise RuntimeError("Unknown forensic artifact")
+        process = await asyncio.create_subprocess_exec(
+            "docker", "exec", container, "python", "-c", _ARTIFACT_READER, "/job/" + name, str(maximum),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            async with asyncio.timeout(30):
+                total = 0
+                descriptor = os.open(job.directory / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(descriptor, "wb") as handle:
+                    while chunk := await process.stdout.read(64 * 1024):
+                        total += len(chunk)
+                        if total > maximum:
+                            raise RuntimeError("Forensic artifact exceeded its byte limit")
+                        handle.write(chunk)
+                if await process.wait() != 0 or total == 0:
+                    raise RuntimeError("Forensic artifact transfer failed")
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
     async def execute(self, job: ForensicJob, image: str) -> None:
         """Execute queued work, copy bounded artifacts, and always remove its container."""
         container = "vms-forensic-" + job.id
@@ -188,7 +229,9 @@ class ForensicJobs:
                 self.transition(job, "running")
                 started = True
                 job.cleanup_confirmed = False
+                job.failure_code = "executor_start"
                 await self.command(*self.arguments(job, image), timeout=30)
+                job.failure_code = "worker_processing"
                 async with asyncio.timeout(PROCESS_SECONDS):
                     while await self.command("exec", container, "test", "-f", "/job/completed",
                                             timeout=10, check=False):
@@ -198,15 +241,19 @@ class ForensicJobs:
                         await asyncio.sleep(0.5)
                 for name, maximum in (("enhanced.mp4", MAX_DERIVATIVE_BYTES),
                                       ("enhanced.mp4.forensic.json", MAX_REPORT_BYTES)):
+                    job.failure_code = "artifact_transfer"
                     target = job.directory / name
-                    await self.command("cp", container + ":/job/" + name, str(target), timeout=30)
+                    await self.retrieve(job, container, name, maximum)
                     metadata = target.lstat()
                     if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= maximum:
                         raise RuntimeError("Invalid forensic artifact")
+                job.failure_code = "provenance_verification"
                 await self.verify_report(job)
                 state = "completed"
+                job.failure_code = None
         except asyncio.CancelledError:
             state = "cancelled"
+            job.failure_code = None
         except (OSError, RuntimeError, TimeoutError, ValueError, TypeError):
             state = "failed"
         finally:
@@ -218,6 +265,7 @@ class ForensicJobs:
                     # Never claim successful cancellation or release storage on uncertain cleanup.
                     state = "failed"
                     self.unhealthy = True
+                    job.failure_code = "executor_cleanup"
             try:
                 self.transition(job, state)
             finally:
