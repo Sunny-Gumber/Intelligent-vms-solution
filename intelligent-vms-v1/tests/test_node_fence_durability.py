@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,6 +60,16 @@ def test_windows_dispatch_uses_backup_handle_flush(tmp_path, monkeypatch):
     monkeypatch.setattr(helper, "_fsync_directory_windows", calls.append)
     helper.fsync_directory(tmp_path)
     assert calls == [tmp_path]
+
+
+def test_node_image_layout_loads_shared_flush_helper(tmp_path, monkeypatch):
+    """A standalone node image can load the copied helper beside main.py."""
+    copied = tmp_path / "phase8_atomic_publish.py"
+    shutil.copyfile(node_agent._ATOMIC_PUBLISH.__file__, copied)
+    monkeypatch.setattr(node_agent, "__file__", str(tmp_path / "main.py"))
+    loaded = node_agent._load_atomic_publish()
+    assert Path(loaded.__file__) == copied
+    loaded.fsync_directory(tmp_path)
 
 
 def test_directory_flush_failure_never_acknowledges_revocation(tmp_path, monkeypatch):
