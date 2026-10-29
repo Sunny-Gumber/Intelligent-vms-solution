@@ -168,6 +168,7 @@ function setAuthenticated(value,info=null){
  const next=!!value;
  if(!next)bumpLifecycle();
  authenticated=next;
+ window.vmsForensicCanInspect=next&&!!info&&Array.isArray(info.roles)&&info.roles.some(role=>role==='admin'||role==='operator');
  if(window.VMSForensicUI)window.VMSForensicUI.updatePrivileges(next,info);
  document.body.classList.toggle('auth-required',!authenticated);
  document.getElementById('authPanel').style.display=authenticated?'none':'block';
