@@ -26,7 +26,7 @@ MAX_VIDEO_SECONDS = 120.0
 MAX_PIXEL_COUNT = 3840 * 2160
 PROBE_TIMEOUT_SECONDS = 20
 PROCESS_TIMEOUT_SECONDS = 240
-MANIFEST_SCHEMA = "camvault-forensic-derivative-v1"
+MANIFEST_SCHEMA = "vms-forensic-derivative-v1"
 
 
 class EnhancementError(ValueError):
@@ -340,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         Zero on success and two for a handled failure.
     """
-    parser = argparse.ArgumentParser(description="Camvault offline forensic image/video enhancement")
+    parser = argparse.ArgumentParser(description="Intelligent VMS offline forensic image/video enhancement")
     parser.add_argument("--input", required=True, help="Existing authorized local export")
     parser.add_argument("--output", required=True, help="New PNG (images) or MP4 (clips)")
     parser.add_argument("--brightness", type=float, default=0.0)
