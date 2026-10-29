@@ -69,7 +69,12 @@ def _positive_finite_timeout(value: object, *, maximum: float) -> float:
 
 
 class Settings(BaseSettings):
-    """Load validated control-plane configuration from environment settings.\n\n    Parameters are supplied through environment variables or the local .env file.\n    Instantiation returns a validated Settings object and may raise Pydantic\n    validation errors when configured values do not match their declared types.\n    """
+    """Validated service configuration loaded from environment and optional dotenv."""
+
+    forensic_jobs_enabled: bool = False
+    forensic_spool_dir: str = ""
+    forensic_worker_image: str = ""
+
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

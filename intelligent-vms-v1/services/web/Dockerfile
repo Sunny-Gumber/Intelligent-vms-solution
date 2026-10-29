@@ -1,4 +1,4 @@
-FROM nginx:1.30.5-alpine3.24-slim
+FROM nginx:1.30.6-alpine3.24-slim@sha256:dede8895648b461178c3bc604f7eed4423efe5220b2c4d839f5eb3d34ac3f8f7
 RUN apk upgrade --no-cache
 RUN apk add --no-cache curl
 RUN sed -i 's#^[[:space:]]*pid[[:space:]].*;#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf \

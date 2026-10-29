@@ -65,6 +65,36 @@ def _load_effective_authority():
 _AUTHORITY = _load_effective_authority()
 
 
+def _load_atomic_publish():
+    """Load the existing cross-platform durable-directory helper without duplication.
+
+    Returns:
+        Shared publish module from the source checkout or the node image copy.
+
+    Raises:
+        ImportError: The helper was omitted from the node installation.
+    """
+    import importlib.util
+
+    candidates = (
+        Path(__file__).resolve().parent.parent.parent / "tools" / "phase8_atomic_publish.py",
+        Path(__file__).resolve().with_name("phase8_atomic_publish.py"),
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location("vms_node_atomic_publish", path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    raise ImportError("shared atomic publish helper is not available")
+
+
+_ATOMIC_PUBLISH = _load_atomic_publish()
+
+
 def _load_mediamtx_list_page():
     """Load the single MediaMTX list-page contract.
 
@@ -620,11 +650,7 @@ class NodeAgent:
         tmp.replace(path)
 
         # Persist the rename itself before acknowledging a control-plane revoke.
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _ATOMIC_PUBLISH.fsync_directory(path.parent)
 
     @staticmethod
     def _fence_key(camera_id: str, role: str) -> str:
