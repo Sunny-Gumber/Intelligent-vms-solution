@@ -217,4 +217,6 @@
   el('fnSaveEnhanced').addEventListener('click', () => download('enhanced'));
   el('fnSaveReport').addEventListener('click', report);
   window.VMSForensicUI = Object.freeze({reset, updateCapture, updatePrivileges});
+  // Initial session can finish before this external script is loaded.
+  updatePrivileges(authenticated, {roles: window.vmsForensicCanInspect ? ['operator'] : []});
 })();
