@@ -823,6 +823,7 @@ function selectPlaybackSpan(id,s,requestedTime){
  playbackSelection={cameraId:id,start:s.start,duration:s.duration};
  playbackSelection.spanStart=start.toISOString();playbackSelection.spanEnd=end.toISOString();
  playbackSelection.start=selected.toISOString();playbackSelection.duration=duration;
+ if(window.VMSForensicUI)window.VMSForensicUI.updateCapture();
  document.querySelectorAll('#timeline .span').forEach(el=>el.classList.toggle('selected',el.dataset.start===s.start));
  document.getElementById('pbSelected').textContent='Selected '+selected.toLocaleString();
  document.getElementById('pbPlay').disabled=false;
