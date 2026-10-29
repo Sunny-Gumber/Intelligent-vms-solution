@@ -168,6 +168,7 @@ function setAuthenticated(value,info=null){
  const next=!!value;
  if(!next)bumpLifecycle();
  authenticated=next;
+ if(window.VMSForensicUI)window.VMSForensicUI.updatePrivileges(next,info);
  document.body.classList.toggle('auth-required',!authenticated);
  document.getElementById('authPanel').style.display=authenticated?'none':'block';
  const signOut=document.getElementById('signOut'),identity=document.getElementById('identity');
@@ -764,7 +765,9 @@ async function loadPlaybackTimeline(){
  const window=localDayWindow(dateValue),requested=localDateTime(dateValue,timeValue);
  if(!window||!requested){document.getElementById('pbmsg').textContent='Choose a valid local date and time.';return}
  const generation=++playbackState.generation;
- playbackState.spans=[];playbackState.selectedSpan=null;playbackSelection=null;resetPlaybackPlayer();
+ playbackState.spans=[];playbackState.selectedSpan=null;playbackSelection=null;
+ if(window.VMSForensicUI)window.VMSForensicUI.reset();
+ resetPlaybackPlayer();
  document.getElementById('pbPlay').disabled=true;document.getElementById('pbexport').disabled=true;
  document.getElementById('pbClipStart').disabled=true;document.getElementById('pbClipEnd').disabled=true;
  document.getElementById('timeline').innerHTML='';
@@ -814,6 +817,7 @@ function selectPlaybackSpan(id,s,requestedTime){
  if(Number.isNaN(start.getTime())||Number.isNaN(end.getTime())||end<=start)return;
  const selectedMs=Math.min(end.getTime()-1,Math.max(start.getTime(),requested.getTime())),selected=new Date(selectedMs);
  const duration=Math.min(PLAYBACK_MAX_SECONDS,Math.max(.001,(end-selected)/1000));
+ if(window.VMSForensicUI)window.VMSForensicUI.reset();
  playbackState.selectedSpan=s;
  playbackSelection={cameraId:id,start:s.start,duration:s.duration};
  playbackSelection.spanStart=start.toISOString();playbackSelection.spanEnd=end.toISOString();
@@ -832,6 +836,7 @@ function playSelectedTime(){
  const epoch=authEpoch,selection=playbackSelection;
  if(!selection||selection.cameraId!==playbackState.cameraId||selection.cameraId!==activeCameraId())return;
  const generation=++playbackState.playGeneration,player=document.getElementById('player');
+ if(window.VMSForensicUI)window.VMSForensicUI.reset();
  resetPlaybackPlayer();
  player.src=`${API}/recordings/cameras/${encodeURIComponent(selection.cameraId)}/play?start=${encodeURIComponent(selection.start)}&duration=${encodeURIComponent(selection.duration)}&format=mp4`;
  player.load();document.getElementById('pbPause').disabled=false;
@@ -864,6 +869,7 @@ function downloadSelectedClip(){
  link.rel='noopener';link.click();
 }
 function closePlayback(scrollToLive=false){
+ if(window.VMSForensicUI)window.VMSForensicUI.reset();
  playbackState.generation++;playbackState.playGeneration++;playbackState.cameraId=null;playbackState.spans=[];playbackState.selectedSpan=null;playbackState.windowStart=null;playbackState.windowEnd=null;playbackSelection=null;
  resetPlaybackPlayer();
  document.getElementById('pbPlay').disabled=true;document.getElementById('pbexport').disabled=true;
@@ -906,5 +912,7 @@ window.addEventListener('pagehide',()=>{closePlayback(false)});
 window.addEventListener('pagehide',()=>{stopLiveSessions()});
 initializeSession();setInterval(()=>{if(authenticated)refreshHealth()},10000);
 </script>
+<script src="/forensic-preview.js"></script>
+<script src="/forensic-ui.js"></script>
 </body>
 </html>
