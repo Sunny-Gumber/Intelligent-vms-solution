@@ -75,4 +75,5 @@ const VMSForensicPreview = (() => {
 
   return Object.freeze({MAX_PIXELS, validateSettings, validateFrame, enhanceFrame});
 })();
+if (typeof window !== 'undefined') window.VMSForensicPreview = VMSForensicPreview;
 if (typeof module !== 'undefined' && module.exports) module.exports = VMSForensicPreview;
