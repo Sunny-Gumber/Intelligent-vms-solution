@@ -58,7 +58,7 @@ def test_mediamtx_go_patch_pin_matches_build_consumers() -> None:
     go_version = manifest["go_version"]
     assert manifest["x_net_version"] == "v0.60.0"
     assert manifest["x_net_checksum"] == "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU="
-    assert go_version == "1.26.9"
+    assert go_version == "1.26.10"
     consumers = [
         (ROOT / "infra/mediamtx/Dockerfile").read_text(),
         (ROOT.parent / ".github/workflows/intelligent-vms-windows-field-test.yml").read_text(),

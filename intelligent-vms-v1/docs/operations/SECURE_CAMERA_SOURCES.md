@@ -58,7 +58,7 @@ redirects must be configured using their final validated endpoint. This confines
 RTSP and RTSPS sources equally without a proxy or transcoding.
 
 Linux and Windows use the same checksum-pinned source and patch. The builder pins
-Go 1.26.9 and the checksummed golang.org/x/net v0.60.0 HTTP/2 security update,
+Go 1.26.10 and the checksummed golang.org/x/net v0.60.0 HTTP/2 security update,
 verifies generated HLS assets, and produces reproducible Windows ZIPs
 with fixed timestamps and pinned ZIP/executable SHA-256. The MediaMTX
 runtime itself installs from a verified bundled ZIP without a network download;
@@ -71,7 +71,7 @@ the source confinement contract. Helm uses operator-supplied immutable VMS image
 
 ### Security rebuild identity and cached Windows build inputs — issue #173
 
-The Go 1.26.9 / x/net v0.60.0 patch retains the VMS runtime suffix
+The Go 1.26.10 / x/net v0.60.0 patch retains the VMS runtime suffix
 `1.21.1-vms.1` intentionally. This suffix identifies the upstream VMS patch
 line, **not** one uniquely compiled security build. Accept an actual runtime
 using the reviewed repository commit and the SHA-256 pins in
@@ -101,7 +101,7 @@ select approved builds by the full installer checksum plus the reviewed commit.
 A future public release/version increment is a separate signed-release decision;
 it must not reuse stale ZIP/EXE digests.
 
-For a source build: install pinned Go 1.26.9 and Python 3.12, then use
+For a source build: install pinned Go 1.26.10 and Python 3.12, then use
 `python tools/build_mediamtx.py --work <build-directory> --output <binary-or-windows-zip> --target-os linux|windows`.
 Build manifest: `infra/mediamtx/runtime.json`. No camera secrets enter the build.
 
