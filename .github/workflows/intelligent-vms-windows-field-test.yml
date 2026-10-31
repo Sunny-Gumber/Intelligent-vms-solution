@@ -53,18 +53,18 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'
+          go-version: '1.27.3'
           cache: false
       - name: Prepare pinned MediaMTX direct-script fixture
         shell: pwsh
         run: |
           $runtime=Join-Path $PWD "deploy\windows\runtime"
           New-Item -ItemType Directory -Force -Path $runtime|Out-Null
-          $zip=Join-Path $runtime "mediamtx_v1.21.1-vms.1_windows_amd64.zip"
+          $zip=Join-Path $runtime "mediamtx_v1.21.3-vms.1_windows_amd64.zip"
           python tools/build_mediamtx.py --work "$env:RUNNER_TEMP/mediamtx-source" --output $zip --target-os windows
           if($LASTEXITCODE -ne 0){throw "Pinned MediaMTX source build failed"}
           $hash=(Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-          if($hash -ne "5268c43c2643ddbc1ceeefc5ea26489e65055be43cc4d785bf5af7fcd9b26401"){throw "Pinned MediaMTX direct-script fixture hash mismatch"}
+          if($hash -ne "16eaee7c46959f2a523f8dea3405f12f362298f81a1f20eae5e4c9d6a159dc24"){throw "Pinned MediaMTX direct-script fixture hash mismatch"}
           python -m pip install -r services/control-api/requirements.txt
           Expand-Archive -LiteralPath $zip -DestinationPath "$env:RUNNER_TEMP/media-transport-check" -Force
           python tools/check_camera_transport_runtime.py --binary "$env:RUNNER_TEMP/media-transport-check/mediamtx.exe"

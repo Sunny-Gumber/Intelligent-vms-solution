@@ -56,9 +56,9 @@ def test_mediamtx_go_patch_pin_matches_build_consumers() -> None:
     """Keep the patched Go baseline consistent in Linux and Windows builders."""
     manifest = json.loads((ROOT / "infra/mediamtx/runtime.json").read_text())
     go_version = manifest["go_version"]
-    assert manifest["x_net_version"] == "v0.60.0"
-    assert manifest["x_net_checksum"] == "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU="
-    assert go_version == "1.26.10"
+    assert manifest["x_net_version"] == "v0.62.0"
+    assert manifest["x_net_checksum"] == "h1:18ELalfM5+XNRwzM2nYqXsZQ9ByS1uhj2O/U7+5jqRY="
+    assert go_version == "1.27.3"
     consumers = [
         (ROOT / "infra/mediamtx/Dockerfile").read_text(),
         (ROOT.parent / ".github/workflows/intelligent-vms-windows-field-test.yml").read_text(),
@@ -67,14 +67,21 @@ def test_mediamtx_go_patch_pin_matches_build_consumers() -> None:
     assert f"golang:{go_version}-alpine" in consumers[0]
     assert all(f"go-version: '{go_version}'" in content for content in consumers[1:])
 
+
+def test_mediamtx_runtime_includes_authentication_fixes() -> None:
+    """Keep the pinned runtime at or beyond the upstream playback/JWKS fixes."""
+    manifest = json.loads((ROOT / "infra/mediamtx/runtime.json").read_text())
+    assert tuple(map(int, manifest["upstream_version"].split("."))) >= (1, 21, 2)
+
+
 @pytest.mark.parametrize("changed_field", ["Version", "Sum"])
 def test_go_module_override_rejects_version_or_checksum_drift(changed_field: str) -> None:
     """Check that transitive x/net cannot roll back or change without detection."""
     from tools.build_mediamtx import verify_go_module_pin
 
     manifest = {
-        "x_net_version": "v0.60.0",
-        "x_net_checksum": "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU=",
+        "x_net_version": "v0.62.0",
+        "x_net_checksum": "h1:18ELalfM5+XNRwzM2nYqXsZQ9ByS1uhj2O/U7+5jqRY=",
     }
     module = {"Version": manifest["x_net_version"], "Sum": manifest["x_net_checksum"]}
     verify_go_module_pin(module, manifest)

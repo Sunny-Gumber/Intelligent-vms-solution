@@ -352,3 +352,11 @@ The 0.2.1 field-test candidate fixes defects found during the first real Windows
 - Exact fixing PR, reviewed head, accepted merge/main and post-merge CI acceptance are recorded in [issue #27](https://github.com/Sunny-Gumber/Intelligent-vms-solution/issues/27). This source document alone does not confer acceptance.
 - Operator/trust/build/regression runbook: `docs/operations/SECURE_CAMERA_SOURCES.md`. After accepted post-merge CI, STOP; upgrade the existing Ubuntu VM to the accepted SHA, configure RTSPS /0 + /1, THIRD blank, and manually verify onboarding then SUB live and MAIN recording.
 - Product remains **Release Candidate / External Qualification Pending**. No full camera, THIRD, HEVC-browser, Windows 10/11, capacity or production claim.
+
+## Security PR #174 refresh — 2026-10-31 — acceptance pending
+
+- Review of exact head `00a96c026ffc58a47ae85825aa348b4946c16a4a` found its MediaMTX 1.21.1 pin predates upstream v1.21.2 fixes for unauthenticated playback with legacy credentials and unauthenticated JWKS fetches that can stall authentication.
+- The existing focused branch now updates the runtime candidate to MediaMTX 1.21.3, Go 1.27.3 and checksummed `golang.org/x/net` v0.62.0. The source redirect guard remains part of the verified build.
+- The Windows ZIP and executable hashes are regenerated from two identical cross-builds and propagated through installers, CI and tests. Linux and Windows compile against the same manifest.
+- This correction is unmerged. `main` remains `14a21ca98eeaedb51ca416fafe346159eced70e9`; PR #174 requires exact-head CI plus accountable independent QA/Security/Reviewer acceptance and explicit owner merge authorization. No production qualification is implied.
+- Product status remains **Release Candidate / External Qualification Pending**.

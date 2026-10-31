@@ -30,7 +30,7 @@ failed source changes restore the previous protocol/trust along with credentials
 
 ## Certificate trust and media runtime
 
-Pinned upstream MediaMTX 1.21.1 supports RTSPS sources. Without a fingerprint,
+Pinned upstream MediaMTX 1.21.3 supports RTSPS sources. Without a fingerprint,
 Go's normal certificate chain and hostname/IP verification applies. A self-signed
 certificate or a DNS-only certificate used through the pinned IP fails unless an
 operator explicitly approves the exact device certificate.
@@ -46,19 +46,19 @@ No RTSPS failure silently retries using RTSP. Source provisioning config accepta
 does not prove the camera is online; inspect camera health after activation.
 
 Official upstream sources:
-- [RTSPS source](https://github.com/bluenviron/mediamtx/blob/v1.21.1/internal/staticsources/rtsp/source.go)
-- [Certificate semantics](https://github.com/bluenviron/mediamtx/blob/v1.21.1/internal/protocols/tls/make_config.go)
+- [RTSPS source](https://github.com/bluenviron/mediamtx/blob/v1.21.3/internal/staticsources/rtsp/source.go)
+- [Certificate semantics](https://github.com/bluenviron/mediamtx/blob/v1.21.3/internal/protocols/tls/make_config.go)
 - [Redirect behavior](https://github.com/bluenviron/gortsplib/blob/v5.6.6/client.go)
 
 Upstream follows RTSP redirects carrying camera credentials outside the initially
-pinned address. VMS runtime **1.21.1-vms.1** applies one source response callback
+pinned address. VMS runtime **1.21.3-vms.1** applies one source response callback
 patch deleting `Location` for 3xx responses before redirect handling/logging. It
 blocks all camera source redirects, including same-site redirects. Cameras requiring
 redirects must be configured using their final validated endpoint. This confines
 RTSP and RTSPS sources equally without a proxy or transcoding.
 
 Linux and Windows use the same checksum-pinned source and patch. The builder pins
-Go 1.26.10 and the checksummed golang.org/x/net v0.60.0 HTTP/2 security update,
+Go 1.27.3 and the checksummed golang.org/x/net v0.62.0 update,
 verifies generated HLS assets, and produces reproducible Windows ZIPs
 with fixed timestamps and pinned ZIP/executable SHA-256. The MediaMTX
 runtime itself installs from a verified bundled ZIP without a network download;
@@ -71,17 +71,20 @@ the source confinement contract. Helm uses operator-supplied immutable VMS image
 
 ### Security rebuild identity and cached Windows build inputs — issue #173
 
-The Go 1.26.10 / x/net v0.60.0 patch retains the VMS runtime suffix
-`1.21.1-vms.1` intentionally. This suffix identifies the upstream VMS patch
-line, **not** one uniquely compiled security build. Accept an actual runtime
-using the reviewed repository commit and the SHA-256 pins in
+The Go 1.27.3 / x/net v0.62.0 build retains the VMS runtime suffix
+`1.21.3-vms.1`. MediaMTX v1.21.2 also fixes unauthenticated playback access
+with legacy credentials and avoids unauthenticated JWKS fetches that could
+stall authentication. This suffix identifies the upstream VMS patch
+line, **not** one uniquely compiled security build. Until PR #174 is accepted,
+main still uses its existing runtime. Identify a candidate runtime using the
+reviewed repository commit and the SHA-256 pins in
 `infra/mediamtx/runtime.json`; Windows installation checks both the bundled
 ZIP and its extracted EXE. Qualification records must include the observed
 artifact digest (rather than relying on a version-only stamp). Do not treat a
 `sha256_status: NOT_PROVIDED` qualification entry as artifact evidence.
 
 When reusing an existing `Build-Installer.ps1 -OutputRoot`, an old cached
-`build-inputs/mediamtx_v1.21.1-vms.1_windows_amd64.zip` may retain the same
+`build-inputs/mediamtx_v1.21.3-vms.1_windows_amd64.zip` may retain the same
 name but the previous Go compiler's bytes. The packaging hash gate rejects this
 old file rather than silently accepting it. After verifying the stale-hash
 error, delete **only that cached build input** or use a fresh OutputRoot; then
@@ -89,7 +92,7 @@ rebuild from the pinned verified sources. For example, in PowerShell with your
 actual build output directory assigned to `$OutputRoot`:
 
 ```powershell
-$oldMediaZip = Join-Path $OutputRoot "build-inputs/mediamtx_v1.21.1-vms.1_windows_amd64.zip"
+$oldMediaZip = Join-Path $OutputRoot "build-inputs/mediamtx_v1.21.3-vms.1_windows_amd64.zip"
 Remove-Item -LiteralPath $oldMediaZip -Force
 ```
 
@@ -101,7 +104,7 @@ select approved builds by the full installer checksum plus the reviewed commit.
 A future public release/version increment is a separate signed-release decision;
 it must not reuse stale ZIP/EXE digests.
 
-For a source build: install pinned Go 1.26.10 and Python 3.12, then use
+For a source build: install pinned Go 1.27.3 and Python 3.12, then use
 `python tools/build_mediamtx.py --work <build-directory> --output <binary-or-windows-zip> --target-os linux|windows`.
 Build manifest: `infra/mediamtx/runtime.json`. No camera secrets enter the build.
 

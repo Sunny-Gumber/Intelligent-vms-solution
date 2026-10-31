@@ -54,7 +54,7 @@ jobs:
           architecture: 'x64'
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'
+          go-version: '1.27.3'
           cache: false
       - name: Install pinned NSIS compiler
         shell: pwsh
@@ -442,7 +442,7 @@ jobs:
           $after=(Get-FileHash "$env:ProgramData\IntelligentVMS\config\vms.env").Hash
           if($before -ne $after){throw "Upgrade replaced protected configuration"}
           $installedMedia="$env:ProgramData\IntelligentVMS\runtime\mediamtx\mediamtx.exe"
-          if((Get-FileHash -Algorithm SHA256 $installedMedia).Hash.ToLowerInvariant() -ne "566a0d875950527e12bfb78a4fb8206b75cbcd2b137d86a33082aedd73d43db8"){throw "Upgrade did not replace the accepted-baseline media runtime"}
+          if((Get-FileHash -Algorithm SHA256 $installedMedia).Hash.ToLowerInvariant() -ne "61ace46de078e36666542469f34c6df90024573a417e2ab5722e71c24876cd27"){throw "Upgrade did not replace the accepted-baseline media runtime"}
           if(-not (Test-Path (Join-Path $record "preserve.me"))){throw "Upgrade lost recording data"}
           & "$env:ProgramData\IntelligentVMS\app\deploy\windows\Vms-Windows.ps1" -Action Health
           if(-not $?){throw "Upgrade server health failed"}
