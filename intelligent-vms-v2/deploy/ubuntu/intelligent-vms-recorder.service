@@ -1,0 +1,30 @@
+[Unit]
+Description=Intelligent VMS recording worker
+After=network-online.target postgresql.service intelligent-vms-api.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=exec
+User=vms
+Group=vms
+Environment=VMS_CONFIG_FILE=/etc/intelligent-vms/vms.toml
+WorkingDirectory=/opt/intelligent-vms
+ExecStart=/opt/intelligent-vms/venv/bin/python -m recorder.worker
+
+Restart=always
+RestartSec=5s
+# Longer than the API: the worker finalizes the current segment of every
+# camera before exiting, so recordings are never truncated by a restart.
+TimeoutStopSec=60s
+KillSignal=SIGTERM
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/intelligent-vms
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

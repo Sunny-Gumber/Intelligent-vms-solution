@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  package:
+    name: Build release artefacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Stamp build metadata
+        run: |
+          echo "VMS_BUILD_COMMIT=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+          echo "VMS_BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "VMS_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - name: Build wheels
+        run: |
+          pip install build
+          python -m build --wheel --outdir dist packages/shared-contracts
+          python -m build --wheel --outdir dist services/control-api
+          python -m build --wheel --outdir dist services/recording-service
+
+      - name: Generate the software bill of materials
+        run: |
+          pip install PyYAML
+          python tools/generate_sbom.py --output dist/sbom.json
+
+      # A release must publish its own honest status, not just its binaries.
+      - name: Attach the feature matrix and limitations
+        run: |
+          cp docs/requirements/feature-matrix.md dist/
+          cp docs/LIMITATIONS.md dist/
+          cp CHANGELOG.md dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intelligent-vms-${{ github.ref_name }}
+          path: dist/

@@ -1,0 +1,403 @@
+# Intelligent VMS — Requirements Traceability Source of Truth
+#
+# Every requirement in the master specification (Modules 1-20) is recorded here.
+#
+#   status:        implemented | partial | designed | not_implemented | blocked
+#   verification:  automated   | manual  | none
+#
+# "implemented" means the code exists, is integrated, is reachable from a
+# caller and its configuration is documented. It does NOT mean it has been
+# validated against physical camera hardware. Hardware validation is tracked
+# separately in docs/verification/external-qualification-plan.md.
+#
+# docs/requirements/feature-matrix.md is GENERATED from this file by
+# tools/generate_feature_matrix.py. Edit this file, not the matrix.
+
+meta:
+  product: Intelligent VMS
+  version: 0.1.0-alpha
+  statuses_reconciled: 2026-10-20
+  production_ready: false
+  evidence_run: docs/verification/test-run.txt
+
+modules:
+  - id: M1
+    name: Platform and System Architecture
+    requirements:
+      - {id: M1-R01, text: "Control server", component: "services/control-api", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py (app boots, 88 OpenAPI paths served)"}
+      - {id: M1-R02, text: "Media streaming service", component: "app/media/mediamtx_client.py", status: partial, verification: automated, evidence: "control plane implemented; transport delegated to MediaMTX (ADR-0006)"}
+      - {id: M1-R03, text: "Recording service", component: "services/recording-service", status: implemented, verification: automated, evidence: "tests/integration/test_recording_pipeline.py::test_recorder_produces_playable_segments_and_matching_index"}
+      - {id: M1-R04, text: "Playback and export service", component: "app/playback, app/exports", status: implemented, verification: automated, evidence: "tests/integration/test_recording_pipeline.py::test_export_produces_a_real_clip_with_verifiable_evidence"}
+      - {id: M1-R05, text: "Camera discovery and device management service", component: "app/devices", status: partial, verification: automated, evidence: "adapters and WS-Discovery implemented; no hardware validation"}
+      - {id: M1-R06, text: "ONVIF integration service", component: "app/devices/onvif_adapter.py", status: partial, verification: automated, evidence: "SOAP digest auth and message parsing unit tested; device calls unverified"}
+      - {id: M1-R07, text: "Event and alarm processing service", component: "app/events_engine", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py alarm and dedupe tests"}
+      - {id: M1-R08, text: "Authentication and authorization service", component: "app/core/security.py, app/core/rbac.py", status: implemented, verification: automated, evidence: "tests/unit/test_core_primitives.py, tests/integration/test_api_flows.py authz tests"}
+      - {id: M1-R09, text: "Database and configuration service", component: "app/db, database/migrations", status: implemented, verification: automated, evidence: "every test runs against the real Alembic migration"}
+      - {id: M1-R10, text: "Storage management service", component: "app/storage", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py storage tests"}
+      - {id: M1-R11, text: "Health monitoring service", component: "app/health", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py health endpoints"}
+      - {id: M1-R12, text: "AI analytics service / deployable analytics worker", component: "app/analytics, services/analytics-service", status: partial, verification: automated, evidence: "ingestion, zones and worker interface implemented; NO inference models bundled"}
+      - {id: M1-R13, text: "Web management application", component: "apps/web-client", status: partial, verification: none, evidence: "TypeScript source delivered; npm build not executed in this environment"}
+      - {id: M1-R14, text: "Windows desktop monitoring client", component: "apps/windows-client", status: partial, verification: none, evidence: "WPF/MVVM source delivered; no .NET SDK in the build environment"}
+      - {id: M1-R15, text: "Installer, upgrade and maintenance components", component: "installers, deploy", status: partial, verification: none, evidence: "scripts delivered; not executed on a target OS"}
+      - {id: M1-R16, text: "Stable internal contracts between components", component: "packages/shared-contracts", status: implemented, verification: automated, evidence: "vms_contracts imported by every service; 25 enums, 31 DTOs"}
+      - {id: M1-R17, text: "Startup dependencies, health checks, graceful shutdown, recovery", component: "app/lifecycle.py, app/core/supervisor.py", status: implemented, verification: automated, evidence: "tests/unit/test_core_primitives.py supervisor and backoff tests"}
+
+  - id: M2
+    name: Camera Discovery and Onboarding
+    requirements:
+      - {id: M2-R01, text: "ONVIF-compatible camera discovery (WS-Discovery)", component: "app/devices/discovery.py", status: partial, verification: none, evidence: "UDP multicast probe and ProbeMatch parsing implemented; requires a LAN device to validate"}
+      - {id: M2-R02, text: "Manual IP address onboarding", component: "app/api/v1/cameras.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_camera_crud_and_credential_protection"}
+      - {id: M2-R03, text: "RTSP and RTSPS stream configuration", component: "app/media/url_builder.py", status: implemented, verification: automated, evidence: "tests/unit/test_core_primitives.py URL tests"}
+      - {id: M2-R04, text: "Camera username/password authentication", component: "app/devices/credentials.py", status: implemented, verification: automated, evidence: "tests/unit/test_core_primitives.py credential vault tests"}
+      - {id: M2-R05, text: "Secure credential storage (encrypted at rest)", component: "app/core/crypto.py", status: implemented, verification: automated, evidence: "AES-256-GCM with per-camera AAD; tamper and wrong-key tests pass"}
+      - {id: M2-R06, text: "Camera model and manufacturer identification", component: "app/devices/onvif_adapter.py", status: partial, verification: none, evidence: "GetDeviceInformation wired; hardware-dependent"}
+      - {id: M2-R07, text: "Camera capability discovery", component: "app/devices/base.py", status: partial, verification: automated, evidence: "capability model unit tested; device probing hardware-dependent"}
+      - {id: M2-R08, text: "Profile and media stream enumeration", component: "app/devices/onvif_adapter.py", status: partial, verification: automated, evidence: "classification logic tested; GetProfiles hardware-dependent"}
+      - {id: M2-R09, text: "Device time synchronization support", component: "app/devices/onvif_adapter.py", status: partial, verification: none, evidence: "SetSystemDateAndTime wired; hardware-dependent"}
+      - {id: M2-R10, text: "Main, sub and third stream configuration", component: "app/db/models.py CameraStream", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py"}
+      - {id: M2-R11, text: "Camera connection validation", component: "app/devices/probe.py, app/devices/rtsp_adapter.py", status: implemented, verification: automated, evidence: "ffprobe-based measurement; validation endpoint tested"}
+      - {id: M2-R12, text: "Camera reconnect and recovery", component: "services/recording-service/recorder/supervisor.py", status: implemented, verification: automated, evidence: "bounded backoff restart loop; tests/unit/test_core_primitives.py backoff tests"}
+      - {id: M2-R13, text: "Camera online/offline detection", component: "app/devices/monitor.py", status: implemented, verification: automated, evidence: "circuit-breaker monitor; state transition emits exactly one event"}
+      - {id: M2-R14, text: "Camera import/export with credential protection", component: "app/api/v1/cameras.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_csv_export_never_contains_passwords"}
+      - {id: M2-R15, text: "Bulk camera onboarding", component: "app/api/v1/cameras.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_bulk_import_reports_failures"}
+      - {id: M2-R16, text: "Camera groups and site assignment", component: "app/api/v1/users.py sites", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py site tests"}
+      - {id: M2-R17, text: "Duplicate camera detection", component: "app/devices/dedupe.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_duplicate_detection_by_serial_and_host"}
+      - {id: M2-R18, text: "Camera deletion and safe cleanup", component: "app/services/camera_lifecycle.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_camera_deletion_preserves_recordings"}
+      - {id: M2-R19, text: "Camera replacement workflow", component: "app/services/camera_lifecycle.py", status: implemented, verification: automated, evidence: "replace endpoint implemented; probe failure path tested"}
+      - {id: M2-R20, text: "ONVIF Profile S/T/G/M capability gating (no blanket assumption)", component: "app/devices/base.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_capabilities_default_to_unproven"}
+      - {id: M2-R21, text: "Plain RTSP cameras supported without ONVIF", component: "app/devices/rtsp_adapter.py", status: implemented, verification: automated, evidence: "adapter registry resolves rtsp protocol; ffprobe measurement path"}
+      - {id: M2-R22, text: "Vendor-neutral abstraction with isolated vendor adapters", component: "app/devices/registry.py", status: implemented, verification: automated, evidence: "registry test; no core module imports a vendor adapter"}
+
+  - id: M3
+    name: Live Video Monitoring
+    requirements:
+      - {id: M3-R01, text: "Single-camera live view", component: "app/api/v1/streams.py, apps/*", status: partial, verification: automated, evidence: "server session API verified; client rendering unverified"}
+      - {id: M3-R02, text: "2x2 / 3x3 / 4x4 and larger configurable layouts", component: "apps/web-client, apps/windows-client", status: partial, verification: none, evidence: "layout engine source delivered, not built"}
+      - {id: M3-R03, text: "Custom layouts and saved views (per-user persistence)", component: "app/api/v1/system.py layouts", status: implemented, verification: automated, evidence: "layout CRUD endpoints tested"}
+      - {id: M3-R04, text: "Drag-and-drop camera assignment", component: "apps/web-client", status: partial, verification: none, evidence: "source delivered, not built"}
+      - {id: M3-R05, text: "Fullscreen and multi-monitor operation", component: "apps/windows-client", status: partial, verification: none, evidence: "WPF window manager source delivered, not built"}
+      - {id: M3-R06, text: "Independent video tile lifecycle (one failure must not freeze the UI)", component: "app/media/session_broker.py, apps/*", status: partial, verification: automated, evidence: "per-session server isolation verified; client behaviour unverified"}
+      - {id: M3-R07, text: "Camera name, status and error overlays", component: "apps/*", status: partial, verification: none, evidence: "source delivered, not built"}
+      - {id: M3-R08, text: "Per-tile stream selection (main/sub/third) with manual override", component: "app/media/stream_policy.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py stream policy tests"}
+      - {id: M3-R09, text: "Automatic stream selection by tile size and resources", component: "app/media/stream_policy.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_stream_policy_picks_sub_for_small_tiles"}
+      - {id: M3-R10, text: "Reconnect without disturbing unrelated tiles", component: "app/media/session_broker.py", status: implemented, verification: automated, evidence: "sessions are independent rows with independent gateway paths"}
+      - {id: M3-R11, text: "Snapshot capture", component: "app/services/snapshots.py", status: implemented, verification: automated, evidence: "SHA-256 recorded per snapshot; endpoint tested"}
+      - {id: M3-R12, text: "Instant/manual recording when authorized", component: "app/api/v1/recordings.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py manual recording tests"}
+      - {id: M3-R13, text: "Quick access to playback from live", component: "app/api/v1/playback.py", status: implemented, verification: automated, evidence: "playback latest/manifest endpoints tested"}
+      - {id: M3-R14, text: "PTZ control from the selected tile", component: "app/api/v1/ptz.py", status: partial, verification: automated, evidence: "server API verified; device execution hardware-dependent"}
+      - {id: M3-R15, text: "Camera groups and favourites", component: "app/api/v1/users.py sites", status: implemented, verification: automated, evidence: "site hierarchy tested"}
+      - {id: M3-R16, text: "Hardware decoding with CPU fallback", component: "apps/windows-client", status: designed, verification: none, evidence: "ADR-0009; D3D11/DXVA path NOT implemented in alpha"}
+      - {id: M3-R17, text: "Bounded live-session allocation, cleanup and authorization", component: "app/media/session_broker.py", status: implemented, verification: automated, evidence: "global and per-user caps, TTL expiry, reaper loop"}
+      - {id: M3-R18, text: "Low-latency live playback", component: "deploy/docker/mediamtx.yml", status: partial, verification: none, evidence: "WebRTC/LL-HLS configured; latency NOT measured"}
+
+  - id: M4
+    name: Video Recording Management
+    requirements:
+      - {id: M4-R01, text: "Continuous recording", component: "services/recording-service", status: implemented, verification: automated, evidence: "tests/integration/test_recording_pipeline.py (real MP4 files produced)"}
+      - {id: M4-R02, text: "Scheduled recording (per-camera weekly schedule)", component: "app/recording/planner.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_schedule_is_evaluated_in_site_local_time"}
+      - {id: M4-R03, text: "Manual recording", component: "app/recording/triggers.py", status: implemented, verification: automated, evidence: "start/stop endpoints tested"}
+      - {id: M4-R04, text: "Event-triggered recording", component: "app/events_engine/ingest.py", status: implemented, verification: automated, evidence: "rule action wired to the trigger service"}
+      - {id: M4-R05, text: "Alarm-triggered recording", component: "app/events_engine/ingest.py", status: implemented, verification: automated, evidence: "same rule-engine path"}
+      - {id: M4-R06, text: "Pre-event and post-event recording", component: "app/recording/triggers.py", status: partial, verification: automated, evidence: "post-event implemented; PRE-EVENT NOT IMPLEMENTED and rejected at startup (see LIMITATIONS)"}
+      - {id: M4-R07, text: "Record original stream without unnecessary transcoding", component: "recorder/segmenter.py", status: implemented, verification: automated, evidence: "ffmpeg -c copy by default; verified by the recorder test"}
+      - {id: M4-R08, text: "Preserve timestamps", component: "app/recording/index.py", status: implemented, verification: automated, evidence: "UTC segment boundaries persisted and asserted"}
+      - {id: M4-R09, text: "Handle stream interruption and recover after reconnection", component: "recorder/supervisor.py", status: implemented, verification: automated, evidence: "bounded backoff restart; stall watchdog"}
+      - {id: M4-R10, text: "Recover after server restart (orphan segment reconciliation)", component: "app/recording/recovery.py", status: implemented, verification: automated, evidence: "tests/integration/test_recording_pipeline.py::test_crash_recovery_never_leaves_a_segment_writing"}
+      - {id: M4-R11, text: "Maintain recording indexes", component: "app/recording/index.py", status: implemented, verification: automated, evidence: "index rows asserted against files on disk"}
+      - {id: M4-R12, text: "Prevent silent recording loss (failures raise events)", component: "app/recording/health.py", status: implemented, verification: automated, evidence: "state transitions emit recording.failed events"}
+      - {id: M4-R13, text: "Camera-specific recording profiles", component: "app/db/models.py RecordingProfile", status: implemented, verification: automated, evidence: "profile CRUD endpoints tested"}
+      - {id: M4-R14, text: "Detect recording gaps", component: "app/recording/gaps.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_gap_detection_finds_holes"}
+      - {id: M4-R15, text: "Configurable retention policies and safe deletion", component: "app/recording/retention.py", status: implemented, verification: automated, evidence: "tests/integration/test_recording_pipeline.py::test_retention_deletes_old_files_but_keeps_a_tombstone"}
+      - {id: M4-R16, text: "Storage rotation when volume thresholds are reached", component: "app/recording/retention.py", status: implemented, verification: automated, evidence: "apply_space_rotation deletes oldest-first and raises an event"}
+      - {id: M4-R17, text: "Recording continuity reporting", component: "app/api/v1/recordings.py", status: implemented, verification: automated, evidence: "continuity endpoint returns percentage and gap list"}
+      - {id: M4-R18, text: "Segment finalization that avoids corruption", component: "recorder/segmenter.py", status: implemented, verification: automated, evidence: "spool write then atomic os.replace; verified playable by ffprobe"}
+
+  - id: M5
+    name: Playback Management
+    requirements:
+      - {id: M5-R01, text: "Single-camera playback", component: "app/playback/resolver.py", status: implemented, verification: automated, evidence: "manifest and media resolution tested"}
+      - {id: M5-R02, text: "Synchronized multi-camera playback", component: "app/playback/resolver.py", status: partial, verification: automated, evidence: "server-side synchronized manifests implemented; client sync rendering unverified"}
+      - {id: M5-R03, text: "Calendar and time-based search", component: "app/api/v1/playback.py", status: implemented, verification: automated, evidence: "availability and manifest endpoints tested"}
+      - {id: M5-R04, text: "Timeline navigation and recording availability visualization", component: "app/recording/index.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_timeline_buckets_reflect_recorded_time"}
+      - {id: M5-R05, text: "Play, pause, seek", component: "apps/*", status: partial, verification: none, evidence: "server seek offsets implemented; client unverified"}
+      - {id: M5-R06, text: "Playback speed control", component: "apps/*", status: partial, verification: none, evidence: "client-side rate control in source, not built"}
+      - {id: M5-R07, text: "Frame stepping", component: "apps/windows-client", status: designed, verification: none, evidence: "requires decoder-level control; NOT implemented in alpha"}
+      - {id: M5-R08, text: "Event markers on timeline", component: "app/api/v1/playback.py", status: implemented, verification: automated, evidence: "timeline endpoint returns gaps and event data"}
+      - {id: M5-R09, text: "Recording gap indication", component: "app/recording/gaps.py", status: implemented, verification: automated, evidence: "gap detection tested"}
+      - {id: M5-R10, text: "Playback authorization enforced server-side", component: "app/core/deps.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py scope tests"}
+      - {id: M5-R11, text: "Timezone-aware timestamps", component: "app/core/timeutil.py", status: implemented, verification: automated, evidence: "tests/unit/test_core_primitives.py::test_ensure_utc_and_clamp"}
+      - {id: M5-R12, text: "Deterministic handling of unavailable or corrupt footage", component: "app/playback/resolver.py", status: implemented, verification: automated, evidence: "tests/integration/test_recording_pipeline.py::test_playback_refuses_to_hang_when_media_is_missing"}
+      - {id: M5-R13, text: "Playback timeout and retry management (never hangs)", component: "app/playback/resolver.py", status: implemented, verification: automated, evidence: "bounded window clamp; structured error instead of a hang"}
+
+  - id: M6
+    name: Video Export and Evidence Management
+    requirements:
+      - {id: M6-R01, text: "Clip export by camera and time range", component: "app/exports/jobs.py", status: implemented, verification: automated, evidence: "tests/integration/test_recording_pipeline.py::test_export_produces_a_real_clip_with_verifiable_evidence"}
+      - {id: M6-R02, text: "Snapshot export", component: "app/services/snapshots.py", status: implemented, verification: automated, evidence: "snapshot endpoints tested"}
+      - {id: M6-R03, text: "MP4 export", component: "app/exports/ffmpeg_export.py", status: implemented, verification: automated, evidence: "exported clip verified playable with the expected duration"}
+      - {id: M6-R04, text: "Original-format export without transcoding when possible", component: "app/exports/ffmpeg_export.py", status: implemented, verification: automated, evidence: "stream copy is the default path"}
+      - {id: M6-R05, text: "Export progress reporting", component: "app/exports/jobs.py", status: implemented, verification: automated, evidence: "ffmpeg -progress parsed into job.progress"}
+      - {id: M6-R06, text: "Export cancellation", component: "app/exports/jobs.py", status: implemented, verification: automated, evidence: "cancel endpoint; partial file deleted"}
+      - {id: M6-R07, text: "Concurrent export limits", component: "app/exports/jobs.py", status: implemented, verification: automated, evidence: "semaphore plus queue-depth rejection"}
+      - {id: M6-R08, text: "Disk-space preflight checks", component: "app/exports/preflight.py", status: implemented, verification: automated, evidence: "estimate from real source sizes with headroom"}
+      - {id: M6-R09, text: "Export access control", component: "app/api/v1/exports.py", status: implemented, verification: automated, evidence: "permission and ownership checks tested"}
+      - {id: M6-R10, text: "Evidence metadata and SHA-256 hashes", component: "app/exports/evidence.py", status: implemented, verification: automated, evidence: "hash independently recomputed and compared in the test"}
+      - {id: M6-R11, text: "Chain-of-custody audit record", component: "app/exports/evidence.py", status: implemented, verification: automated, evidence: "append-only custody list asserted (requested -> produced)"}
+      - {id: M6-R12, text: "Download authorization with single-use tokens", component: "app/api/v1/exports.py", status: implemented, verification: automated, evidence: "token issue and constant-time verification tested"}
+      - {id: M6-R13, text: "Export expiration and cleanup", component: "app/exports/cleanup.py", status: implemented, verification: automated, evidence: "expiry loop deletes files and marks jobs EXPIRED"}
+      - {id: M6-R14, text: "Clear errors for missing/damaged footage; never substitute footage", component: "app/exports/jobs.py", status: implemented, verification: automated, evidence: "tests/integration/test_recording_pipeline.py::test_export_refuses_rather_than_silently_shortening"}
+      - {id: M6-R15, text: "Export path confinement (no path traversal)", component: "app/core/paths.py", status: implemented, verification: automated, evidence: "tests/unit/test_core_primitives.py::test_resolve_within_blocks_traversal"}
+
+  - id: M7
+    name: PTZ Control
+    requirements:
+      - {id: M7-R01, text: "ONVIF PTZ capability discovery", component: "app/devices/onvif_adapter.py", status: partial, verification: none, evidence: "GetConfigurations wired; hardware-dependent"}
+      - {id: M7-R02, text: "Pan, tilt and zoom", component: "app/ptz/service.py", status: partial, verification: automated, evidence: "server logic verified; device execution hardware-dependent"}
+      - {id: M7-R03, text: "Continuous movement", component: "app/ptz/service.py", status: partial, verification: automated, evidence: "capability-gated; arbitration tested"}
+      - {id: M7-R04, text: "Relative and absolute movement where supported", component: "app/ptz/service.py", status: partial, verification: automated, evidence: "capability-gated paths implemented"}
+      - {id: M7-R05, text: "Preset creation, recall and management", component: "app/api/v1/ptz.py", status: implemented, verification: automated, evidence: "preset endpoints implemented and capability-gated"}
+      - {id: M7-R06, text: "PTZ speed adjustment", component: "app/ptz/service.py", status: implemented, verification: automated, evidence: "speed multiplies the velocity vector"}
+      - {id: M7-R07, text: "Stop command", component: "app/ptz/service.py", status: implemented, verification: automated, evidence: "stop releases the control lock"}
+      - {id: M7-R08, text: "Permission-based PTZ access", component: "app/core/rbac.py", status: implemented, verification: automated, evidence: "PTZ_CONTROL absent from the viewer role; tested"}
+      - {id: M7-R09, text: "PTZ ownership / control arbitration with priority", component: "app/ptz/arbiter.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_ptz_lock_blocks_second_operator"}
+      - {id: M7-R10, text: "Automatic stop on control release", component: "app/ptz/service.py", status: implemented, verification: automated, evidence: "stop clears moving_until and releases the lock"}
+      - {id: M7-R11, text: "Automatic stop on client disconnect (watchdog)", component: "app/ptz/arbiter.py, app/lifecycle.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_ptz_watchdog_identifies_runaway_and_dead_clients"}
+      - {id: M7-R12, text: "Server-side movement time limit (no runaway PTZ)", component: "app/ptz/arbiter.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_ptz_move_duration_is_clamped"}
+      - {id: M7-R13, text: "PTZ state recovery after service restart", component: "app/ptz/arbiter.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_ptz_startup_clears_all_locks"}
+
+  - id: M8
+    name: Events, Alarms and Rule Engine
+    requirements:
+      - {id: M8-R01, text: "Camera online/offline events", component: "app/devices/monitor.py", status: implemented, verification: automated, evidence: "one event per state transition"}
+      - {id: M8-R02, text: "Video loss events", component: "app/recording/health.py", status: implemented, verification: automated, evidence: "recording failure state emits an event"}
+      - {id: M8-R03, text: "Tampering events (camera-sourced)", component: "app/analytics/ingest.py", status: partial, verification: automated, evidence: "ONVIF topic mapping tested; depends on camera support"}
+      - {id: M8-R04, text: "Motion detection events (camera-sourced)", component: "app/analytics/ingest.py", status: partial, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_onvif_motion_maps_to_camera_edge_source"}
+      - {id: M8-R05, text: "ONVIF event subscription (PullPoint)", component: "app/devices/onvif_adapter.py", status: partial, verification: none, evidence: "CreatePullPointSubscription/PullMessages implemented; hardware-dependent"}
+      - {id: M8-R06, text: "Analytics events", component: "app/analytics/ingest.py", status: implemented, verification: automated, evidence: "ingestion endpoint tested end to end"}
+      - {id: M8-R07, text: "Storage warning events", component: "app/storage/volumes.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_volume_state_transitions_on_low_space"}
+      - {id: M8-R08, text: "Recording failure events", component: "app/recording/health.py", status: implemented, verification: automated, evidence: "state machine emits recording.failed"}
+      - {id: M8-R09, text: "Service failure and system health events", component: "app/health/registry.py", status: implemented, verification: automated, evidence: "health report drives degraded/unhealthy status"}
+      - {id: M8-R10, text: "User-defined alarm rules", component: "app/events_engine/rules.py", status: implemented, verification: automated, evidence: "rule CRUD plus condition validation tested"}
+      - {id: M8-R11, text: "Alarm lifecycle New/Active/Acknowledged/Resolved/Closed", component: "app/events_engine/alarms.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_alarm_state_machine_transitions"}
+      - {id: M8-R12, text: "Alarm severity, assignment, acknowledgement, history", component: "app/api/v1/events.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py alarm tests"}
+      - {id: M8-R13, text: "Event filtering and alarm search", component: "app/api/v1/events.py", status: implemented, verification: automated, evidence: "search endpoints with scope filtering"}
+      - {id: M8-R14, text: "Camera-linked playback from alarm", component: "app/analytics/linking.py", status: implemented, verification: automated, evidence: "playback_jump returns a bounded time window"}
+      - {id: M8-R15, text: "Snapshot association with alarm", component: "app/services/snapshots.py", status: implemented, verification: automated, evidence: "snapshot rows carry event_id"}
+      - {id: M8-R16, text: "Notification routing (webhook, SMTP)", component: "app/notifications", status: partial, verification: automated, evidence: "webhook signing tested; SMTP implemented but NOT validated against a live server"}
+      - {id: M8-R17, text: "Event deduplication and suppression windows", component: "app/events_engine/dedupe.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_event_dedupe_collapses_repeats"}
+      - {id: M8-R18, text: "Escalation", component: "app/events_engine/escalation.py", status: implemented, verification: manual, evidence: "due_escalations/mark_escalated implemented and wired into the supervisor loop; NO dedicated automated test yet"}
+      - {id: M8-R19, text: "Concurrency-safe acknowledgement (no stale overwrite)", component: "app/events_engine/alarms.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_concurrent_acknowledge_rejects_stale_version"}
+      - {id: M8-R20, text: "Complete audit trail of alarm actions", component: "app/core/audit.py", status: implemented, verification: automated, evidence: "audit rows asserted after alarm actions"}
+
+  - id: M9
+    name: AI Video Analytics
+    requirements:
+      - {id: M9-R01, text: "Ingest camera-side AI metadata", component: "app/analytics/ingest.py", status: implemented, verification: automated, evidence: "source recorded as camera_edge and never relabelled"}
+      - {id: M9-R02, text: "Process ONVIF analytics events", component: "app/devices/onvif_adapter.py", status: partial, verification: automated, evidence: "notification parsing unit tested; live subscription hardware-dependent"}
+      - {id: M9-R03, text: "Store analytics results", component: "app/db/models.py AnalyticsEvent", status: implemented, verification: automated, evidence: "ingestion endpoint tested"}
+      - {id: M9-R04, text: "Search analytics metadata", component: "app/api/v1/analytics.py", status: implemented, verification: automated, evidence: "search endpoint tested with scope filtering"}
+      - {id: M9-R05, text: "Link analytics events to recorded footage", component: "app/analytics/linking.py", status: implemented, verification: automated, evidence: "segment linking by time"}
+      - {id: M9-R06, text: "Per-camera AI capability configuration", component: "app/api/v1/analytics.py zones", status: implemented, verification: automated, evidence: "zone CRUD plus analytics_config column"}
+      - {id: M9-R07, text: "Analytics overlays where metadata permits", component: "apps/*", status: partial, verification: none, evidence: "bounding boxes delivered to clients; rendering unverified"}
+      - {id: M9-R08, text: "Server-side inference worker architecture (ONNX Runtime)", component: "services/analytics-service", status: partial, verification: automated, evidence: "worker and detector interface implemented; NO models bundled"}
+      - {id: M9-R09, text: "Human detection", component: "services/analytics-service/analytics_worker/detectors", status: designed, verification: none, evidence: "detector interface ready; requires an operator-supplied ONNX model"}
+      - {id: M9-R10, text: "Vehicle detection", component: "services/analytics-service/analytics_worker/detectors", status: designed, verification: none, evidence: "as M9-R09"}
+      - {id: M9-R11, text: "Intrusion detection / region entry-exit", component: "app/analytics/zones.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py zone tests"}
+      - {id: M9-R12, text: "Tripwire / line crossing", component: "app/analytics/zones.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_tripwire_fires_once_per_track"}
+      - {id: M9-R13, text: "Loitering detection", component: "app/analytics/zones.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_loitering_requires_dwell_time"}
+      - {id: M9-R14, text: "Object left behind / object removal", component: "services/analytics-service", status: not_implemented, verification: none, evidence: "NOT implemented in alpha; roadmap R2"}
+      - {id: M9-R15, text: "Crowd/people/vehicle counting", component: "app/analytics/counting.py", status: partial, verification: automated, evidence: "aggregation over ingested detections implemented; detector not bundled"}
+      - {id: M9-R16, text: "Object classification", component: "services/analytics-service/analytics_worker/detectors", status: designed, verification: none, evidence: "requires a model"}
+      - {id: M9-R17, text: "Facial detection", component: "services/analytics-service/analytics_worker/detectors", status: designed, verification: none, evidence: "requires a model"}
+      - {id: M9-R18, text: "Facial recognition", component: "app/analytics/privacy.py", status: designed, verification: automated, evidence: "privacy, authorization and retention controls implemented and tested; MATCHING ENGINE NOT IMPLEMENTED"}
+      - {id: M9-R19, text: "ANPR / LPR", component: "app/analytics/anpr.py", status: partial, verification: automated, evidence: "plate ingestion, normalization, watchlist and search implemented; SERVER-SIDE OCR NOT IMPLEMENTED"}
+      - {id: M9-R20, text: "Vehicle attributes", component: "app/analytics/ingest.py", status: partial, verification: automated, evidence: "attribute storage and search only, camera-sourced"}
+      - {id: M9-R21, text: "Intelligent motion detection / smart search", component: "app/api/v1/analytics.py", status: partial, verification: automated, evidence: "metadata-based smart search implemented; pixel-based search NOT implemented"}
+      - {id: M9-R22, text: "Business intelligence dashboards", component: "app/api/v1/reports.py", status: implemented, verification: automated, evidence: "analytics summary and counting endpoints tested"}
+      - {id: M9-R23, text: "AI failure must not interrupt recording (process isolation)", component: "services/analytics-service", status: implemented, verification: manual, evidence: "separate process and queue; recorder has no dependency on analytics"}
+      - {id: M9-R24, text: "FR/ANPR authorization, retention, audit and privacy safeguards", component: "app/analytics/privacy.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_anpr_requires_enablement_and_justification"}
+      - {id: M9-R25, text: "CPU-only fallback with optional GPU acceleration", component: "services/analytics-service/analytics_worker/runtime.py", status: implemented, verification: automated, evidence: "provider selection falls back to CPUExecutionProvider"}
+
+  - id: M10
+    name: Storage Management
+    requirements:
+      - {id: M10-R01, text: "Multiple storage volumes", component: "app/storage/volumes.py", status: implemented, verification: automated, evidence: "volume CRUD and selection tested"}
+      - {id: M10-R02, text: "Storage pool configuration", component: "app/storage/volumes.py", status: implemented, verification: automated, evidence: "priority-ordered pool"}
+      - {id: M10-R03, text: "Camera-to-storage assignment", component: "app/storage/allocator.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py allocator tests"}
+      - {id: M10-R04, text: "Disk capacity monitoring and free-space thresholds", component: "app/storage/monitor.py", status: implemented, verification: automated, evidence: "state transitions tested"}
+      - {id: M10-R05, text: "Storage health reporting and failure alerts", component: "app/storage/volumes.py", status: implemented, verification: automated, evidence: "events raised on state change"}
+      - {id: M10-R06, text: "Retention and automatic old-recording deletion", component: "app/recording/retention.py", status: implemented, verification: automated, evidence: "retention test deletes and tombstones"}
+      - {id: M10-R07, text: "Storage path validation", component: "app/core/paths.py", status: implemented, verification: automated, evidence: "write test at registration; confinement tested"}
+      - {id: M10-R08, text: "Recording index consistency checks", component: "app/recording/recovery.py", status: implemented, verification: automated, evidence: "orphan scan and writing-segment recovery tested"}
+      - {id: M10-R09, text: "Storage migration tooling", component: "tools/storage_migrate.py", status: partial, verification: none, evidence: "tool delivered; not executed against a second volume here"}
+      - {id: M10-R10, text: "Configuration backup and restore", component: "tools/backup_restore.py", status: partial, verification: none, evidence: "tool delivered; restore not exercised in CI"}
+      - {id: M10-R11, text: "Database backup and recovery procedure", component: "scripts/db_backup.sh, docs/operations", status: partial, verification: none, evidence: "scripts and procedure documented; not executed against PostgreSQL"}
+      - {id: M10-R12, text: "Storage diagnostics", component: "app/storage/diagnostics.py", status: implemented, verification: automated, evidence: "diagnostics endpoint returns latency, free space and missing-file samples"}
+      - {id: M10-R13, text: "NAS / SMB / NFS storage support", component: "app/storage/volumes.py", status: partial, verification: none, evidence: "mounted-path model supported; NO network-share validation performed"}
+      - {id: M10-R14, text: "RAID-aware monitoring", component: "app/storage/raid.py", status: partial, verification: automated, evidence: "mdstat parsing tested; HARDWARE RAID CONTROLLERS NOT COVERED"}
+      - {id: M10-R15, text: "Storage failover (volume switch on failure)", component: "app/storage/allocator.py", status: implemented, verification: automated, evidence: "allocator skips unusable volumes and fails loudly when none remain"}
+      - {id: M10-R16, text: "Recording redundancy / N+1 / N+N recording", component: "docs/architecture/ha-design.md", status: designed, verification: none, evidence: "DESIGNED ONLY; NOT implemented in alpha"}
+      - {id: M10-R17, text: "Distinguish software redundancy from hardware RAID", component: "app/storage/raid.py", status: implemented, verification: manual, evidence: "documented in code and surfaced in the API response"}
+
+  - id: M11
+    name: User, Role and Security Management
+    requirements:
+      - {id: M11-R01, text: "Administrator / Operator / Viewer built-in roles", component: "app/core/rbac.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_builtin_role_permission_sets_are_distinct"}
+      - {id: M11-R02, text: "Custom roles", component: "app/api/v1/users.py", status: implemented, verification: automated, evidence: "role creation with permission validation"}
+      - {id: M11-R03, text: "Per-camera permissions", component: "app/core/rbac.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_camera_scope_grant_allows_access"}
+      - {id: M11-R04, text: "Per-site permissions", component: "app/core/rbac.py", status: implemented, verification: automated, evidence: "site scope with ancestor resolution"}
+      - {id: M11-R05, text: "Per-feature permissions", component: "app/core/rbac.py", status: implemented, verification: automated, evidence: "26 discrete permissions enforced server-side"}
+      - {id: M11-R06, text: "Strong password storage (Argon2id)", component: "app/core/security.py", status: implemented, verification: automated, evidence: "tests/unit/test_security_defaults.py cost-parameter tests"}
+      - {id: M11-R07, text: "Session expiration", component: "app/core/security.py", status: implemented, verification: automated, evidence: "access token TTL enforced on decode"}
+      - {id: M11-R08, text: "Token revocation (jti denylist + refresh rotation)", component: "app/core/security.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_logout_revokes_access_token and refresh reuse detection"}
+      - {id: M11-R09, text: "Audit logs", component: "app/core/audit.py", status: implemented, verification: automated, evidence: "append-only trail asserted"}
+      - {id: M11-R10, text: "User activation / deactivation", component: "app/api/v1/users.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_deactivating_user_revokes_access_immediately"}
+      - {id: M11-R11, text: "Account lockout protection", component: "app/core/security.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_account_lockout_after_repeated_failures"}
+      - {id: M11-R12, text: "Secure password recovery (admin-issued reset)", component: "app/api/v1/users.py", status: implemented, verification: automated, evidence: "admin reset forces change and revokes sessions"}
+      - {id: M11-R13, text: "Multi-factor authentication (TOTP)", component: "app/core/mfa.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_mfa_enrolment_and_login (including replay rejection)"}
+      - {id: M11-R14, text: "LDAP / Active Directory integration", component: "app/identity/ldap.py", status: designed, verification: automated, evidence: "interface only; every method raises not_implemented and production start-up is blocked"}
+      - {id: M11-R15, text: "OIDC / SSO integration", component: "app/identity/oidc.py", status: partial, verification: none, evidence: "authorization-code flow with PKCE implemented; NOT tested against a real IdP"}
+      - {id: M11-R16, text: "Authorization enforced server-side on every protected surface", component: "app/core/deps.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py authz matrix"}
+
+  - id: M12
+    name: Multi-Site Enterprise Management
+    requirements:
+      - {id: M12-R01, text: "Organization hierarchy (org > site > building > floor)", component: "app/db/models.py Site", status: implemented, verification: automated, evidence: "materialized path hierarchy tested"}
+      - {id: M12-R02, text: "Camera groups", component: "app/api/v1/cameras.py tags", status: implemented, verification: automated, evidence: "tags plus site assignment"}
+      - {id: M12-R03, text: "Centralized camera inventory", component: "app/api/v1/cameras.py", status: implemented, verification: automated, evidence: "inventory listing and CSV export"}
+      - {id: M12-R04, text: "Site-level permissions", component: "app/core/rbac.py", status: implemented, verification: automated, evidence: "site scope tested"}
+      - {id: M12-R05, text: "Remote server registration", component: "app/api/v1/system.py federation", status: partial, verification: automated, evidence: "registration implemented and licence-gated; multi-server runtime NOT validated"}
+      - {id: M12-R06, text: "Centralized monitoring across servers", component: "app/federation/aggregator.py", status: partial, verification: automated, evidence: "aggregation client implemented; single-node tested only"}
+      - {id: M12-R07, text: "Distributed recording / multi-server architecture", component: "docs/architecture/multi-site.md", status: designed, verification: automated, evidence: "DESIGNED; API returns 501 not_implemented"}
+      - {id: M12-R08, text: "Site health dashboard", component: "app/api/v1/reports.py", status: implemented, verification: automated, evidence: "dashboard endpoint tested"}
+      - {id: M12-R09, text: "Centralized alarm monitoring", component: "app/api/v1/events.py", status: implemented, verification: automated, evidence: "alarm search across sites"}
+      - {id: M12-R10, text: "Centralized user management", component: "app/api/v1/users.py", status: implemented, verification: automated, evidence: "user CRUD tested"}
+      - {id: M12-R11, text: "Secure site-to-site communication (TLS + signed tokens)", component: "app/federation", status: partial, verification: none, evidence: "token encryption and TLS verification implemented; no cross-site deployment test"}
+
+  - id: M13
+    name: Windows Desktop Application
+    requirements:
+      - {id: M13-R01, text: "Native .NET 8 WPF client (not a browser wrapper)", component: "apps/windows-client", status: partial, verification: none, evidence: "WPF/MVVM source delivered; NO .NET SDK in this build environment"}
+      - {id: M13-R02, text: "Professional login screen", component: "apps/windows-client/Views", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R03, text: "Server connection management", component: "apps/windows-client/Services/ApiClient.cs", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R04, text: "Live monitoring dashboard with camera tree", component: "apps/windows-client/Views", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R05, text: "Custom layouts and multi-monitor operation", component: "apps/windows-client", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R06, text: "Playback interface", component: "apps/windows-client/Views", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R07, text: "Alarm management", component: "apps/windows-client/Views", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R08, text: "PTZ panel", component: "apps/windows-client/Views", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R09, text: "Export and snapshot interface", component: "apps/windows-client/Views", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R10, text: "Dark and light themes", component: "apps/windows-client/Themes", status: partial, verification: none, evidence: "Dark.xaml resources only; light theme and switching not implemented"}
+      - {id: M13-R11, text: "Keyboard shortcuts and notification centre", component: "apps/windows-client", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R12, text: "Connection status, error recovery, persistent preferences", component: "apps/windows-client/Services", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M13-R13, text: "Video rendering pipeline (LibVLCSharp)", component: "apps/windows-client/Controls", status: partial, verification: none, evidence: "integration code written against LibVLCSharp; NOT compiled or run"}
+
+  - id: M14
+    name: Web Application
+    requirements:
+      - {id: M14-R01, text: "Responsive React/TypeScript web client", component: "apps/web-client", status: partial, verification: none, evidence: "source delivered; npm build not executed"}
+      - {id: M14-R02, text: "System administration UI", component: "apps/web-client/src/pages", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M14-R03, text: "Camera onboarding UI", component: "apps/web-client/src/pages/Cameras.tsx", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M14-R04, text: "User and site management UI", component: "apps/web-client/src/pages", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M14-R05, text: "Recording schedule UI", component: "apps/web-client/src/pages", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M14-R06, text: "Storage configuration UI", component: "apps/web-client/src/pages/Storage.tsx", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M14-R07, text: "Alarm management UI", component: "apps/web-client/src/pages/Alarms.tsx", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M14-R08, text: "Reports and system health UI", component: "apps/web-client/src/pages/Dashboard.tsx", status: partial, verification: none, evidence: "source delivered"}
+      - {id: M14-R09, text: "Browser live view via WebRTC/HLS (never raw RTSP)", component: "apps/web-client/src/components/VideoTile.tsx", status: partial, verification: none, evidence: "WHEP/HLS player source delivered; requires a MediaMTX runtime"}
+      - {id: M14-R10, text: "Playback and export UI", component: "apps/web-client/src/pages/Playback.tsx", status: partial, verification: none, evidence: "source delivered"}
+
+  - id: M15
+    name: Dashboards and Reporting
+    requirements:
+      - {id: M15-R01, text: "Camera totals: total/online/offline/recording/failed", component: "app/api/v1/reports.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_dashboard_reports_real_counts"}
+      - {id: M15-R02, text: "Storage usage reporting", component: "app/api/v1/reports.py", status: implemented, verification: automated, evidence: "dashboard storage block"}
+      - {id: M15-R03, text: "Server health: CPU, RAM, disk, uptime", component: "app/health/metrics.py", status: implemented, verification: automated, evidence: "psutil measurements asserted present"}
+      - {id: M15-R04, text: "Network bandwidth aggregation", component: "app/health/metrics.py", status: implemented, verification: automated, evidence: "measured NIC rates plus clearly labelled estimates"}
+      - {id: M15-R05, text: "Active session reporting", component: "app/api/v1/reports.py", status: implemented, verification: automated, evidence: "session counts in the dashboard"}
+      - {id: M15-R06, text: "Alarm and analytics statistics", component: "app/api/v1/reports.py", status: implemented, verification: automated, evidence: "analytics summary endpoint groups by source"}
+      - {id: M15-R07, text: "Export history and audit activity reports", component: "app/api/v1/reports.py", status: implemented, verification: automated, evidence: "audit report tested"}
+      - {id: M15-R08, text: "Downloadable reports (CSV) with configurable periods", component: "app/api/v1/reports.py", status: implemented, verification: automated, evidence: "CSV export for cameras/alarms/audit/exports"}
+      - {id: M15-R09, text: "Prometheus metrics endpoint", component: "app/health/metrics.py", status: implemented, verification: automated, evidence: "exposition generated and content type asserted"}
+
+  - id: M16
+    name: Network and Bandwidth Management
+    requirements:
+      - {id: M16-R01, text: "Main/sub/third stream profiles with bitrate awareness", component: "app/media/stream_policy.py", status: implemented, verification: automated, evidence: "policy tests"}
+      - {id: M16-R02, text: "Per-camera bandwidth estimation", component: "app/capacity/model.py", status: implemented, verification: automated, evidence: "capacity model tests"}
+      - {id: M16-R03, text: "Aggregate inbound/outbound bandwidth", component: "app/health/metrics.py", status: implemented, verification: automated, evidence: "bandwidth summary endpoint"}
+      - {id: M16-R04, text: "Active client bandwidth accounting", component: "app/media/session_broker.py", status: partial, verification: automated, evidence: "ESTIMATED from stream profiles, not measured per client"}
+      - {id: M16-R05, text: "Server resource monitoring", component: "app/health/metrics.py", status: implemented, verification: automated, evidence: "psutil metrics"}
+      - {id: M16-R06, text: "Connection timeouts and network failure recovery", component: "app/core/outbound.py, app/core/backoff.py", status: implemented, verification: automated, evidence: "every outbound path is time-bounded; backoff tests"}
+      - {id: M16-R07, text: "Network-aware stream selection", component: "app/media/stream_policy.py", status: implemented, verification: automated, evidence: "budget-aware downgrade tested"}
+      - {id: M16-R08, text: "TLS support / secure remote access architecture", component: "deploy, docs/security", status: partial, verification: none, evidence: "reverse-proxy TLS termination documented; certificates not provisioned here"}
+      - {id: M16-R09, text: "Camera credentials and source URLs never exposed to clients", component: "app/media/session_broker.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py asserts no password or rtsp:// in responses"}
+      - {id: M16-R10, text: "Network isolation and site boundaries enforced on discovery", component: "app/core/netguard.py", status: implemented, verification: automated, evidence: "tests/unit/test_core_primitives.py SSRF and range-cap tests"}
+
+  - id: M17
+    name: Installation, Configuration and Operations
+    requirements:
+      - {id: M17-R01, text: "Windows native installer", component: "installers/windows", status: partial, verification: none, evidence: "PowerShell installer delivered; NOT built or executed (no Windows toolchain)"}
+      - {id: M17-R02, text: "Windows service registration with dependencies and auto-start", component: "deploy/windows", status: partial, verification: none, evidence: "service definitions and install script delivered; not executed"}
+      - {id: M17-R03, text: "PostgreSQL service configuration", component: "deploy", status: partial, verification: none, evidence: "scripts and compose service delivered; not executed"}
+      - {id: M17-R04, text: "ProgramData configuration and filesystem permissions", component: "deploy/windows/install.ps1", status: partial, verification: none, evidence: "ACL commands scripted; not executed"}
+      - {id: M17-R05, text: "Firewall configuration guidance", component: "docs/deployment/firewall.md", status: implemented, verification: manual, evidence: "documented with an exact port list"}
+      - {id: M17-R06, text: "Upgrade workflow and rollback", component: "scripts/upgrade.sh", status: partial, verification: none, evidence: "scripts delivered; interrupted-upgrade handling documented"}
+      - {id: M17-R07, text: "Backup and restore", component: "tools/backup_restore.py", status: partial, verification: none, evidence: "tool delivered; not exercised in CI"}
+      - {id: M17-R08, text: "Diagnostic bundle generation", component: "tools/diag_bundle.py", status: implemented, verification: manual, evidence: "tool delivered and runnable; redacts secrets"}
+      - {id: M17-R09, text: "Safe uninstall (data preserved by default)", component: "deploy/windows/uninstall.ps1", status: partial, verification: none, evidence: "script delivered; not executed"}
+      - {id: M17-R10, text: "Ubuntu systemd units and native deployment", component: "deploy/ubuntu", status: partial, verification: none, evidence: "unit files and install script delivered; not executed on a target OS"}
+      - {id: M17-R11, text: "Database migrations applied during install/upgrade", component: "database/migrations", status: implemented, verification: automated, evidence: "every test run applies the real migration"}
+      - {id: M17-R12, text: "Log rotation", component: "app/logging_setup.py, deploy/ubuntu", status: implemented, verification: automated, evidence: "RotatingFileHandler plus logrotate config"}
+      - {id: M17-R13, text: "Docker Compose for development, not the only method", component: "deploy/docker", status: implemented, verification: manual, evidence: "compose file AND native installers both provided"}
+
+  - id: M18
+    name: Enterprise Reliability
+    requirements:
+      - {id: M18-R01, text: "Graceful startup and shutdown", component: "app/lifecycle.py", status: implemented, verification: automated, evidence: "ordered startup; bounded shutdown"}
+      - {id: M18-R02, text: "Automatic service recovery (supervised workers)", component: "app/core/supervisor.py", status: implemented, verification: automated, evidence: "supervisor restart tests"}
+      - {id: M18-R03, text: "Bounded retries with exponential backoff and jitter", component: "app/core/backoff.py", status: implemented, verification: automated, evidence: "tests/unit/test_core_primitives.py backoff tests"}
+      - {id: M18-R04, text: "Circuit breakers", component: "app/core/circuit.py", status: implemented, verification: automated, evidence: "tests/unit/test_core_primitives.py::test_circuit_breaker_opens_and_recovers"}
+      - {id: M18-R05, text: "Configurable resource limits", component: "app/config.py", status: implemented, verification: automated, evidence: "session, export, queue and analytics caps"}
+      - {id: M18-R06, text: "Worker health monitoring", component: "app/health/registry.py", status: implemented, verification: automated, evidence: "worker heartbeat rows and supervisor status probe"}
+      - {id: M18-R07, text: "Database connection recovery", component: "app/db/session.py", status: implemented, verification: automated, evidence: "pool_pre_ping plus bounded reconnect loop"}
+      - {id: M18-R08, text: "Media-session cleanup (TTL + orphan reaper)", component: "app/media/session_broker.py", status: implemented, verification: automated, evidence: "reaper closes expired sessions and releases gateway paths"}
+      - {id: M18-R09, text: "Recording recovery and corruption detection", component: "app/recording/recovery.py", status: implemented, verification: automated, evidence: "crash recovery test"}
+      - {id: M18-R10, text: "Safe concurrency and transactional state transitions", component: "app/events_engine/alarms.py, app/db/session.py", status: implemented, verification: automated, evidence: "optimistic concurrency test"}
+      - {id: M18-R11, text: "Consistent camera deletion across subsystems", component: "app/services/camera_lifecycle.py", status: implemented, verification: automated, evidence: "ordered teardown test"}
+      - {id: M18-R12, text: "Predictable timeout handling", component: "app/core/outbound.py", status: implemented, verification: automated, evidence: "no unbounded outbound call exists"}
+      - {id: M18-R13, text: "Low-disk handling", component: "app/storage/monitor.py, app/recording/retention.py", status: implemented, verification: automated, evidence: "threshold transitions plus emergency rotation"}
+      - {id: M18-R14, text: "Structured diagnostic logging with correlation IDs", component: "app/logging_setup.py", status: implemented, verification: automated, evidence: "tests/integration/test_api_flows.py::test_correlation_id_is_returned and redaction tests"}
+      - {id: M18-R15, text: "High availability / N+1 failover / multi-server redundancy", component: "docs/architecture/ha-design.md", status: designed, verification: none, evidence: "DESIGN ONLY; NOT implemented in alpha"}
+      - {id: M18-R16, text: "Disaster recovery procedure", component: "docs/operations/disaster-recovery.md", status: partial, verification: none, evidence: "procedure documented; DR exercise NOT performed"}
+      - {id: M18-R17, text: "Rolling upgrades", component: "docs/operations/upgrade.md", status: designed, verification: none, evidence: "requires a multi-server runtime; NOT implemented"}
+
+  - id: M19
+    name: Third-Party Integrations
+    requirements:
+      - {id: M19-R01, text: "Versioned REST API (/api/v1) with OpenAPI contract", component: "app/api, contracts/openapi.json", status: implemented, verification: automated, evidence: "88 paths, 75 schemas; contract generated from the running app"}
+      - {id: M19-R02, text: "WebSocket event stream", component: "app/api/v1/ws.py", status: implemented, verification: manual, evidence: "token-authenticated and scope-filtered; not load tested"}
+      - {id: M19-R03, text: "ONVIF client integration", component: "app/devices/onvif_adapter.py", status: partial, verification: automated, evidence: "protocol handling unit tested; hardware-dependent"}
+      - {id: M19-R04, text: "RTSP / RTSPS support", component: "app/media, app/devices", status: partial, verification: automated, evidence: "URL handling and transport selection verified; live pull unverified"}
+      - {id: M19-R05, text: "Outbound webhooks with HMAC signing and retry", component: "app/notifications/webhook.py", status: implemented, verification: automated, evidence: "tests/unit/test_domain_logic.py::test_webhook_signature_is_replay_resistant"}
+      - {id: M19-R06, text: "External analytics engine integration (inbound API)", component: "app/api/v1/analytics.py", status: implemented, verification: automated, evidence: "detection ingestion endpoint tested"}
+      - {id: M19-R07, text: "Alarm / access control / BMS integration architecture", component: "docs/api", status: partial, verification: none, evidence: "generic event and webhook contract documented; NO vendor connectors"}
+      - {id: M19-R08, text: "External identity systems", component: "app/identity", status: partial, verification: automated, evidence: "OIDC implemented, LDAP designed only"}
+      - {id: M19-R09, text: "External notification systems (SMTP)", component: "app/notifications/email.py", status: partial, verification: none, evidence: "implemented; NOT validated against a live SMTP server"}
+      - {id: M19-R10, text: "API rate limiting and service accounts / API keys", component: "app/core/ratelimit.py, app/api/v1/users.py", status: implemented, verification: automated, evidence: "token bucket tests; API key escalation rejected"}
+
+  - id: M20
+    name: Commercial Product Readiness
+    requirements:
+      - {id: M20-R01, text: "Product configuration management", component: "app/config.py, config/", status: implemented, verification: automated, evidence: "layered config with production safety validation"}
+      - {id: M20-R02, text: "Software versioning and build metadata", component: "app/version.py", status: implemented, verification: automated, evidence: "version endpoint asserts production_ready=false"}
+      - {id: M20-R03, text: "Upgrade compatibility policy", component: "docs/operations/upgrade.md", status: implemented, verification: manual, evidence: "API and schema compatibility rules documented"}
+      - {id: M20-R04, text: "Feature entitlement architecture", component: "app/licensing/entitlements.py", status: implemented, verification: automated, evidence: "quota and feature-flag enforcement tested"}
+      - {id: M20-R05, text: "Offline licensing (signed licence file, no phone-home)", component: "app/licensing/license_file.py", status: implemented, verification: automated, evidence: "Ed25519 signature and tamper detection tested; no network call in the validation path"}
+      - {id: M20-R06, text: "Commercial edition architecture (Lite/Pro/Enterprise)", component: "app/licensing/editions.py", status: implemented, verification: automated, evidence: "edition specs with camera and feature limits"}
+      - {id: M20-R07, text: "Customer diagnostics and support bundles", component: "tools/diag_bundle.py", status: implemented, verification: manual, evidence: "bundle generator with secret redaction"}
+      - {id: M20-R08, text: "Release notes", component: "CHANGELOG.md", status: implemented, verification: manual, evidence: "delivered"}
+      - {id: M20-R09, text: "Administrator and operator documentation", component: "docs/user-guides", status: implemented, verification: manual, evidence: "delivered"}
+      - {id: M20-R10, text: "Installation manuals", component: "docs/deployment", status: implemented, verification: manual, evidence: "delivered"}
+      - {id: M20-R11, text: "API documentation", component: "contracts/openapi.json, docs/api", status: implemented, verification: automated, evidence: "generated from the running application"}
+      - {id: M20-R12, text: "Software bill of materials", component: "tools/generate_sbom.py", status: implemented, verification: manual, evidence: "CycloneDX-style SBOM generated from dependency manifests"}
+      - {id: M20-R13, text: "Third-party license notices", component: "NOTICE, docs/operations/third-party-licenses.md", status: implemented, verification: manual, evidence: "delivered"}
+      - {id: M20-R14, text: "Licensing must not block authorized offline installations", component: "app/licensing", status: implemented, verification: automated, evidence: "unlicensed mode keeps recording working within a camera limit"}

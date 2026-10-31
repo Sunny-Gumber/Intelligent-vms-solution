@@ -1,0 +1,16 @@
+[project]
+name = "vms-recording-service"
+version = "0.1.0"
+description = "Intelligent VMS recording worker: supervised FFmpeg segment recorders."
+requires-python = ">=3.11"
+dependencies = ["vms-contracts", "vms-control-api", "SQLAlchemy>=2.0,<3", "structlog>=24.1"]
+
+[project.scripts]
+vms-recorder = "recorder.worker:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["recorder*"]

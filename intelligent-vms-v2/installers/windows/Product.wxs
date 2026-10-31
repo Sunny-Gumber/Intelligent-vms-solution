@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Intelligent VMS Windows installer definition (WiX v4).
+
+  Design notes:
+    * Services are installed with explicit dependency ordering so the control
+      API never starts before PostgreSQL, and the recorder never starts before
+      the control API.
+    * Recorded video and the database live under ProgramData and are NOT
+      removed on uninstall. Deleting a customer's evidence because they
+      uninstalled a product would be indefensible.
+    * The key store is ACL-restricted to SYSTEM and Administrators by a custom
+      action after installation.
+
+  NOT YET BUILT - no Windows toolchain was available. See build.ps1.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="Intelligent VMS"
+           Manufacturer="Sunny Gumber"
+           Version="$(Version)"
+           UpgradeCode="7a1d9f42-6c3e-4a51-9b47-2f8c1d5e3a90"
+           Scope="perMachine"
+           Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Intelligent VMS is already installed."
+                  Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Launch Condition="Installed OR VersionNT64"
+            Message="Intelligent VMS requires 64-bit Windows." />
+
+    <Property Id="VMSPORT" Value="8080" />
+    <Property Id="VMSDATA" Value="[CommonAppDataFolder]IntelligentVMS" />
+
+    <Feature Id="Server" Title="Intelligent VMS Server" Level="1"
+             Description="Control API, recording service and analytics worker.">
+      <ComponentGroupRef Id="ServerComponents" />
+      <ComponentGroupRef Id="ServiceComponents" />
+    </Feature>
+
+    <Feature Id="DesktopClient" Title="Desktop Client" Level="1"
+             Description="Windows monitoring client.">
+      <ComponentGroupRef Id="ClientComponents" />
+    </Feature>
+
+    <Feature Id="MediaGateway" Title="Media Gateway" Level="1"
+             Description="MediaMTX gateway for browser live view.">
+      <ComponentGroupRef Id="GatewayComponents" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Intelligent VMS">
+        <Directory Id="RuntimeDir"    Name="runtime" />
+        <Directory Id="ClientDir"     Name="client" />
+        <Directory Id="GatewayDir"    Name="gateway" />
+        <Directory Id="DatabaseDir"   Name="database" />
+        <Directory Id="ToolsDir"      Name="tools" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DataRoot" Name="IntelligentVMS">
+        <Directory Id="ConfigDir"     Name="config" />
+        <Directory Id="RecordingsDir" Name="recordings" />
+        <Directory Id="ExportsDir"    Name="exports" />
+        <Directory Id="KeysDir"       Name="keys" />
+        <Directory Id="LogsDir"       Name="logs" />
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="ServiceComponents" Directory="RuntimeDir">
+      <Component Id="ControlApiService" Guid="*">
+        <File Id="ControlApiExe" Source="$(StagingDir)\runtime\Scripts\python.exe"
+              Name="vms-control-api.exe" KeyPath="yes" />
+        <ServiceInstall Id="ControlApiInstall"
+                        Name="IntelligentVmsApi"
+                        DisplayName="Intelligent VMS Control API"
+                        Description="Identity, devices, events and administration."
+                        Type="ownProcess" Start="auto" ErrorControl="normal"
+                        Account="NT AUTHORITY\NetworkService"
+                        Arguments="-m app.main"
+                        Vital="yes">
+          <!-- Do not start before the database is up. -->
+          <ServiceDependency Id="postgresql-x64-16" />
+        </ServiceInstall>
+        <ServiceControl Id="ControlApiControl" Name="IntelligentVmsApi"
+                        Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+        <fw:FirewallException Id="ApiPort" Name="Intelligent VMS API"
+                              Port="[VMSPORT]" Protocol="tcp" Scope="localSubnet" />
+      </Component>
+
+      <Component Id="RecorderService" Guid="*">
+        <File Id="RecorderExe" Source="$(StagingDir)\runtime\Scripts\python.exe"
+              Name="vms-recorder.exe" KeyPath="yes" />
+        <ServiceInstall Id="RecorderInstall"
+                        Name="IntelligentVmsRecorder"
+                        DisplayName="Intelligent VMS Recording Service"
+                        Description="Supervised FFmpeg recorders."
+                        Type="ownProcess" Start="auto" ErrorControl="normal"
+                        Account="NT AUTHORITY\NetworkService"
+                        Arguments="-m recorder.service" Vital="yes">
+          <ServiceDependency Id="IntelligentVmsApi" />
+        </ServiceInstall>
+        <ServiceControl Id="RecorderControl" Name="IntelligentVmsRecorder"
+                        Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+
+      <Component Id="AnalyticsService" Guid="*">
+        <File Id="AnalyticsExe" Source="$(StagingDir)\runtime\Scripts\python.exe"
+              Name="vms-analytics.exe" KeyPath="yes" />
+        <!-- Manual start: with no model configured the worker has nothing to do. -->
+        <ServiceInstall Id="AnalyticsInstall"
+                        Name="IntelligentVmsAnalytics"
+                        DisplayName="Intelligent VMS Analytics Worker"
+                        Description="Server-side video analytics (requires a model)."
+                        Type="ownProcess" Start="demand" ErrorControl="normal"
+                        Account="NT AUTHORITY\NetworkService"
+                        Arguments="-m analytics_worker.worker" Vital="no">
+          <ServiceDependency Id="IntelligentVmsApi" />
+        </ServiceInstall>
+        <ServiceControl Id="AnalyticsControl" Name="IntelligentVmsAnalytics"
+                        Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="GatewayComponents" Directory="GatewayDir">
+      <Component Id="MediaGatewayComponent" Guid="*">
+        <File Id="MediaMtxExe" Source="$(StagingDir)\thirdparty\mediamtx.exe" KeyPath="yes" />
+        <ServiceInstall Id="GatewayInstall" Name="IntelligentVmsGateway"
+                        DisplayName="Intelligent VMS Media Gateway"
+                        Type="ownProcess" Start="auto" ErrorControl="normal" />
+        <ServiceControl Id="GatewayControl" Name="IntelligentVmsGateway"
+                        Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Data directories are created but deliberately NOT scheduled for removal. -->
+    <ComponentGroup Id="ServerComponents" Directory="DataRoot">
+      <Component Id="DataDirectories" Guid="*" Permanent="yes">
+        <CreateFolder Directory="RecordingsDir" />
+        <CreateFolder Directory="ExportsDir" />
+        <CreateFolder Directory="LogsDir" />
+        <CreateFolder Directory="ConfigDir" />
+        <CreateFolder Directory="KeysDir">
+          <!-- Master key store: SYSTEM and Administrators only. -->
+          <util:PermissionEx User="SYSTEM" GenericAll="yes" />
+          <util:PermissionEx User="Administrators" GenericAll="yes" />
+        </CreateFolder>
+        <RegistryValue Root="HKLM" Key="SOFTWARE\IntelligentVMS"
+                       Name="DataRoot" Value="[VMSDATA]" Type="string" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="ClientComponents" Directory="ClientDir">
+      <Component Id="DesktopClientComponent" Guid="*">
+        <File Id="ClientExe" Source="$(StagingDir)\client\IntelligentVms.Client.exe"
+              KeyPath="yes">
+          <Shortcut Id="ClientStartMenu" Directory="ProgramMenuFolder"
+                    Name="Intelligent VMS" Advertise="yes" />
+        </File>
+      </Component>
+    </ComponentGroup>
+
+    <!-- Apply database migrations before the services are started. -->
+    <CustomAction Id="RunMigrations" Directory="DatabaseDir"
+                  ExeCommand="[RuntimeDir]Scripts\alembic.exe -c alembic.ini upgrade head"
+                  Execute="deferred" Impersonate="no" Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RunMigrations" Before="StartServices" Condition="NOT Installed" />
+    </InstallExecuteSequence>
+
+    <ui:WixUI xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+              Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(StagingDir)\LICENSE.rtf" />
+  </Package>
+</Wix>
