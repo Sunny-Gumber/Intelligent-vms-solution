@@ -352,12 +352,12 @@ foreach($artifact in @($serviceExe,$pythonDll,$servicePth,(Join-Path $VenvRoot "
 
 Write-Host "windows_field_test_stage=runtime_install component=mediamtx"
 $mediaZip = Join-Path $SourceRoot "deploy\windows\runtime\mediamtx_v1.21.1-vms.1_windows_amd64.zip"
-$mediaSha = "dd3a3378dd0bb3ca7a3c5f72736a662fed7c1e3c22dca7e52711350ca50ccdbd"
+$mediaSha = "5268c43c2643ddbc1ceeefc5ea26489e65055be43cc4d785bf5af7fcd9b26401"
 if(-not (Test-Path $mediaZip)){throw "Bundled MediaMTX runtime is missing from the installer payload."}
 $actual = Get-Sha256Hex $mediaZip
 if($actual -ne $mediaSha){throw "Bundled MediaMTX checksum mismatch."}
 $mediaExe = Join-Path $MediaRoot "mediamtx.exe"
-$mediaExeSha = "af146b297d46e10d27cc8e9ff18cdc42162514cf8629e342825b4bde842ee7e2"
+$mediaExeSha = "566a0d875950527e12bfb78a4fb8206b75cbcd2b137d86a33082aedd73d43db8"
 if (-not (Test-Path $mediaExe) -or (Get-Sha256Hex $mediaExe) -ne $mediaExeSha) {
     if (Test-Path $MediaRoot) { Remove-Item $MediaRoot -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $MediaRoot | Out-Null
