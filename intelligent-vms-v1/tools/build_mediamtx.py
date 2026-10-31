@@ -62,6 +62,47 @@ def prepare_source(work: Path) -> Path:
     return source
 
 
+def verify_go_module_pin(module: dict, manifest: dict) -> None:
+    """Reject a transitive Go module inconsistent with the approved pin and sum.
+
+    Args:
+        module: JSON metadata produced by Go for the resolved module.
+        manifest: Trusted module version and Go checksum pins.
+
+    Raises:
+        RuntimeError: If the resolved version or cryptographic sum differs.
+    """
+    if (module.get('Version') != manifest['x_net_version']
+            or module.get('Sum') != manifest['x_net_checksum']):
+        raise RuntimeError('MediaMTX golang.org/x/net version or checksum mismatch')
+
+
+def verify_windows_artifact_hashes(output: Path, executable: Path, manifest: dict) -> str:
+    """Verify both offline installer artifacts against their pinned SHA-256 values.
+
+    Args:
+        output: Deterministic MediaMTX ZIP archive.
+        executable: MediaMTX Windows executable placed inside that archive.
+        manifest: Pinned checksums from the VMS runtime manifest.
+
+    Returns:
+        Verified ZIP SHA-256 hash.
+
+    Raises:
+        RuntimeError: If the archive or executable differs from the approved hash.
+    """
+    zip_hash = hashlib.sha256(output.read_bytes()).hexdigest()
+    exe_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
+    if (zip_hash != manifest['windows_zip_sha256']
+            or exe_hash != manifest['windows_exe_sha256']):
+        raise RuntimeError(
+            'MediaMTX Windows artifact checksum mismatch: '
+            f'zip_sha256={zip_hash} exe_sha256={exe_hash}. '
+            'Do not change manifest checksums without verifying the build outputs.'
+        )
+    return zip_hash
+
+
 def build(work: Path, output: Path, target_os: str) -> None:
     """Build a static runtime and checksummed Windows package from verified source.
 
@@ -80,6 +121,14 @@ def build(work: Path, output: Path, target_os: str) -> None:
         raise RuntimeError('MediaMTX requires the pinned Go compiler')
     source = prepare_source(work)
     env = {**os.environ, 'CGO_ENABLED': '0', 'GOTOOLCHAIN': 'local'}
+    # Pinned upstream requires x/net v0.61.0; retain the patched v0.62.0 override.
+    # Go's checksum database plus our immutable h1: pin protect the override.
+    subprocess.run(['go', 'get', 'golang.org/x/net@' + manifest['x_net_version']],
+                   cwd=source, env=env, check=True, timeout=300)
+    module = json.loads(subprocess.check_output(
+        ['go', 'list', '-m', '-json', 'golang.org/x/net'],
+        cwd=source, env=env, text=True, timeout=120))
+    verify_go_module_pin(module, manifest)
     subprocess.run(['go', 'generate', './...'], cwd=source, env=env, check=True, timeout=600)
     hls_asset = source / 'internal/servers/hls/hls.min.js'
     if hashlib.sha256(hls_asset.read_bytes()).hexdigest() != manifest['hls_asset_sha256']:
@@ -97,9 +146,8 @@ def build(work: Path, output: Path, target_os: str) -> None:
                 entry.create_system = 3
                 entry.external_attr = 0o644 << 16
                 archive.writestr(entry, path.read_bytes())
-        output.with_suffix(output.suffix + '.sha256').write_text(hashlib.sha256(output.read_bytes()).hexdigest())
-        if hashlib.sha256(output.read_bytes()).hexdigest() != manifest['windows_zip_sha256']:
-            raise RuntimeError('MediaMTX reproducible Windows package checksum mismatch')
+        verified_zip_hash = verify_windows_artifact_hashes(output, executable, manifest)
+        output.with_suffix(output.suffix + '.sha256').write_text(verified_zip_hash)
     print('mediamtx_build_ok version=' + manifest['runtime_version'])
 
 

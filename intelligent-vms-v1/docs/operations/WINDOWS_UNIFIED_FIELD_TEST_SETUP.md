@@ -10,7 +10,7 @@ CI pins NSIS 3.13.0 and runs:
 .\deploy\windows\installer\Build-Installer.ps1 -CommitSha <sha>
 ```
 
-Primary artifact: `IntelligentVMS-FieldTest-Setup-x64-0.2.0.exe`, plus a sibling `.sha256`.
+Primary artifact: `IntelligentVMS-FieldTest-Setup-x64-<product_version>.exe` (currently 0.2.1, per `release/windows/product-version.json`), plus a sibling `.sha256`.
 
 ## Interactive install
 
@@ -26,13 +26,36 @@ Setup.exe /S /MODE=both /ACTION=repair /RECORDINGROOT=D:\VMS\Recordings
 Setup.exe /S /MODE=both /ACTION=upgrade /RECORDINGROOT=D:\VMS\Recordings
 ```
 
-Existing-version detection converts a normal Install into repair or upgrade. Downgrade is blocked.
+Existing-version detection converts a normal Install into repair or upgrade.
+A lower **product version** is rejected, but an older security build with the
+same product version can be classified as repair. An approved release must
+therefore be selected by its exact installer SHA-256 and reviewed commit, not
+product version alone. Withdraw obsolete installer packages; this field-test
+installer does not implement cryptographic anti-rollback against every prior
+same-version build.
 
 ## Prerequisites
 
 Client is self-contained .NET 10 win-x64 but requires the official Microsoft WebView2 Evergreen Runtime.
 
 Server/Both reuse the accepted Windows field-test server architecture and currently require Python 3.12 x64 plus a supported local PostgreSQL x64 service version 14 or newer. Interactive Setup asks for the local PostgreSQL administrator password in a masked field and passes it only through the child-process environment for first-time DB bootstrap; it is not placed on the command line or installer log. Unattended setup must provide the same `VMS_POSTGRES_ADMIN_PASSWORD` environment variable before launch. Setup does not uninstall shared PostgreSQL and does not download arbitrary latest prerequisites.
+
+### Media runtime build cache and network boundary
+
+PR #174 proposes patched MediaMTX runtime `1.21.3-vms.1`, Go 1.27.3 and x/net
+v0.62.0. Until the PR is accepted, main retains its existing runtime. Identify
+the candidate MediaMTX build by the
+source commit plus **both** the ZIP and executable hashes recorded in
+`infra/mediamtx/runtime.json`. Older same-name cached ZIPs fail the checksum
+gate. On a stale-hash packaging failure, use a fresh `-OutputRoot` or remove
+only `<OutputRoot>/build-inputs/mediamtx_v1.21.3-vms.1_windows_amd64.zip`
+before rebuilding. Never delete retained recordings or server configuration.
+
+MediaMTX installation uses the verified bundled ZIP and requires no live
+MediaMTX download. **The full Server/Both installation is not air-gapped:**
+`Install-WindowsFieldTest.ps1` upgrades pip and installs Python requirements;
+Python, PostgreSQL, WebView2 and other applicable prerequisites follow the
+documented provisioning paths. No fully offline setup is claimed or tested.
 
 ## Data ownership
 
@@ -65,7 +88,7 @@ Issue #23 / PR pending.
 The 0.2.1 field-test candidate fixes defects found during the first real Windows 11 qualification attempt without changing the product qualification claim.
 
 - PostgreSQL client discovery uses the selected Windows service ImagePath, official PostgreSQL installation registry entries, standard 64-bit Program Files paths, and only then a validated PGBIN fallback. Candidates must expose psql/createdb/postgres, be AMD64 PE binaries, and report PostgreSQL major 14+.
-- MediaMTX 1.21.1 is now a pinned installer build input. Build verifies SHA-256 `faa97974861eb75a68b5aa326c78e7e7a6f670b5ef191bace78e715130381f23` and embeds the ZIP into the installer payload. Normal installation performs no GitHub MediaMTX download and re-verifies the bundled hash before extraction.
+- PR #174 proposes a MediaMTX 1.21.3-vms.1 installer build input, verified against the ZIP and executable SHA-256 values in `infra/mediamtx/runtime.json`. Normal installation uses the bundled runtime without a MediaMTX download; acceptance remains pending.
 - Quiet/unattended setup passes `-NonInteractive`; missing PostgreSQL bootstrap credentials fail immediately instead of entering an invisible `Read-Host`.
 - PostgreSQL admin credentials stay in process environment only. The generated VMS database password is passed to the env generator through a temporary environment variable, never a process argument. Role create/update SQL uses a protected temporary SQL file rather than embedding the database password in a command line.
 - Fresh-install bootstrap has explicit phases: `config_generated`, `role_ready`, `database_ready`, `completed`. A preserved `vms.env` alone is not treated as proof that bootstrap completed. Retry reconciles the role/database using the preserved VMS DB secret and does not rotate legitimate configuration.

@@ -40,7 +40,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r tests/requirements.txt
-          python -m pytest -q tests/test_windows_field_test_release.py tests/test_recording_phase3.py tests/test_field_test_browser_session.py tests/test_vms_fix_150_atomic_publish_residuals.py
+          python -m pytest -q tests/test_windows_field_test_release.py tests/test_recording_phase3.py tests/test_field_test_browser_session.py tests/test_vms_fix_150_atomic_publish_residuals.py tests/test_mediamtx_build_integrity.py tests/test_mediamtx_reviewer_cases.py
 
       - name: Preflight native Windows runner
         shell: pwsh
@@ -53,18 +53,18 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.8'
+          go-version: '1.27.3'
           cache: false
       - name: Prepare pinned MediaMTX direct-script fixture
         shell: pwsh
         run: |
           $runtime=Join-Path $PWD "deploy\windows\runtime"
           New-Item -ItemType Directory -Force -Path $runtime|Out-Null
-          $zip=Join-Path $runtime "mediamtx_v1.21.1-vms.1_windows_amd64.zip"
+          $zip=Join-Path $runtime "mediamtx_v1.21.3-vms.1_windows_amd64.zip"
           python tools/build_mediamtx.py --work "$env:RUNNER_TEMP/mediamtx-source" --output $zip --target-os windows
           if($LASTEXITCODE -ne 0){throw "Pinned MediaMTX source build failed"}
           $hash=(Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-          if($hash -ne "4207f83bda020817d825fc627fedef71c60c0041838a3f3d65473e468c902046"){throw "Pinned MediaMTX direct-script fixture hash mismatch"}
+          if($hash -ne "16eaee7c46959f2a523f8dea3405f12f362298f81a1f20eae5e4c9d6a159dc24"){throw "Pinned MediaMTX direct-script fixture hash mismatch"}
           python -m pip install -r services/control-api/requirements.txt
           Expand-Archive -LiteralPath $zip -DestinationPath "$env:RUNNER_TEMP/media-transport-check" -Force
           python tools/check_camera_transport_runtime.py --binary "$env:RUNNER_TEMP/media-transport-check/mediamtx.exe"
