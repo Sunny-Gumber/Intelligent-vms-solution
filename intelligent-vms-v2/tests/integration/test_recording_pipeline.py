@@ -88,6 +88,7 @@ async def test_recorder_produces_playable_segments_and_matching_index(
 
     finalized = [s for s in segments if s.state == SegmentState.FINALIZED.value]
     assert finalized, "at least one segment must reach FINALIZED"
+    probed_durations = []
 
     for segment in finalized:
         assert segment.size_bytes and segment.size_bytes > 0
@@ -97,7 +98,17 @@ async def test_recorder_produces_playable_segments_and_matching_index(
         path = resolve_path(db_session, segment)
         assert path is not None and path.is_file(), f"missing file for {segment.id}"
         assert not path.name.endswith(".part"), "finalized files must not be partial"
-        assert probe_duration(path) > 0.5
+        duration = probe_duration(path)
+        # Graceful shutdown preserves the final segment even when it contains
+        # less than half a second of video. Check that tail against its index
+        # instead of imposing an arbitrary minimum on every finalized file.
+        assert duration > 0
+        assert duration == pytest.approx(segment.duration_s, abs=0.1)
+        probed_durations.append(duration)
+
+    assert sum(duration > 0.5 for duration in probed_durations) >= 2, (
+        "the recording must include multiple full-length segments before its stop tail"
+    )
 
 
 @requires_ffmpeg
