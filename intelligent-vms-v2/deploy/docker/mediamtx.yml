@@ -58,7 +58,7 @@ webrtcLocalUDPAddress: :8189
 webrtcAdditionalHosts: []
 
 # HLS: fallback transport. Playlist and segment requests are 'read' actions.
-# HLS has no per-viewer kickable session; see ADR-0015 s9.
+# v1.21.2 HLS sessions are individually bound/kicked; see ADR-0016.
 hls: yes
 hlsAddress: :8888
 hlsVariant: lowLatency

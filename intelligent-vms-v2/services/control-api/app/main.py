@@ -17,6 +17,7 @@ from app.config import Settings, get_settings
 from app.container import Container, build_container
 from app.core.errors import VmsError
 from app.db import session as db
+from app.events_engine.ws_stream import WS_TRANSPORT_OPTIONS
 from app.lifecycle import shutdown, startup
 from app.logging_setup import bind_correlation_id, configure_logging, correlation_id, get_logger
 from app.version import PRODUCT_NAME, VERSION, version_info
@@ -157,7 +158,8 @@ def run() -> None:  # pragma: no cover - process entry point
                 port=settings.api_port, log_config=None, proxy_headers=True,
                 # "*" would let any client rewrite its apparent source address
                 # with X-Forwarded-For. Trust only configured proxies.
-                forwarded_allow_ips=settings.forwarded_allow_ips)
+                forwarded_allow_ips=settings.forwarded_allow_ips,
+                **WS_TRANSPORT_OPTIONS)
 
 
 if __name__ == "__main__":  # pragma: no cover

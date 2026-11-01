@@ -22,7 +22,9 @@ export function AlarmsPage() {
 
   useEffect(() => {
     load();
-    const stream = api.openEventStream(() => { void load(); });
+    let stream: ReturnType<typeof api.openEventStream> = null;
+    try { stream = api.openEventStream(() => { void load(); }); }
+    catch (error) { setNotice(String(error)); }
     return () => stream?.close();
   }, []);
 

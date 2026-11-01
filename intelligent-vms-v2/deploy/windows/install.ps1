@@ -102,7 +102,7 @@ Write-Host "==> Registering services"
 $nssm = Get-Command nssm -ErrorAction SilentlyContinue
 if ($nssm) {
     & nssm install IntelligentVmsApi "$InstallRoot\venv\Scripts\python.exe" `
-        "-m uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8080 --log-config NUL"
+        "-m app.main"
     & nssm set IntelligentVmsApi AppEnvironmentExtra "VMS_CONFIG_FILE=$configFile"
     & nssm set IntelligentVmsApi Start SERVICE_AUTO_START
     & nssm set IntelligentVmsApi AppStdout "$DataRoot\logs\api.out.log"
@@ -117,7 +117,7 @@ if ($nssm) {
 } else {
     Write-Warning "NSSM not found. Registering with sc.exe; it has weaker restart semantics."
     sc.exe create IntelligentVmsApi binPath= `
-        "`"$InstallRoot\venv\Scripts\python.exe`" -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8080" `
+        "`"$InstallRoot\venv\Scripts\python.exe`" -m app.main" `
         start= auto DisplayName= "Intelligent VMS Control API" | Out-Null
     sc.exe failure IntelligentVmsApi reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
 }

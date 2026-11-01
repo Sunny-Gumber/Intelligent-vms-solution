@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     api_root_path: str = ""
     cors_origins: CsvList = Field(default_factory=list)
     trusted_hosts: CsvList = Field(default_factory=lambda: ["*"])
+    ws_max_connections: int = Field(default=256, ge=1, le=4096)
+    ws_max_connections_per_ip: int = Field(default=16, ge=1, le=256)
+    ws_auth_timeout_s: float = Field(default=5.0, gt=0, le=5)
+    ws_revalidate_interval_s: float = Field(default=5.0, gt=0, le=5)
+    ws_send_timeout_s: float = Field(default=5.0, gt=0, le=5)
 
     # ---------------- database ----------------
     # SQLite default so a developer checkout runs immediately; PostgreSQL is the
@@ -276,6 +281,8 @@ class Settings(BaseSettings):
                 problems.append("SQLite is not supported in production; configure PostgreSQL")
             if "*" in self.trusted_hosts:
                 problems.append("VMS_TRUSTED_HOSTS must be an explicit list in production")
+            if "*" in self.forwarded_allow_ips:
+                problems.append("VMS_FORWARDED_ALLOW_IPS must list explicit trusted peers")
             if self.ldap_enabled:
                 problems.append("LDAP is designed but NOT implemented in this release")
             if self.password_hash_memory_kib < 19456:

@@ -56,9 +56,8 @@ Ctr = Annotated[Container, Depends(get_container)]
 
 
 def client_ip(request: Request) -> str | None:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    # Uvicorn has already applied forwarding headers from explicitly trusted
+    # peers. Re-reading the raw header here bypasses that trust boundary.
     return request.client.host if request.client else None
 
 

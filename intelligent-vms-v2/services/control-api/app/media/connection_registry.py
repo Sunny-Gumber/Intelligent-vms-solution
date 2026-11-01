@@ -1,7 +1,7 @@
 """Gateway connection bindings and active revocation (ADR-0015 section 6).
 
 Admission (POST /internal/media/auth) only runs when a viewer connects. An
-established WebRTC or RTSP session keeps flowing after its live session is
+established WebRTC, RTSP or HLS session keeps flowing after its live session is
 closed, expired, or its user loses permission. This module closes that gap:
 
   * bind()     records which gateway session belongs to which live session,
@@ -16,10 +16,9 @@ after startup simply continues.
 Targeting is per gateway session id, never per path, so revoking one viewer
 cannot disconnect another authorized viewer of the same camera.
 
-HLS is NOT bound: the gateway shares one HLS muxer among all viewers of a
-path and exposes no per-viewer session to kick. HLS revocation therefore
-depends on the gateway re-authenticating each HLS request, which must be
-verified on the pinned release before HLS revocation is claimed.
+MediaMTX v1.21.2 has individual HLS sessions. Bind and kick those sessions;
+never kick the shared muxer to revoke one viewer. Its HLS authorization is
+session-based, not repeated for every segment request (ADR-0016).
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ from app.media.mediamtx_client import (
 log = get_logger("media.connections")
 
 # Protocols whose gateway sessions can be disconnected one at a time.
-KICKABLE_PROTOCOLS = frozenset({"webrtc", "rtsp", "rtsps"})
+KICKABLE_PROTOCOLS = frozenset({"webrtc", "rtsp", "rtsps", "hls"})
 
 
 @dataclass

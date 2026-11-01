@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import select
 import shutil
 import socket
 import subprocess
@@ -150,7 +151,7 @@ def stack(settings, migrated_db, tmp_path, request):
         "  - user: any\n    pass:\n    ips: []\n"
         "    permissions:\n      - action: publish\n      - action: read\n"
         "paths:\n  all_others:\n")
-    procs.append(subprocess.Popen([MEDIAMTX_BIN, str(sim_conf)]))
+    procs.append(subprocess.Popen([MEDIAMTX_BIN, str(sim_conf)], cwd=tmp_path))
     wait_for_port(ports.sim)
     procs.append(subprocess.Popen(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-f", "lavfi",
@@ -190,7 +191,7 @@ def stack(settings, migrated_db, tmp_path, request):
         "MTX_METRICS": "no",
     })
     procs.append(subprocess.Popen([MEDIAMTX_BIN, str(ROOT / "deploy/docker/mediamtx.yml")],
-                                  env=env))
+                                  env=env, cwd=tmp_path))
     wait_for_port(ports.api)
     wait_for_port(ports.rtsp)
 
@@ -302,11 +303,21 @@ def _reader(url: str) -> subprocess.Popen:
 def _media_time_us(proc: subprocess.Popen, seconds: float) -> int:
     """Read stream-copy progress for `seconds`; return the last media timestamp."""
     last = 0
+    pending = b""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline and proc.poll() is None:
-        line = proc.stdout.readline()
-        if line.startswith("out_time_us="):
-            last = int(line.split("=", 1)[1] or 0)
+        readable, _, _ = select.select([proc.stdout], [], [],
+                                       max(0, deadline - time.monotonic()))
+        if not readable:
+            break
+        chunk = os.read(proc.stdout.fileno(), 8192)
+        if not chunk:
+            break
+        pending += chunk
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            if line.startswith(b"out_time_us="):
+                last = int(line.split(b"=", 1)[1] or 0)
     return last
 
 
@@ -335,3 +346,49 @@ def test_revoking_one_viewer_leaves_the_other_playing(stack):
         for proc in (viewer1, viewer2):
             if proc.poll() is None:
                 proc.kill()
+
+
+def test_hls_revocation_denies_new_requests_without_stopping_other_viewer(stack):
+    """Request-level revocation, not removal of already buffered video."""
+    from urllib.parse import urljoin
+
+    s1, s2 = stack.open_session(0), stack.open_session(1)
+    assert s1.path == s2.path
+    url = f"http://127.0.0.1:{stack.ports.hls}/{s1.path}/index.m3u8"
+    h1 = {"Authorization": f"Bearer {s1.play_token}"}
+    h2 = {"Authorization": f"Bearer {s2.play_token}"}
+    def resources(client, header):
+        deadline = time.monotonic() + 20
+        while True:
+            response = client.get(url, headers=header)
+            if response.status_code == 200 or time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
+        assert response.status_code == 200
+        playlist = urljoin(url, next(line for line in response.text.splitlines()
+                                    if line and not line.startswith("#")))
+        deadline = time.monotonic() + 20
+        while True:
+            media = client.get(playlist, headers=header)
+            segments = [line for line in media.text.splitlines()
+                        if line and not line.startswith("#")]
+            if segments or time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
+        assert media.status_code == 200 and segments
+        segment = urljoin(playlist, segments[-1])
+        assert client.get(segment, headers=header).status_code == 200
+        return playlist, segment
+
+    with (httpx.Client(timeout=10, follow_redirects=True) as c1,
+          httpx.Client(timeout=10, follow_redirects=True) as c2):
+        r1, r2 = resources(c1, h1), resources(c2, h2)
+        with stack.session_scope() as db:
+            asyncio.run(stack.broker.close(db, s1.session_id, reason="hls_test_revoke"))
+        assert c1.get(url, headers=h1).status_code == 401
+        for resource in r1:
+            # The invalidated gateway session returns not-found, not an auth
+            # challenge. Neither status may deliver revoked media.
+            assert c1.get(resource, headers=h1).status_code in (401, 404)
+        for resource in (url, *r2):
+            assert c2.get(resource, headers=h2).status_code == 200

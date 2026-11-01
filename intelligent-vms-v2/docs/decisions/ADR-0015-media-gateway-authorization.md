@@ -1,5 +1,10 @@
 # ADR-0015 — Media gateway authorization and active revocation
 
+> Update: ADR-0016 supersedes the original HLS assumptions below. The pinned
+> v1.21.2 gateway has individual HLS sessions and does not reauthorize every
+> segment. HLS sessions are now bound and revoked through its session API; a
+> two-viewer real-gateway regression verifies selective revocation.
+
 - **Status:** Proposed. Implemented against baseline `83e965d9`; real-gateway
   verification outstanding (see §11). Supersedes the provisional Batch 1 ADR.
 - **Findings:** A (gateway authorization), Batch 1 review items R1–R10.

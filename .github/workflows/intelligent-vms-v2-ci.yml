@@ -148,6 +148,8 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Typecheck
         run: npm run typecheck
+      - name: Client protocol tests
+        run: npm test
       - name: Build
         run: npm run build
 

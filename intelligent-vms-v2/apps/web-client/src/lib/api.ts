@@ -1,3 +1,5 @@
+import { openEventStream, type EventStreamHandle } from './eventStream';
+
 /**
  * Typed client for the Intelligent VMS control API.
  *
@@ -35,6 +37,8 @@ interface Tokens {
 export class VmsApi {
   private tokens: Tokens | null = null;
   private refreshing: Promise<void> | null = null;
+  private authGeneration = 0;
+  private streams = new Set<EventStreamHandle>();
 
   constructor(private readonly baseUrl = '/api/v1') {}
 
@@ -43,32 +47,45 @@ export class VmsApi {
   }
 
   async login(username: string, password: string, totpCode?: string): Promise<void> {
+    const generation = ++this.authGeneration;
+    for (const stream of this.streams) stream.close();
+    this.tokens = null;
     const body = await this.raw<{ access_token: string; refresh_token: string }>(
       'POST',
       '/auth/login',
       { username, password, totp_code: totpCode ?? null },
       false,
     );
-    this.tokens = { access: body.access_token, refresh: body.refresh_token };
+    if (generation === this.authGeneration) {
+      this.tokens = { access: body.access_token, refresh: body.refresh_token };
+    }
   }
 
   async logout(): Promise<void> {
+    ++this.authGeneration;
+    for (const stream of this.streams) stream.close();
     if (!this.tokens) return;
-    try {
-      await this.request('POST', '/auth/logout', { refresh_token: this.tokens.refresh });
-    } finally {
-      this.tokens = null;
-    }
+    // raw captures the current Authorization header before its first await.
+    const request = this.raw('POST', '/auth/logout', { refresh_token: this.tokens.refresh }, true);
+    this.tokens = null;
+    await request;
   }
 
   /** Authenticated request with a single transparent refresh on 401. */
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const generation = this.authGeneration;
     try {
-      return await this.raw<T>(method, path, body, true);
+      const result = await this.raw<T>(method, path, body, true);
+      if (generation !== this.authGeneration) throw new Error('Authentication changed');
+      return result;
     } catch (error) {
+      if (generation !== this.authGeneration) throw new Error('Authentication changed');
       if (error instanceof ApiError && error.problem.status === 401 && this.tokens) {
         await this.refresh();
-        return this.raw<T>(method, path, body, true);
+        if (generation !== this.authGeneration) throw new Error('Authentication changed');
+        const result = await this.raw<T>(method, path, body, true);
+        if (generation !== this.authGeneration) throw new Error('Authentication changed');
+        return result;
       }
       throw error;
     }
@@ -93,13 +110,17 @@ export class VmsApi {
   /** Concurrent 401s must trigger only ONE refresh, or the rotation chain breaks. */
   private async refresh(): Promise<void> {
     if (!this.refreshing) {
+      const generation = this.authGeneration;
+      const refreshToken = this.tokens?.refresh;
+      if (!refreshToken) throw new Error('Not authenticated');
       this.refreshing = (async () => {
         const body = await this.raw<{ access_token: string; refresh_token: string }>(
           'POST',
           '/auth/refresh',
-          { refresh_token: this.tokens!.refresh },
+          { refresh_token: refreshToken },
           false,
         );
+        if (generation !== this.authGeneration) throw new Error('Authentication changed');
         this.tokens = { access: body.access_token, refresh: body.refresh_token };
       })().finally(() => {
         this.refreshing = null;
@@ -121,6 +142,7 @@ export class VmsApi {
 
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
+      signal: AbortSignal.timeout(15_000),
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -142,20 +164,22 @@ export class VmsApi {
     return payload as T;
   }
 
-  /** WebSocket event stream. The token goes in the query string because
-   *  browsers cannot set headers on a WebSocket handshake. */
-  openEventStream(onEvent: (event: unknown) => void): WebSocket | null {
+  /** Authenticates after open; disposal/logout cancels all retry work. */
+  openEventStream(onEvent: (event: unknown) => void): EventStreamHandle | null {
     if (!this.tokens) return null;
     const url = new URL(`${this.baseUrl}/events/stream`, window.location.origin);
-    url.protocol = url.protocol.replace('http', 'ws');
-    url.searchParams.set('token', this.tokens.access);
-
-    const socket = new WebSocket(url.toString());
-    socket.onmessage = (message) => {
-      const parsed = JSON.parse(message.data);
-      if (parsed.type === 'event') onEvent(parsed.data);
-    };
-    return socket;
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (url.protocol === 'ws:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
+      throw new Error('Event streaming requires HTTPS outside loopback development');
+    }
+    let stream: EventStreamHandle | null = null;
+    stream = openEventStream({
+      url: url.toString(), getToken: () => this.tokens?.access ?? null,
+      refresh: () => this.refresh(), onEvent,
+      onClose: () => { if (stream) this.streams.delete(stream); },
+    });
+    this.streams.add(stream);
+    return stream;
   }
 }
 

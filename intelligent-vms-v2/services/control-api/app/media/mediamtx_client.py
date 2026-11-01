@@ -139,10 +139,9 @@ class MediaGatewayClient:
                 for i in response.json().get("items", [])]
 
     # Gateway API collection for each protocol whose sessions can be kicked
-    # individually. HLS is absent on purpose: an HLS muxer is shared by every
-    # viewer of a path, so kicking it would disconnect authorized viewers too.
+    # individually. HLS targets its session, never the shared muxer (v1.21.2).
     KICKABLE_COLLECTIONS = {"webrtc": "webrtcsessions", "rtsp": "rtspsessions",
-                            "rtsps": "rtspssessions"}
+                            "rtsps": "rtspssessions", "hls": "hls/sessions"}
 
     async def kick_connection(self, protocol: str, connection_id: str) -> bool:
         """Disconnect ONE gateway session, leaving other viewers untouched.

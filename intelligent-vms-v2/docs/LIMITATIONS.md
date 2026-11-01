@@ -104,8 +104,9 @@ reported zero warnings and zero errors. See draft PR #177 for later commit check
   session teardown still require live runtime qualification. Hardware-accelerated
   decoding remains unqualified.
 - **Web client**: compile failures in page imports, tile properties, authentication
-  guard and API calls were repaired, and an npm lockfile was added. No browser
-  end-to-end or real-media qualification has been performed. The playback page
+  guard and API calls were repaired, and an npm lockfile was added. The event and live-tile lifecycle now has automated Node tests, header-authenticated
+  HLS fallback, bounded retries and teardown. No browser end-to-end or real-media
+  qualification has been performed. The playback page
   displays metadata/timeline availability; it is not a verified video player.
 
 Build success establishes compilation only. It is not evidence that UI bindings,
@@ -141,31 +142,33 @@ before committing to a deployment size.
 
 ## 8a. Live-video admission and revocation (ADR-0015)
 
-Implemented in Batch 1 against baseline `83e965d9`; **not yet verified on a
-real gateway**.
+Implemented in Batch 1 against baseline `83e965d9`. Six real MediaMTX
+v1.21.2 tests passed on 2026-10-31 using synthetic FFmpeg input. This is not
+physical-camera, browser or Windows qualification. See ADR-0016 for the later
+event-stream and browser lifecycle changes.
 
 | Area | Status |
 | --- | --- |
-| Gateway calls the control API for every read and Control-API request | Configured (`authMethod: http`, `authHTTPExclude: []`). **Not verified** on MediaMTX v1.21.2 — `tests/gateway/` has not run |
+| Gateway calls the control API for every read and Control-API request | Configured (`authMethod: http`, `authHTTPExclude: []`). Admission and control-API checks passed on real MediaMTX v1.21.2 with synthetic media |
 | Hook decision (session, path, user, camera, RBAC/scope, URL-credential policy, caller authentication) | Implemented; tested against the real database, broker and RBAC with the gateway replaced by a test double |
-| Revocation of established WebRTC/RTSP viewers | Implemented as a fair, batch-limited supervised scan (5 s interval) with concurrency-limited, timed kicks plus immediate kick on session close. Scan and kick latency grow with backlog; per-viewer kick by gateway session id is **not verified** on the pinned release |
-| Revocation of HLS viewers | **Not provided.** HLS has no per-viewer gateway session. Whether MediaMTX re-authenticates each HLS request is unverified; if it does not, a revoked HLS viewer keeps watching until they leave |
-| Hook caller authentication via `user:secret@` in `MTX_AUTHHTTPADDRESS` | Relies on the gateway sending URL userinfo as Basic auth. **Unverified.** If it does not, the hook denies everything (fail closed, live video unavailable) |
+| Revocation of established WebRTC/RTSP viewers | Implemented as a fair, batch-limited supervised scan (5 s interval) with concurrency-limited, timed kicks plus immediate kick on session close. Scan and kick latency grow with backlog; selective RTSP revocation passed on the pinned release; WebRTC still needs a real-browser check |
+| Revocation of HLS viewers | Implemented with individual HLS session bindings and targeted kicks. A real v1.21.2 two-viewer regression first reproduced continued access after revocation, then passed with the correction. Already buffered media cannot be retracted; browser and Windows runtime checks remain pending |
+| Hook caller authentication via `user:secret@` in `MTX_AUTHHTTPADDRESS` | Relies on the gateway sending URL userinfo as Basic auth. Verified by the real-gateway admission tests; configuration failures still deny access |
 | Plain RTSP | Play token travels in cleartext; restrict port 8554 to trusted networks or use RTSPS |
-| Gateway image | MediaMTX 1.21.2 pinned to an immutable registry digest; binary-level runtime qualification is still required |
+| Gateway image | MediaMTX 1.21.2 pinned to an immutable registry digest; synthetic RTSP/HLS admission checks passed; deployment and real-media qualification remain pending |
 | Control API unavailable | No new viewer can connect (by design). Recording is unaffected |
-| Windows client (LibVLC/HLS) | Must send credentials as HTTP Basic (`session_id:play_token`); query-string tokens are now refused. Not yet updated or tested |
+| Windows client (LibVLC/HLS) | Must send credentials as HTTP Basic (`session_id:play_token`); query-string tokens are now refused. Source updated to send Basic credentials; installed playback remains untested |
 
 ## 9. Operational caveats to know before a pilot
 
 | Area | Caveat |
 | --- | --- |
-| **Client IP behind proxies** | `VMS_FORWARDED_ALLOW_IPS` (default `127.0.0.1`) controls which peers may set `X-Forwarded-For` for uvicorn. Separately, `client_ip()` in `app/core/deps.py` still reads `X-Forwarded-For` directly for audit and rate-limit keys, so those values are client-controlled until fixed (tracked, not in Batch 1). |
+| **Client IP behind proxies** | `VMS_FORWARDED_ALLOW_IPS` (default `127.0.0.1`) controls which peers may set `X-Forwarded-For` for uvicorn. `client_ip()` now consumes only the canonical request address. Trusted/untrusted proxy-chain tests pass; production rejects wildcard proxy trust. |
 | **Rate limiting** | In-process token buckets. With N API worker processes the effective limit is N x the configured rate. Login lockout is database-backed and therefore global; request rate limiting is not. A shared backend is required for exact global limits. |
 | **RAID monitoring** | Linux `md` and Windows Storage Spaces only. **Hardware RAID controllers (MegaRAID, PERC, SmartArray) are not queried** and report `unknown`, because their vendor CLIs cannot be redistributed. |
 | **NAS / SMB / NFS** | Supported as a mounted path that is monitored. Mounting, credentials and reconnection are the operating system's responsibility. Not validated against a real share. |
 | **SMTP** | Implemented, never sent to a live mail server. |
-| **WebSocket stream** | Token-authenticated and scope-filtered. Not load tested; slow clients have their messages dropped rather than back-pressuring the event pipeline. |
+| **WebSocket stream** | First-frame authenticated, periodically reauthorized and scope-filtered, with connection/frame/queue limits (ADR-0016). Limits are per worker. Not load tested; full event queues drop messages. |
 | **Database** | PostgreSQL is the only supported production backend. SQLite is for development and the test suite, and production start-up refuses it. |
 | **Master key** | Camera credentials are encrypted with a key at `<data_root>/keys/vms-master.key`. **Lose that file and every stored camera password becomes unrecoverable.** Back it up separately from the database — see `docs/operations/disaster-recovery.md`. |
 | **Time** | All storage and transport is UTC. Site-local time is a presentation concern. Recording schedules are evaluated in site-local time so DST is handled correctly. |

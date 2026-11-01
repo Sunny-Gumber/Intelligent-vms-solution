@@ -191,10 +191,10 @@ def test_valid_rtsp_basic_session_is_admitted(media):
     assert call_hook(media.client, body).status_code == 204
 
 
-def test_valid_hls_read_is_admitted_but_not_bound(media):
+def test_valid_hls_read_is_admitted_and_bound(media):
     s = media.open_session("viewer1")
-    assert call_hook(media.client, read(s, protocol="hls", conn="")).status_code == 204
-    assert open_bindings(media.db) == []
+    assert call_hook(media.client, read(s, protocol="hls", conn="hls-1")).status_code == 204
+    assert [(b.protocol, b.gateway_conn_id) for b in open_bindings(media.db)] == [("hls", "hls-1")]
 
 
 @pytest.mark.parametrize("change", [
@@ -714,7 +714,7 @@ def test_kick_when_gateway_errors_is_retryable(recorded_gateway):
 
 
 @pytest.mark.parametrize("protocol,conn", [
-    ("hls", "x"),
+    ("unknown", "x"),
     ("webrtc", "../paths"),
     ("webrtc", "abc?query"),
     ("webrtc", "x" * 129),
@@ -724,3 +724,13 @@ def test_kick_rejects_unkickable_protocols_and_bad_ids(recorded_gateway, protoco
     with pytest.raises(ValueError):
         asyncio.run(recorded_gateway.client.kick_connection(protocol, conn))
     assert recorded_gateway.requests == []
+
+
+def test_hls_without_session_id_is_denied(media):
+    s = media.open_session("viewer1")
+    assert call_hook(media.client, read(s, protocol="hls", conn="")).status_code == 401
+
+
+def test_hls_kick_targets_session_not_shared_muxer(recorded_gateway):
+    assert asyncio.run(recorded_gateway.client.kick_connection("hls", "hls-1"))
+    assert recorded_gateway.requests[0].url.path == "/v3/hls/sessions/kick/hls-1"
