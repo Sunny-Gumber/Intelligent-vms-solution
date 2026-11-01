@@ -1,0 +1,126 @@
+# Development and small-deployment stack.
+#
+# NOTE: Docker Compose is NOT the only supported installation method.
+# Native installers for Ubuntu (systemd) and Windows (services) are provided
+# in deploy/ubuntu and installers/windows, because an appliance-style VMS is
+# frequently installed on bare metal without a container runtime.
+#
+# Media admission (ADR-0015):
+#   * MediaMTX asks the control API (POST /internal/media/auth) about every
+#     viewer and every Control API request.
+#   * That hook and the MediaMTX Control API (9997) travel only over the
+#     internal "media-admin" network, which has no route to the outside.
+#   * The hook caller is authenticated by Basic credentials AND by its fixed
+#     media-admin address (VMS_MEDIA_AUTH_ALLOWED_CALLERS).
+
+name: intelligent-vms
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vms
+      POSTGRES_PASSWORD: ${VMS_DB_PASSWORD:?set VMS_DB_PASSWORD}
+      POSTGRES_DB: intelligentvms
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vms -d intelligentvms"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  mediamtx:
+    # Immutable multi-architecture manifest digest from the official registry.
+    # Floating tags (latest, 1) are rejected by tests/unit/test_deploy_config.py.
+    image: bluenviron/mediamtx:1.21.2@sha256:c7540465f868a02652118bea5a0daab12a29ac0f6cb8485abd535939ecddf886
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      # Hook URL with the hook's Basic credentials. The secret must be
+      # URL-safe (generate with secrets.token_urlsafe, see .env.example).
+      MTX_AUTHHTTPADDRESS: "http://mediamtx:${VMS_MEDIA_AUTH_HOOK_SECRET:?set VMS_MEDIA_AUTH_HOOK_SECRET}@control-api-internal:8080/internal/media/auth"
+      # Bind the Control API to the internal network address only.
+      MTX_APIADDRESS: "172.31.250.10:9997"
+    networks:
+      default: {}
+      media-admin:
+        ipv4_address: 172.31.250.10
+        aliases: [mediamtx-admin]
+    ports:
+      - "8889:8889"      # WebRTC / WHEP
+      - "8189:8189/udp"  # WebRTC ICE
+      - "8888:8888"      # HLS
+      - "8554:8554"      # RTSP for native clients (token sent in clear: trusted LAN only)
+      # 9997 (Control API) and 9998 (metrics) are deliberately NOT published.
+    restart: unless-stopped
+
+  control-api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.control-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      VMS_ENVIRONMENT: ${VMS_ENVIRONMENT:-development}
+      VMS_SECRET_KEY: ${VMS_SECRET_KEY:?set VMS_SECRET_KEY}
+      VMS_DATABASE_URL: postgresql+psycopg://vms:${VMS_DB_PASSWORD}@postgres/intelligentvms
+      VMS_DATA_ROOT: /data
+      # Production must replace "*" with the public host name(s). The
+      # internal name is always required so the gateway's hook calls pass
+      # host validation; localhost serves the container healthcheck.
+      VMS_TRUSTED_HOSTS: "${VMS_TRUSTED_HOSTS:-*},control-api-internal,localhost"
+      VMS_MEDIA_GATEWAY_URL: http://mediamtx-admin:9997
+      VMS_MEDIA_GATEWAY_USER: ${VMS_MEDIA_GATEWAY_USER:-vms-control}
+      VMS_MEDIA_GATEWAY_PASSWORD: ${VMS_MEDIA_GATEWAY_PASSWORD:?set VMS_MEDIA_GATEWAY_PASSWORD}
+      VMS_MEDIA_AUTH_HOOK_USER: mediamtx
+      VMS_MEDIA_AUTH_HOOK_SECRET: ${VMS_MEDIA_AUTH_HOOK_SECRET:?set VMS_MEDIA_AUTH_HOOK_SECRET}
+      VMS_MEDIA_AUTH_ALLOWED_CALLERS: 172.31.250.10/32
+      VMS_MEDIA_PUBLIC_WEBRTC_URL: ${VMS_PUBLIC_WEBRTC_URL:-http://localhost:8889}
+      VMS_MEDIA_PUBLIC_HLS_URL: ${VMS_PUBLIC_HLS_URL:-http://localhost:8888}
+    volumes:
+      - vmsdata:/data
+    networks:
+      default: {}
+      media-admin:
+        aliases: [control-api-internal]
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+
+  recorder:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.recorder
+    depends_on:
+      control-api:
+        condition: service_healthy
+    environment:
+      VMS_SECRET_KEY: ${VMS_SECRET_KEY}
+      VMS_DATABASE_URL: postgresql+psycopg://vms:${VMS_DB_PASSWORD}@postgres/intelligentvms
+      VMS_DATA_ROOT: /data
+    volumes:
+      - vmsdata:/data      # shares the master key and recording volumes
+    restart: unless-stopped
+
+networks:
+  default: {}
+  media-admin:
+    # No external connectivity: only the gateway and the control API join it.
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+
+volumes:
+  pgdata:
+  vmsdata:

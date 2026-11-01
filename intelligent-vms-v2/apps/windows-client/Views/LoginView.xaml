@@ -1,0 +1,70 @@
+<Window x:Class="IntelligentVms.Client.Views.LoginView"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Intelligent VMS - Sign in"
+        Height="560" Width="420"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="{DynamicResource WindowBackground}">
+
+    <Grid Margin="32">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,24">
+            <TextBlock Text="Intelligent VMS" FontSize="22" FontWeight="SemiBold"
+                       Foreground="{DynamicResource ForegroundBrush}"/>
+            <TextBlock Text="{Binding BuildBanner}" FontSize="11"
+                       Foreground="{DynamicResource MutedBrush}" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="1">
+            <TextBlock Text="Server" Style="{DynamicResource FieldLabel}"/>
+            <TextBox Text="{Binding ServerUrl, UpdateSourceTrigger=PropertyChanged}"
+                     Style="{DynamicResource FieldInput}"
+                     ToolTip="For example https://vms.example.com"/>
+
+            <TextBlock Text="Username" Style="{DynamicResource FieldLabel}" Margin="0,14,0,0"/>
+            <TextBox x:Name="UsernameBox"
+                     Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
+                     Style="{DynamicResource FieldInput}"/>
+
+            <TextBlock Text="Password" Style="{DynamicResource FieldLabel}" Margin="0,14,0,0"/>
+            <!-- Bound through a code-behind handler: WPF deliberately does not
+                 expose PasswordBox.Password as a bindable property so the
+                 plaintext is not retained in the binding engine. -->
+            <PasswordBox x:Name="PasswordBox" Style="{DynamicResource FieldPassword}"
+                         PasswordChanged="OnPasswordChanged"/>
+
+            <StackPanel Visibility="{Binding MfaVisibility}">
+                <TextBlock Text="Authenticator code" Style="{DynamicResource FieldLabel}"
+                           Margin="0,14,0,0"/>
+                <TextBox Text="{Binding TotpCode, UpdateSourceTrigger=PropertyChanged}"
+                         Style="{DynamicResource FieldInput}" MaxLength="6"/>
+            </StackPanel>
+
+
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" VerticalAlignment="Bottom">
+            <TextBlock Text="{Binding ErrorMessage}"
+                       Foreground="{DynamicResource CriticalBrush}"
+                       TextWrapping="Wrap" FontSize="12"
+                       Visibility="{Binding ErrorVisibility}"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,18,0,0">
+            <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center"
+                       Foreground="{DynamicResource MutedBrush}" FontSize="12"
+                       Margin="0,0,14,0"/>
+            <Button Content="Sign in" Command="{Binding SignInCommand}"
+                    IsDefault="True" MinWidth="110"
+                    Style="{DynamicResource PrimaryButton}"/>
+        </StackPanel>
+    </Grid>
+</Window>
