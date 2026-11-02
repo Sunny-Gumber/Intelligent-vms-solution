@@ -53,6 +53,10 @@ NODE_SERVICE = frozenset(
 # A new mutating route that is absent here and lacks require_global_admin fails.
 KNOWN_NON_GLOBAL = frozenset(
     {
+        # Forensic mutations bind owned resources to current camera tenant/site authorization.
+        ("POST", "/api/v1/forensic/jobs"),
+        ("POST", "/api/v1/forensic/jobs/{identifier}/cancel"),
+        ("DELETE", "/api/v1/forensic/jobs/{identifier}"),
         ("DELETE", "/api/v1/alarms/rules/{rule_id}"),
         ("DELETE", "/api/v1/auth/session"),
         ("DELETE", "/api/v1/camera-groups/{group_id}"),

@@ -867,6 +867,9 @@ async def stream_recording_clip(
     except PlaybackError as exc:
         _export_slots.release()
         raise HTTPException(exc.status_code, str(exc)) from exc
+    except asyncio.CancelledError:
+        _export_slots.release()
+        raise
     except Exception:
         _export_slots.release()
         raise
