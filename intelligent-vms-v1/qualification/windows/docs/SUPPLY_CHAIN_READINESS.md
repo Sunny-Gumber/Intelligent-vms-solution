@@ -4,7 +4,7 @@ Current release candidate identity:
 - product: Intelligent VMS
 - field-test installer: IntelligentVMS-FieldTest-Setup-x64-0.2.0.exe
 - installer technology: NSIS 3.13
-- MediaMTX: 1.21.1 with pinned SHA-256 in the accepted Windows installer
+- MediaMTX candidate in PR #174: 1.21.3-vms.1 built from verified source with pinned ZIP and executable SHA-256; not accepted on main yet
 - Python server target: Python 3.12 x64 accepted field-test runtime
 - PostgreSQL: supported local x64 service 14+; reused rather than silently installed/removed
 - Windows client: self-contained .NET 10 win-x64 package

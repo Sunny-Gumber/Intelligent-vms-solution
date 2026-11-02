@@ -353,6 +353,14 @@ The 0.2.1 field-test candidate fixes defects found during the first real Windows
 - Operator/trust/build/regression runbook: `docs/operations/SECURE_CAMERA_SOURCES.md`. After accepted post-merge CI, STOP; upgrade the existing Ubuntu VM to the accepted SHA, configure RTSPS /0 + /1, THIRD blank, and manually verify onboarding then SUB live and MAIN recording.
 - Product remains **Release Candidate / External Qualification Pending**. No full camera, THIRD, HEVC-browser, Windows 10/11, capacity or production claim.
 
+## Security PR #174 — merged 2026-11-02
+
+- Review of exact head `00a96c026ffc58a47ae85825aa348b4946c16a4a` found its MediaMTX 1.21.1 pin predates upstream v1.21.2 fixes for unauthenticated playback with legacy credentials and unauthenticated JWKS fetches that can stall authentication.
+- The existing focused branch now updates the runtime candidate to MediaMTX 1.21.3, Go 1.27.3 and checksummed `golang.org/x/net` v0.62.0. The source redirect guard remains part of the verified build.
+- The Windows ZIP and executable hashes are regenerated from two identical cross-builds and propagated through installers, CI and tests. Linux and Windows compile against the same manifest.
+- PR #174 merged on 2026-11-02 at `main@33473bd5c83a0a6e2ee821e0f566f58fb3bd0d16`; all seven post-merge workflows passed (Windows Installer passed on rerun after a Chocolatey HTTP 503). Issues #173 and #175 were closed after verification. Repository protection and independent reviewer controls were waived by owner for that merge; this is not external or production qualification.
+- Product status remains **Release Candidate / External Qualification Pending**.
+
 
 ## F11-010 forensic continuation — 2026-10-29
 
@@ -402,3 +410,10 @@ integrity/Windows installer suite59PASS. No full-suite/hosted-security PASS clai
 FORENSIC_WORKER_IMAGE accepts a reviewed immutable repository digest or local
 sha256 image ID. CI builds the worker locally and exercises real container
 resource controls, source hashes, completion, cancellation and removal on Linux.
+
+
+## PR #179 integration with accepted security baseline — 2026-11-02
+
+- Historical forensic notes above record pre-integration Go 1.26.10 / x/net v0.60.0 and MediaMTX build outputs, superseded by accepted PR #174. Never use those older artifacts as deployment pins.
+- Current branch inherits MediaMTX 1.21.3 / Go 1.27.3 / x/net v0.62.0, accepted immutable source and Windows hashes, Windows installer/field-test checks, and redirect-confined RTSP/RTSPS camera credentials.
+- #179 remains draft and disabled by default; repeat exact-head CI and independent forensic isolation, audit, FFmpeg licensing, and external hardware qualification before any release.

@@ -155,3 +155,7 @@ integrity/Windows installer suite59PASS. No full-suite/hosted-security PASS clai
 FORENSIC_WORKER_IMAGE accepts a reviewed immutable repository digest or local
 sha256 image ID. CI builds the worker locally and exercises real container
 resource controls, source hashes, completion, cancellation and removal on Linux.
+
+## Reconciliation with security PR #174 — 2026-11-02
+
+This PR branch incorporates accepted `main@33473bd5c83a0a6e2ee821e0f566f58fb3bd0d16`, including MediaMTX 1.21.3, Go 1.27.3, and `golang.org/x/net` v0.62.0. Historical references above to Go 1.26.10, x/net v0.60.0 and their Windows ZIP/EXE hashes are obsolete and must never be used as current build pins; consult `infra/mediamtx/runtime.json`. Retain default-disabled experimental controls, artifact integrity, and independent forensic/FFmpeg licensing and field-qualification HOLD. These merge notes do not certify a new exact-head CI result.

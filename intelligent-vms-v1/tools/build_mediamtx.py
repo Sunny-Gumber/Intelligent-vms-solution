@@ -121,7 +121,7 @@ def build(work: Path, output: Path, target_os: str) -> None:
         raise RuntimeError('MediaMTX requires the pinned Go compiler')
     source = prepare_source(work)
     env = {**os.environ, 'CGO_ENABLED': '0', 'GOTOOLCHAIN': 'local'}
-    # Pinned upstream still requires x/net v0.59.0 (HIGH CVE-2026-78669).
+    # Pinned upstream requires x/net v0.61.0; retain the patched v0.62.0 override.
     # Go's checksum database plus our immutable h1: pin protect the override.
     subprocess.run(['go', 'get', 'golang.org/x/net@' + manifest['x_net_version']],
                    cwd=source, env=env, check=True, timeout=300)
