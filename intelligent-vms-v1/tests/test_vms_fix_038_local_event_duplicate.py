@@ -18,7 +18,7 @@ import asyncio
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -26,12 +26,35 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.entities import EventHistoryEntity
+from app.services import local_event_store
 from app.services.local_event_store import persist_local_event_once
 
 ROOT = Path(__file__).parents[1]
 PRIMARY_ID = "fix038-primary"
 COMPANION_ID = "fix038-companion"
 WHEN = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def frozen_event_store_clock(monkeypatch):
+    """Keep fixed event fixtures within the retention window, independent of wall time."""
+    fixed_now = WHEN + timedelta(hours=1)
+
+    class FrozenEventDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now.astimezone(tz) if tz is not None else fixed_now.replace(tzinfo=None)
+
+    # Only the store clock is frozen. Insertion, expiry and DB behavior stay real.
+    monkeypatch.setattr(local_event_store, "datetime", FrozenEventDatetime)
+
+
+def test_fixed_event_fixture_is_inside_minimum_retention_window():
+    """Catch future clock/test fixture changes that make the duplicate disappear."""
+    observed = local_event_store.datetime.now(timezone.utc)
+    assert observed == WHEN + timedelta(hours=1)
+    assert observed - WHEN < timedelta(days=1)
+
 
 
 def _postgres_url() -> str | None:
