@@ -100,6 +100,13 @@ class ForensicJobs:
         if (not candidate.is_absolute() or candidate.is_symlink() or candidate.is_junction()
                 or not candidate.is_dir() or "," in str(candidate)):
             raise HTTPException(503, "Forensic spool must be an existing private directory")
+        # A world/group-accessible spool permits local users to move job directories
+        # or replace staged evidence before the daemon attaches the source bind.
+        # Do not silently chmod an administrator-owned directory.
+        if os.name == "posix":
+            info = candidate.stat(follow_symlinks=False)
+            if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                raise HTTPException(503, "Forensic spool must be owned by the service and mode 0700")
         if self.root is None:
             if next(candidate.iterdir(), None) is not None:
                 raise HTTPException(503, "Forensic spool recovery requires administrator review")

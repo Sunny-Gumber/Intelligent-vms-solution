@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,6 +49,28 @@ def test_disabled_and_pinned_configuration(tmp_path):
     manager(tmp_path)
     with pytest.raises(HTTPException, match="503"):
         ForensicJobs().prepare(str(tmp_path), IMAGE)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX spool ownership and permissions")
+def test_forensic_spool_rejects_insecure_permissions_without_modifying_them(tmp_path):
+    """Refuse group/world-readable and writable evidence roots, including after activation."""
+    service = ForensicJobs()
+    try:
+        for mode in (0o755, 0o770, 0o777):
+            tmp_path.chmod(mode)
+            with pytest.raises(HTTPException) as error:
+                service.prepare(str(tmp_path), IMAGE)
+            assert error.value.status_code == 503
+            assert not (tmp_path / ".executor-lock").exists()
+        tmp_path.chmod(0o700)
+        service.prepare(str(tmp_path), IMAGE)
+        assert (tmp_path / ".executor-lock").is_dir()
+        tmp_path.chmod(0o777)
+        with pytest.raises(HTTPException) as error:
+            service.prepare(str(tmp_path), IMAGE)
+        assert error.value.status_code == 503
+    finally:
+        tmp_path.chmod(0o700)
 
 
 def test_total_owner_tenant_and_retained_quotas(tmp_path):
