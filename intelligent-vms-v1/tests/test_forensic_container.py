@@ -33,7 +33,8 @@ def test_real_container_resource_controls_hashes_and_cancellation(tmp_path):
     ], check=True, timeout=30)
     original = seed.read_bytes()
     spool = tmp_path / "jobs"
-    spool.mkdir()
+    # The production executor requires a private owner-owned evidence root.
+    spool.mkdir(mode=0o700)
 
     async def scenario():
         service = ForensicJobs()
