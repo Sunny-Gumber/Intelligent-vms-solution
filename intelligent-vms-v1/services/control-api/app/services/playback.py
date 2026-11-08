@@ -30,6 +30,8 @@ class PlaybackClient:
         path: str,
         start: datetime | None = None,
         end: datetime | None = None,
+        *,
+        empty_if_no_segments: bool = False,
     ) -> list[dict]:
         """List recorded timespans available for one recording path.
 
@@ -37,6 +39,8 @@ class PlaybackClient:
             path: MediaMTX recording path key.
             start: Optional timeline start.
             end: Optional timeline end.
+            empty_if_no_segments: Treat MediaMTX's specific no-recordings
+                response as empty coverage.
 
         Returns:
             Playback-service timespan dictionaries.
@@ -52,6 +56,10 @@ class PlaybackClient:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(f"{self.base_url}/list", params=params)
+                if empty_if_no_segments and response.status_code == 404:
+                    error = response.json()
+                    if isinstance(error, dict) and error.get("error") == "no recording segments found":
+                        return []
                 response.raise_for_status()
                 data = response.json()
         except (httpx.HTTPError, ValueError) as exc:

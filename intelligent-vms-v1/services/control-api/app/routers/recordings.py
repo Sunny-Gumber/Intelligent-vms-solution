@@ -7,7 +7,7 @@ import math
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, Response
@@ -22,7 +22,13 @@ from app.core.errors import build_error_payload
 from app.db.session import get_session
 from app.models.entities import CameraEntity, ManualRecordingSessionEntity, RecordingPolicyEntity
 from app.models.placement import PlacementAssignmentEntity, PlacementRevocationEntity
-from app.models.schemas import RecordingPolicyRead, RecordingPolicyUpdate, RecordingTimespan
+from app.models.schemas import (
+    RecordingPolicyRead,
+    RecordingPolicyUpdate,
+    RecordingTimespan,
+    SynchronizedPlaybackCoverage,
+    SynchronizedPlaybackQuery,
+)
 from app.routers.cameras import authorized_camera
 from app.services.coordination import (
     PlacementExecutionBusy,
@@ -49,6 +55,7 @@ from app.services.recording_index import (
     recording_index,
 )
 from app.services.search_page import apply_page_headers
+from app.services.synchronized_playback import build_playback_coverage
 
 router = APIRouter(prefix="/api/v1/recordings", tags=["recordings"])
 internal_router = APIRouter(prefix="/internal/v1/recording", tags=["internal-recording"])
@@ -238,6 +245,8 @@ def _playback_timespans(
     items: list[dict],
     start: datetime,
     end: datetime,
+    *,
+    strict: bool = False,
 ) -> list[RecordingTimespan]:
     """Normalize untrusted playback-service items into bounded aware timespans."""
     spans: list[RecordingTimespan] = []
@@ -246,11 +255,13 @@ def _playback_timespans(
             span_start = datetime.fromisoformat(str(item["start"]).replace("Z", "+00:00"))
             duration = float(item["duration"])
             if span_start.tzinfo is None or not math.isfinite(duration) or duration <= 0:
-                continue
+                raise ValueError("Invalid recording timespan")
             span_end = span_start + timedelta(seconds=duration)
             clipped_start = max(span_start, start)
             clipped_end = min(span_end, end)
-        except (KeyError, TypeError, ValueError, OverflowError):
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            if strict:
+                raise PlaybackError("Invalid recording timeline response") from exc
             continue
         if clipped_end <= clipped_start:
             continue
@@ -452,6 +463,83 @@ async def put_policy(
 
     await session.refresh(row)
     return _policy_read(row)
+
+
+@router.get("/synchronized", response_model=SynchronizedPlaybackCoverage)
+async def synchronized_playback(
+    query: Annotated[SynchronizedPlaybackQuery, Query()],
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_roles("admin", "operator", "viewer")),
+) -> SynchronizedPlaybackCoverage:
+    """Return bounded recording coverage for an authenticated camera selection.
+
+    In distributed mode gaps describe the completed recording index. A
+    recording still being written can appear after its completion is indexed.
+    Single-node mode uses the recorder's own playback timeline. Cameras with
+    no recording policy have no playable coverage.
+    """
+    camera_ids = query.camera_ids
+    if len(set(camera_ids)) != len(camera_ids):
+        raise HTTPException(422, "Camera IDs must be unique")
+    try:
+        start = query.start.astimezone(timezone.utc)
+        end = query.end.astimezone(timezone.utc)
+    except OverflowError as exc:
+        raise HTTPException(422, "recording time is outside the supported range") from exc
+    if end <= start:
+        raise HTTPException(422, "end must be after start")
+    if end - start > timedelta(hours=max(1, settings.recording_query_max_window_hours)):
+        raise HTTPException(422, "recording timeline window exceeds configured maximum")
+
+    cameras = [await authorized_camera(session, camera_id, principal) for camera_id in camera_ids]
+    # Bound total work and response size across all selected cameras.
+    limit = min(max(1, settings.recording_query_max_segments), 10_000 // len(cameras))
+    spans_by_camera = {}
+    try:
+        async with asyncio.timeout(20):
+            for camera in cameras:
+                spans_by_camera[camera.id] = await _synchronized_spans(session, camera, start, end, limit)
+    except TimeoutError as exc:
+        raise HTTPException(504, UPSTREAM_TIMEOUT_DETAIL) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return build_playback_coverage(start, end, spans_by_camera)
+
+
+async def _synchronized_spans(
+    session: AsyncSession,
+    camera: CameraEntity,
+    start: datetime,
+    end: datetime,
+    limit: int,
+) -> list[tuple[datetime, datetime]]:
+    """Use complete server-owned coverage or fail instead of inferring a gap."""
+    policy = await _policy_for_camera(session, camera.id)
+    if policy is None:
+        return []
+    if settings.placement_execution_enabled:
+        try:
+            rows = await recording_index.segments(
+                tenant_id=camera.tenant_id, site_id=camera.site_id, camera_id=camera.id,
+                start=start, end=end, limit=limit,
+            )
+        except RecordingIndexError as exc:
+            raise _recording_index_http_error(exc, "Recording timeline unavailable") from exc
+        if rows.partial:
+            raise HTTPException(503, "Recording timeline incomplete")
+        if not rows.exhausted:
+            raise HTTPException(422, "Too many recording spans. Request a shorter window.")
+        return [(row["segment_start"], row["segment_end"]) for row in rows]
+
+    client = await _playback_for_policy(session, policy)
+    try:
+        items = await client.list_timespans(policy.record_stream_key, start, end, empty_if_no_segments=True)
+        if len(items) > limit:
+            raise HTTPException(422, "Too many recording spans. Request a shorter window.")
+        spans = _playback_timespans(items, start, end, strict=True)
+    except PlaybackError as exc:
+        raise HTTPException(exc.status_code, "Recording timeline unavailable") from exc
+    return [(span.start, span.end) for span in spans]
 
 
 @router.get("/cameras/{camera_id}/timeline", response_model=list[RecordingTimespan])
