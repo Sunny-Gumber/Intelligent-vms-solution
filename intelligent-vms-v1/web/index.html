@@ -22,6 +22,7 @@ iframe{width:100%;height:230px;border:0;background:#000}.meta{padding:10px 12px;
 #coveragePanel{margin-top:16px;padding:14px}.coverage-track{margin:10px 0}.coverage-bar{height:18px;border:1px solid #344252;border-radius:4px;background:#192330}
 .coverage-key{display:flex;gap:12px;flex-wrap:wrap;margin:10px 0}.coverage-key span::before{content:"";display:inline-block;width:12px;height:12px;margin-right:5px;background:var(--key);vertical-align:-1px}
 .coverage-scale{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.coverage-video-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px}
 .timeline{height:46px;background:#080b10;border:1px solid #26313d;border-radius:6px;position:relative;margin:12px 0;overflow:hidden}
 .span{position:absolute;top:7px;height:30px;min-width:2px;background:#3877c8;border-radius:3px;cursor:pointer}.span.selected{outline:2px solid #d6e7ff}
 .playback-controls{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin:12px 0}.playback-controls label{display:grid;gap:4px}.playback-controls input{background:#0c131c;color:#e8eef6;border:1px solid #344252;border-radius:6px;padding:7px}
@@ -103,6 +104,15 @@ code{color:#9cdcfe}@media(max-width:720px){.event{grid-template-columns:1fr 1fr}
  <p id="coverageCameraHelp" class="muted">Use Ctrl or Command to select multiple cameras on desktop.</p>
  <p id="coverageMessage" class="muted" role="status"></p>
  <div id="coverageResults"></div>
+ <div id="coveragePlaybackControls" hidden>
+  <div class="playback-controls">
+   <label><span>Shared recording start</span><select id="coveragePlaybackStart" onchange="stopCoveragePlayback()"></select></label>
+   <button id="coveragePlay" class="primary" onclick="playCoverageGroup()">Start group playback</button>
+   <button id="coverageStop" onclick="stopCoveragePlayback('Group playback stopped.')" disabled>Stop group</button>
+  </div>
+  <p id="coveragePlaybackMessage" class="muted" role="status"></p>
+  <div id="coverageVideoGrid" class="coverage-video-grid"></div>
+ </div>
 </section>
 <section id="playback" class="panel">
  <div class="pbhead"><div><strong id="pbtitle">Playback</strong><div id="pbwindow" class="muted"></div></div><button onclick="returnToLive()">Return to live</button></div>
@@ -161,6 +171,9 @@ const DEFAULT_CLIP_SECONDS=60;
 let playbackSelection=null;
 let playbackState={cameraId:null,spans:[],selectedSpan:null,windowStart:null,windowEnd:null,generation:0,playGeneration:0};
 let coverageRequest=null;
+let coveragePlaybackOptions=null;
+let coveragePlaybackGroup=null;
+const COVERAGE_MAX_PLAYERS=4,COVERAGE_CLIP_SECONDS=60,COVERAGE_READY_TIMEOUT_MS=20000;
 let manualSessions=[];
 let recentManualSessions=[];
 let activeRecordingPolicy=null;let activeRecordingPolicyLoaded=false;let recordingPolicyBusy=false;let recordingPolicyGeneration=0;
@@ -751,6 +764,10 @@ function localDayWindow(dateValue){
 function playbackError(error){return String(error&&error.message||'playback unavailable').slice(0,240)}
 function resetRecordingCoverage(){
  if(coverageRequest){coverageRequest.abort();coverageRequest=null}
+ stopCoveragePlayback();
+ coveragePlaybackOptions=null;
+ document.getElementById('coveragePlaybackControls').hidden=true;
+ document.getElementById('coveragePlaybackStart').replaceChildren();
  document.getElementById('coverageResults').replaceChildren();
  document.getElementById('coverageMessage').textContent='Choose cameras and a time window to compare.';
 }
@@ -807,6 +824,7 @@ async function loadRecordingCoverage(event){
    throw new Error('Unexpected recording timeline response.');
   }
   renderRecordingCoverage(coverage,start,end);
+  prepareCoveragePlayback(ids,coverage.common_coverage);
   message.textContent=coverage.common_coverage.length
    ? 'Shared recording windows are available for this selection.'
    : 'No recording window is shared by every selected camera.';
@@ -837,6 +855,85 @@ function renderRecordingCoverage(coverage,start,end){
   scale.appendChild(tick);
  }
  result.replaceChildren(legend,scale,...rows);
+}
+function prepareCoveragePlayback(ids,windows){
+ const eligible=ids.length<=COVERAGE_MAX_PLAYERS
+  ? windows.filter(span=>coverageClipDuration(span)>=.001)
+  : [];
+ coveragePlaybackOptions={ids,windows:eligible};
+ document.getElementById('coveragePlaybackStart').replaceChildren(...eligible.map((span,index)=>
+  new Option(new Date(span.start).toLocaleString(),String(index))));
+ document.getElementById('coveragePlay').disabled=!eligible.length;
+ document.getElementById('coveragePlaybackControls').hidden=false;
+ document.getElementById('coveragePlaybackMessage').textContent=ids.length>COVERAGE_MAX_PLAYERS
+  ? 'Select 2–4 cameras for group playback.'
+  : eligible.length ? 'Start all players at the same recording time. Clips run for up to 60 seconds.'
+   : 'No shared recording start is available for group playback.';
+}
+function coverageClipDuration(span){
+ const start=Date.parse(span.start),end=Math.min(Date.now(),Date.parse(span.end));
+ return Math.min(COVERAGE_CLIP_SECONDS,(end-start-1)/1000);
+}
+function stopCoveragePlayback(message=''){
+ const group=coveragePlaybackGroup;
+ coveragePlaybackGroup=null;
+ if(group){
+  clearTimeout(group.timer);
+  for(const player of group.players){
+   player.oncanplay=player.onended=player.onerror=player.onwaiting=null;
+   player.pause();
+   player.removeAttribute('src');
+   player.load();
+  }
+ }
+ document.getElementById('coverageVideoGrid').replaceChildren();
+ document.getElementById('coverageStop').disabled=true;
+ document.getElementById('coveragePlaybackMessage').textContent=message;
+}
+function recordingPlaybackUrl(cameraId,start,duration){
+ return `${API}/recordings/cameras/${encodeURIComponent(cameraId)}/play?start=${encodeURIComponent(start)}&duration=${encodeURIComponent(duration)}&format=mp4`;
+}
+function playCoverageGroup(){
+ const epoch=authEpoch,options=coveragePlaybackOptions;
+ if(!authAllowsLive(epoch)||!options||document.getElementById('coveragePanel').hidden)return;
+ const selection=document.getElementById('coveragePlaybackStart').value;
+ const span=options.windows.find((_,index)=>String(index)===selection);
+ if(!span)return;
+ const duration=coverageClipDuration(span);
+ if(!Number.isFinite(duration)||duration<.001)return;
+ stopCoveragePlayback('Loading all selected recordings…');
+ const group={players:[],starting:false,playing:false,timer:null};
+ coveragePlaybackGroup=group;
+ const active=()=>authAllowsLive(epoch)&&coveragePlaybackGroup===group;
+ const fail=message=>{if(active())stopCoveragePlayback(message)};
+ const startWhenReady=async()=>{
+  if(!active()||group.starting||group.players.some(player=>player.readyState<3))return;
+  group.starting=true;
+  try{
+   await Promise.all(group.players.map(player=>player.play()));
+   if(!active())return;
+   clearTimeout(group.timer);
+   group.playing=true;
+   document.getElementById('coveragePlaybackMessage').textContent='Group playback started at '+new Date(span.start).toLocaleString()+'.';
+  }catch{fail('Group playback could not start.')}
+ };
+ const grid=document.getElementById('coverageVideoGrid');
+ for(const id of options.ids){
+  const tile=document.createElement('div');
+  const title=document.createElement('div');title.textContent=cameraCache.find(camera=>camera.id===id)?.name||id;
+  const player=document.createElement('video');
+  player.setAttribute('aria-label',title.textContent);
+  player.muted=true;player.playsInline=true;player.preload='auto';
+  player.oncanplay=startWhenReady;
+  player.onended=()=>fail('Group playback stopped when the first clip ended.');
+  player.onerror=()=>fail('A recording could not be played. Group playback stopped.');
+  player.onwaiting=()=>{if(group.playing)fail('A player stalled. Group playback stopped.')};
+  group.players.push(player);
+  tile.append(title,player);grid.appendChild(tile);
+ }
+ group.timer=setTimeout(()=>fail('Timed out waiting for all recordings. Group playback stopped.'),COVERAGE_READY_TIMEOUT_MS);
+ document.getElementById('coverageStop').disabled=false;
+ group.players.forEach((player,index)=>{player.src=recordingPlaybackUrl(options.ids[index],span.start,duration);player.load()});
 }
 function recordingCoverageRow(label,intervals,gaps,color,background,start,end){
  const row=document.createElement('div');row.className='coverage-track';
@@ -979,7 +1076,7 @@ function playSelectedTime(){
  if(!selection||selection.cameraId!==playbackState.cameraId||selection.cameraId!==activeCameraId())return;
  const generation=++playbackState.playGeneration,player=document.getElementById('player');
  resetPlaybackPlayer();
- player.src=`${API}/recordings/cameras/${encodeURIComponent(selection.cameraId)}/play?start=${encodeURIComponent(selection.start)}&duration=${encodeURIComponent(selection.duration)}&format=mp4`;
+ player.src=recordingPlaybackUrl(selection.cameraId,selection.start,selection.duration);
  player.load();document.getElementById('pbPause').disabled=false;
  player.play().catch(error=>{if(epoch===authEpoch&&generation===playbackState.playGeneration)document.getElementById('pbmsg').textContent='Playback could not start: '+playbackError(error)});
 }
