@@ -10,6 +10,7 @@
 
 const fs = require("fs");
 const vm = require("vm");
+const assert = require("node:assert/strict");
 
 const SESSION_URL = "https://media.example/whep/sessions/pending-1";
 const RESTARTED_SESSION_URL = "https://media.example/whep/sessions/restarted-2";
@@ -35,6 +36,7 @@ const SCENARIOS = new Set([
   "stale-panels-after-login",
   "stale-policy-after-pagehide",
   "recording-coverage-logout",
+  "shared-start-playback",
 ]);
 
 const harness = {
@@ -135,6 +137,8 @@ class DomElement {
     this._value = "";
     this._text = null;
     this.srcObject = null;
+    this.paused = true;
+    this.playCount = 0;
     this.readyState = 0;
     this.videoWidth = 0;
     this.videoHeight = 0;
@@ -208,6 +212,7 @@ class DomElement {
 
   removeAttribute(name) {
     delete this.attrs[String(name).toLowerCase()];
+    if (name === "src") delete this.src;
   }
 
   addEventListener() {}
@@ -216,11 +221,15 @@ class DomElement {
 
   click() {}
 
-  pause() {}
+  pause() { this.paused = true; }
 
   load() {}
 
-  play() {}
+  play() {
+    this.paused = false;
+    this.playCount += 1;
+    return Promise.resolve();
+  }
 
   focus() {}
 
@@ -817,12 +826,13 @@ async function runScenario(scenario, htmlPath) {
     "authenticated idle",
   );
 
-  if (scenario === "recording-coverage-logout") {
+  if (scenario === "recording-coverage-logout" || scenario === "shared-start-playback") {
     vm.runInContext("openRecordingCoverage()", context);
     const picker = document.getElementById("coverageCameras");
     for (const option of picker.children) option.selected = true;
     const load = () => vm.runInContext("loadRecordingCoverage({preventDefault(){}})", context);
     await load();
+    if (scenario === "shared-start-playback") return runSharedStartPlayback(context, document);
     const results = document.getElementById("coverageResults");
     const rendered = results.textContent;
     harness.holdKeys.coverage = true;
@@ -953,6 +963,50 @@ function observe(scenario, context, document, htmlPath, scriptBytes) {
       .filter((item) => item.url.includes("/api/v1/auth/session"))
       .map((item) => `${item.method} ${item.url}`),
   };
+}
+
+async function runSharedStartPlayback(context, document) {
+  document.getElementById("coveragePlaybackStart").value = "0";
+  const grid = document.getElementById("coverageVideoGrid");
+  const start = () => {
+    vm.runInContext("playCoverageGroup()", context);
+    return grid.children.map((tile) => tile.children[1]);
+  };
+  const players = start();
+  assert.equal(players.length, 2);
+  const urls = players.map((player) => new URL(player.src, "http://vms.local"));
+  const query = new URL(harness.requests.find((item) =>
+    pathnameOf(item.url) === "/api/v1/recordings/synchronized").url, "http://vms.local").searchParams;
+  const expectedStart = new Date((Date.parse(query.get("start")) + Date.parse(query.get("end"))) / 2).toISOString();
+  assert.deepEqual(urls.map((url) => url.pathname), [
+    "/api/v1/recordings/cameras/cam-1/play",
+    "/api/v1/recordings/cameras/cam-2/play",
+  ]);
+  for (const url of urls) {
+    assert.equal(url.searchParams.get("start"), expectedStart);
+    assert.equal(url.searchParams.get("duration"), "60");
+  }
+  players[0].readyState = 3;
+  await players[0].oncanplay();
+  assert.ok(players.every((player) => player.playCount === 0));
+  players[1].readyState = 3;
+  await players[1].oncanplay();
+  assert.ok(players.every((player) => player.muted && player.playCount === 1));
+  players[0].onended();
+  assert.ok(players.every((player) => player.paused && player.src === undefined));
+  assert.equal(grid.children.length, 0);
+  const failed = start();
+  failed[0].readyState = failed[1].readyState = 3;
+  failed[1].play = () => Promise.reject(new Error("media refused"));
+  await failed[0].oncanplay();
+  assert.ok(failed.every((player) => player.paused && player.src === undefined));
+  const pending = start();
+  const late = pending[0].oncanplay;
+  await context.__vms.signOut();
+  pending.forEach((player) => { player.readyState = 3; });
+  await late();
+  assert.ok(pending.every((player) => player.playCount === 0 && player.src === undefined));
+  return {shared_start_verified: true, remaining_players: grid.children.length};
 }
 
 function dispatchPageHide() {

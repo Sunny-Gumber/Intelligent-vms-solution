@@ -85,6 +85,8 @@ def _compare_recording_coverage(page, context, camera_url, first_id, headers, pa
         ] for track in body["tracks"]), "unconfigured cameras have explicit full gaps")
         expect(page.locator("#coverageMessage")).to_have_text("No recording window is shared by every selected camera.")
         expect(page.locator("#coverageResults .coverage-track")).to_have_count(3)
+        expect(page.locator("#coveragePlay")).to_be_disabled()
+        expect(page.locator("#coverageVideoGrid")).to_be_empty()
         page.get_by_role("button", name="Close comparison", exact=True).click()
         expect(page.locator("#coverageResults")).to_be_empty()
     finally:

@@ -112,6 +112,12 @@ def test_recording_coverage_logout_discards_late_response():
     assert result["remaining_options"] == 0
 
 
+def test_group_playback_waits_for_all_players_and_releases_the_group():
+    """Use the same recorded start and release every stream on end, failure or logout."""
+    result = run_scenario("shared-start-playback")
+    assert result == {"shared_start_verified": True, "remaining_players": 0}
+
+
 def test_deferred_sdp_answer_after_sign_out_deletes_the_session():
     """An SDP answer body that arrives after sign-out must DELETE that session."""
     result = run_scenario("deferred-sdp-sign-out")
