@@ -48,3 +48,19 @@ def test_missing_or_unclosed_script_fails_closed():
 def test_unsupported_external_script_fails_closed():
     with pytest.raises(ValueError, match="External scripts"):
         check_frontend('<script src="external.js"></script>')
+
+
+@pytest.mark.parametrize("source", ["https://evil.invalid/a.js", "//evil/a.js", "../forensic-ui.js", "forensic-ui.js?x"])
+def test_external_script_policy_rejects_remote_and_traversal(source):
+    """Only exact reviewed local asset names may be loaded by the gate."""
+    with pytest.raises(ValueError, match="External scripts"):
+        check_frontend(f'<script src="{source}"></script>')
+
+
+def test_local_script_contents_are_parsed(monkeypatch, tmp_path):
+    """Approved names do not bypass JavaScript syntax validation."""
+    import tools.check_frontend_syntax as checker
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web" / "forensic-ui.js").write_text("const broken = ;")
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    assert checker.check_frontend('<script>let ok=1;</script><script src="forensic-ui.js"></script>')

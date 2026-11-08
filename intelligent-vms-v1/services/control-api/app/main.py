@@ -17,6 +17,8 @@ from app.services.events import event_publisher
 from app.services.health_monitor import health_monitor
 from app.services.outbox import outbox_worker
 from app.services.reconciler import reconciler_loop
+from app.routers import forensic
+from app.services.forensic_jobs import forensic_jobs
 
 
 def _cors_allowlist(value: str, setting_name: str) -> list[str]:
@@ -53,6 +55,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await forensic_jobs.shutdown()
         await health_monitor.stop()
         await reconciler_loop.stop()
         await outbox_worker.stop()
@@ -81,6 +84,7 @@ app.include_router(live_media.internal_router)
 app.include_router(onvif.router)
 app.include_router(ptz.router)
 app.include_router(recordings.router)
+app.include_router(forensic.router)
 app.include_router(manual_recordings.router)
 app.include_router(recordings.internal_router)
 app.include_router(events.router)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LOCAL_SCRIPTS = {"forensic-preview.js", "forensic-ui.js"}
 
 
 class _FrontendParser(HTMLParser):
@@ -15,6 +16,7 @@ class _FrontendParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.scripts = []
         self.handlers = []
+        self.local_scripts = []
         self.markup_escapes = []
         self._script = None
         self._style = False
@@ -23,7 +25,11 @@ class _FrontendParser(HTMLParser):
         attrs = dict(attrs)
         if tag == "script":
             if "src" in attrs:
-                raise ValueError("External scripts need an explicit syntax-check policy")
+                source = attrs["src"]
+                if source not in LOCAL_SCRIPTS and source not in {"/" + name for name in LOCAL_SCRIPTS}:
+                    raise ValueError("External scripts need an explicit syntax-check policy")
+                self.local_scripts.append((self.getpos()[0], source.lstrip("/")))
+                return
             kind = attrs.get("type", "text/javascript")
             if kind not in {"text/javascript", "application/javascript", "module"}:
                 raise ValueError("Unsupported inline script type")
@@ -76,6 +82,13 @@ def check_frontend(html: str, node: str = "node") -> list[str]:
     units = [(line, kind, script) for line, kind, script in parser.scripts]
     units.extend((line, "text/javascript", "(function(event){\n" + code + "\n})")
                  for line, code in parser.handlers)
+    for line, source in parser.local_scripts:
+        try:
+            script = (ROOT / "web" / source).read_text(encoding="utf-8")
+        except OSError:
+            errors.append(f"Missing local script at HTML line {line}")
+            continue
+        units.append((line, "text/javascript", script))
     for line, kind, script in units:
         result = subprocess.run(
             [node, "--check", "--input-type=" + ("module" if kind == "module" else "commonjs")],
