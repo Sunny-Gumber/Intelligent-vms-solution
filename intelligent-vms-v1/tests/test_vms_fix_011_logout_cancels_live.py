@@ -100,6 +100,18 @@ def test_deferred_whep_post_after_sign_out_does_not_leave_a_live_session():
     assert_late_response_cancelled(result, remote_description_applied=False)
 
 
+def test_recording_coverage_logout_discards_late_response():
+    """The live console renders scoped coverage and clears it on sign-out."""
+    result = run_scenario("recording-coverage-logout")
+    assert result["cameras"] == ["cam-1", "cam-2"]
+    assert result["authorization"] == ""
+    assert "Shared by every camera · 1 window(s)" in result["rendered"]
+    assert "Gate · 1 recorded · 1 gap(s)" in result["rendered"]
+    assert result["aborted"] and result["hidden"]
+    assert result["results"] == ""
+    assert result["remaining_options"] == 0
+
+
 def test_deferred_sdp_answer_after_sign_out_deletes_the_session():
     """An SDP answer body that arrives after sign-out must DELETE that session."""
     result = run_scenario("deferred-sdp-sign-out")
