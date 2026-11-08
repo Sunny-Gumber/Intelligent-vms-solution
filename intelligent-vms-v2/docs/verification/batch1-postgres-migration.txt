@@ -1,0 +1,12 @@
+PostgreSQL: PostgreSQL 16.2 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 10.2.1 20210130 (Red Hat 10.2.1-11), 64-bit
+$ alembic upgrade head  -> exit 0
+    INFO  [alembic.runtime.migration] Running upgrade  -> 0001_initial, initial schema
+    INFO  [alembic.runtime.migration] Running upgrade 0001_initial -> 0002_media_connections, media gateway connection bindings (ADR-0012)
+model/migration drift on PostgreSQL: NONE
+current revision: 0002_media_connections
+media_connections columns: 15 | unique: ['media_conn_unique_gateway_id'] | indexes: ['ix_media_conn_open_session', 'ix_media_connections_camera_id', 'ix_media_connections_closed_at', 'ix_media_connections_live_session_id', 'ix_media_connections_user_id', 'media_conn_unique_gateway_id']
+$ alembic downgrade 0001_initial  -> exit 0
+    INFO  [alembic.runtime.migration] Running downgrade 0002_media_connections -> 0001_initial, media gateway connection bindings (ADR-0012)
+$ alembic upgrade head  -> exit 0
+    INFO  [alembic.runtime.migration] Running upgrade 0001_initial -> 0002_media_connections, media gateway connection bindings (ADR-0012)
+RESULT: PostgreSQL migration cycle PASS

@@ -1,0 +1,26 @@
+<UserControl x:Class="IntelligentVms.Client.Views.LiveView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:IntelligentVms.Client.Controls">
+  <DockPanel>
+    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8">
+      <Button Content="1x1" Tag="1" Click="SetLayout" Margin="4" />
+      <Button Content="2x2" Tag="2" Click="SetLayout" Margin="4" />
+      <Button Content="3x3" Tag="3" Click="SetLayout" Margin="4" />
+      <Button Content="4x4" Tag="4" Click="SetLayout" Margin="4" />
+      <TextBlock Text="Camera:" VerticalAlignment="Center" Margin="12,0,4,0" />
+      <ComboBox x:Name="CameraList" ItemsSource="{Binding Cameras}" DisplayMemberPath="Name" Width="220" />
+      <TextBlock Text="Tile:" VerticalAlignment="Center" Margin="12,0,4,0" />
+      <ComboBox x:Name="TileList" ItemsSource="{Binding Tiles}" DisplayMemberPath="Index" Width="70" SelectedIndex="0" />
+      <Button Content="Open camera" Click="AssignCamera" Margin="8,0" />
+    </StackPanel>
+    <ItemsControl ItemsSource="{Binding Tiles}">
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate><UniformGrid Rows="{Binding Rows}" Columns="{Binding Columns}" /></ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate><controls:VideoTile Margin="2" /></DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+  </DockPanel>
+</UserControl>

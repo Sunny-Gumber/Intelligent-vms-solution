@@ -1,0 +1,35 @@
+[Unit]
+Description=Intelligent VMS control API
+Documentation=file:///opt/intelligent-vms/docs/deployment/ubuntu.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=exec
+User=vms
+Group=vms
+EnvironmentFile=/etc/intelligent-vms/vms.env
+WorkingDirectory=/opt/intelligent-vms
+ExecStart=/opt/intelligent-vms/venv/bin/python -m app.main
+
+Restart=always
+RestartSec=5s
+# Give in-flight requests and background loops time to finish cleanly.
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/intelligent-vms
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
