@@ -34,6 +34,7 @@ const SCENARIOS = new Set([
   "stale-cameras-success-after-login",
   "stale-panels-after-login",
   "stale-policy-after-pagehide",
+  "recording-coverage-logout",
 ]);
 
 const harness = {
@@ -126,7 +127,7 @@ class DomElement {
     this.id = "";
     this.className = "";
     this.classList = createClassList(this);
-    this.style = {};
+    this.style = {setProperty(name, value) { this[name] = value; }};
     this.attrs = {};
     this.hidden = false;
     this.disabled = false;
@@ -144,6 +145,20 @@ class DomElement {
 
   get value() {
     return this._value;
+  }
+
+  get selectedOptions() {
+    return this.children.filter((child) => child.tagName === "OPTION" && child.selected);
+  }
+
+  appendChild(node) {
+    node.parent = this;
+    this.children.push(node);
+    return node;
+  }
+
+  append(...nodes) {
+    for (const node of nodes) this.appendChild(node);
   }
 
   set value(next) {
@@ -350,10 +365,11 @@ function buildDocument(html) {
   return document;
 }
 
-function DomOption(text, value) {
+function DomOption(text, value, _defaultSelected, selected) {
   const option = createElement("option");
   option.textContent = text == null ? "" : String(text);
   if (value !== undefined) option.value = String(value);
+  option.selected = Boolean(selected);
   return option;
 }
 
@@ -599,6 +615,20 @@ function route(method, href, scenario) {
     }));
   }
   if (pathname === "/api/v1/manual-recordings/recent") return jsonResponse([]);
+  if (pathname === "/api/v1/recordings/synchronized" && method === "GET") {
+    const params = new URL(href, "http://vms.local").searchParams;
+    const [first, second] = params.getAll("camera_ids");
+    const start = params.get("start"), end = params.get("end");
+    const middle = new Date((Date.parse(start) + Date.parse(end)) / 2).toISOString();
+    const shared = {start: middle, end};
+    return consumeHold("coverage", () => jsonResponse({
+      tracks: [
+        {camera_id: first, recorded: [shared], gaps: [{start, end: middle}]},
+        {camera_id: second, recorded: [{start, end}], gaps: []},
+      ],
+      common_coverage: [shared],
+    }));
+  }
   if (pathname.startsWith("/api/v1/recordings/cameras/") && pathname.endsWith("/policy") && method === "GET") {
     return consumeHold("policy", () => new Response("not found", { status: 404 }));
   }
@@ -682,6 +712,7 @@ function pageFetch(scenario) {
     const href = String(url);
     const authorization = headerValue(opts.headers, "authorization");
     harness.requests.push({ method, url: href, authorization });
+    if (pathnameOf(href) === "/api/v1/recordings/synchronized") harness.coverageSignal = opts.signal;
     if (method === "DELETE" && href.startsWith("https://media.example/")) {
       harness.mediaDeletes.push({ url: href, authorization });
     }
@@ -786,6 +817,31 @@ async function runScenario(scenario, htmlPath) {
     "authenticated idle",
   );
 
+  if (scenario === "recording-coverage-logout") {
+    vm.runInContext("openRecordingCoverage()", context);
+    const picker = document.getElementById("coverageCameras");
+    for (const option of picker.children) option.selected = true;
+    const load = () => vm.runInContext("loadRecordingCoverage({preventDefault(){}})", context);
+    await load();
+    const results = document.getElementById("coverageResults");
+    const rendered = results.textContent;
+    harness.holdKeys.coverage = true;
+    const pending = load();
+    await waitFor(() => harness.reachedHold, "recording coverage request");
+    await context.__vms.signOut();
+    releaseHolds();
+    await pending;
+    const request = harness.requests.find((item) => pathnameOf(item.url) === "/api/v1/recordings/synchronized");
+    return {
+      rendered,
+      cameras: new URL(request.url, "http://vms.local").searchParams.getAll("camera_ids"),
+      authorization: request.authorization,
+      aborted: harness.coverageSignal.aborted,
+      hidden: document.getElementById("coveragePanel").hidden,
+      results: results.textContent,
+      remaining_options: picker.children.length,
+    };
+  }
   if (scenario.startsWith("retry-overlap-")) {
     return runRetryOverlap(scenario, context, document, htmlPath, script.length);
   }

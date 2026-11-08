@@ -9,7 +9,7 @@ import argparse
 import importlib.util
 import secrets
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -59,6 +59,37 @@ def _check_browser_state(page, tokens, urls, console_messages):
     _require(all(token not in value for token in tokens for value in [visible, page.url, *urls, *console_messages]),
              "no token in DOM, URL or console")
     _require("vms_session=" not in page.evaluate("document.cookie"), "session remains HttpOnly")
+
+
+def _compare_recording_coverage(page, context, camera_url, first_id, headers, payload):
+    second = context.request.post(camera_url, headers=headers, data={
+        **payload, "name": "Browser CI Comparison Camera", "main_path": "/browser-ci-comparison",
+    })
+    _require(second.status == 201, "second comparison camera created")
+    second_id = second.json()["id"]
+    try:
+        page.get_by_role("button", name="Refresh", exact=True).click()
+        page.get_by_role("button", name="Compare recording timelines", exact=True).click()
+        page.locator("#coverageCameras").select_option([first_id, second_id])
+        with page.expect_response(lambda r: urlsplit(r.url).path == "/api/v1/recordings/synchronized") as loaded:
+            page.get_by_role("button", name="Compare timelines", exact=True).click()
+        response = loaded.value
+        _require(response.status == 200, "authenticated recording coverage returned")
+        query = parse_qs(urlsplit(response.url).query)
+        _require(set(query["camera_ids"]) == {first_id, second_id}, "selected cameras sent as repeated parameters")
+        _require(response.request.header_value("Authorization") is None, "comparison uses session only")
+        body = response.json()
+        _require(body["common_coverage"] == [] and len(body["tracks"]) == 2, "no synthetic shared coverage")
+        _require(all(not track["recorded"] and track["gaps"] == [
+            {"start": body["start"], "end": body["end"]},
+        ] for track in body["tracks"]), "unconfigured cameras have explicit full gaps")
+        expect(page.locator("#coverageMessage")).to_have_text("No recording window is shared by every selected camera.")
+        expect(page.locator("#coverageResults .coverage-track")).to_have_count(3)
+        page.get_by_role("button", name="Close comparison", exact=True).click()
+        expect(page.locator("#coverageResults")).to_be_empty()
+    finally:
+        _require(context.request.delete(camera_url + "/" + second_id, headers=headers).status == 204,
+                 "second comparison camera cleanup")
 
 
 def run_smoke(base_url: str, env_file: Path) -> None:
@@ -172,6 +203,7 @@ def run_smoke(base_url: str, env_file: Path) -> None:
                 _require(camera_password not in replacement.text() and all(camera_password not in v for v in [*urls, *console_messages]),
                          "camera credential browser boundary")
                 expect(page.locator("#camPassword")).to_have_value("")
+                _compare_recording_coverage(page, context, camera_url, camera_id, headers, payload)
                 _require(context.request.delete(camera_url + "/" + camera_id, headers=headers).status == 204,
                          "disposable camera cleanup")
 
