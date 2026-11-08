@@ -259,7 +259,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
         env:
           POSTGRES_USER: vms
           POSTGRES_PASSWORD: vms
@@ -338,9 +338,11 @@ jobs:
             tests/test_vms_fix_033_race_reproductions.py \
             tests/test_vms_fix_038_local_event_duplicate.py \
             tests/test_vms_fix_040_alarm_ack_close.py \
+            tests/test_vms_fix_041_manual_list_expiry.py \
             tests/test_vms_fix_042_heartbeat_order.py \
             tests/test_vms_fix_043_recording_health_monotonic.py \
-            tests/test_vms_fix_044_camera_delete_manual_recording.py
+            tests/test_vms_fix_044_camera_delete_manual_recording.py \
+            tests/test_vms_issue_142_fence_residuals.py
           pytest -q -ra --tb=short \
             --junitxml=/tmp/vms-postgres-lease.xml \
             tests/test_lease_renewal_independent_of_scan.py \
@@ -363,5 +365,5 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest==8.4.1
+          python -m pip install pytest==9.1.1
           python -m pytest -q -p no:cacheprovider tests/test_vms_fix_150_atomic_publish_residuals.py
