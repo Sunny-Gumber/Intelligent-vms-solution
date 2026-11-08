@@ -1,8 +1,8 @@
 from datetime import datetime
 import math
 from uuid import UUID
-from typing import Any, Literal
-from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Annotated, Any, Literal
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CameraCreate(BaseModel):
@@ -913,6 +913,42 @@ class RecordingTimespan(BaseModel):
     start: datetime
     duration: float
     end: datetime
+
+
+class SynchronizedPlaybackQuery(BaseModel):
+    """Validate the camera selection and timezone-aware playback window."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    camera_ids: list[Annotated[str, Field(min_length=1, max_length=36, pattern=r"\S")]] = Field(
+        min_length=1, max_length=16
+    )
+    start: AwareDatetime
+    end: AwareDatetime
+
+
+class PlaybackCoverageInterval(BaseModel):
+    """Represent a half-open UTC interval on a playback timeline."""
+
+    start: datetime
+    end: datetime
+
+
+class PlaybackCoverageTrack(BaseModel):
+    """Partition one camera's requested window into recorded intervals and gaps."""
+
+    camera_id: str
+    recorded: list[PlaybackCoverageInterval]
+    gaps: list[PlaybackCoverageInterval]
+
+
+class SynchronizedPlaybackCoverage(BaseModel):
+    """Return per-camera timelines and intervals recorded by every selected camera."""
+
+    start: datetime
+    end: datetime
+    tracks: list[PlaybackCoverageTrack]
+    common_coverage: list[PlaybackCoverageInterval]
 
 
 class AlarmRuleCreate(BaseModel):
